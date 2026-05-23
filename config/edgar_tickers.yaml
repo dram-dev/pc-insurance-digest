@@ -1,0 +1,48 @@
+# Wave 1 P&C insurer universe — SEC EDGAR 10-K / 10-Q / 8-K tracking.
+# CIK numbers from https://www.sec.gov/cgi-bin/browse-edgar
+# This list mirrors INSURER_TICKERS_WAVE1 in src/digest/triage.py — keep in
+# sync; the triage Python auto-keep hook reads the Python set directly.
+
+companies:
+  - ticker: TRV
+    name: The Travelers Companies, Inc.
+    cik: "0000086312"
+  - ticker: ALL
+    name: The Allstate Corporation
+    cik: "0000899051"
+  - ticker: PGR
+    name: The Progressive Corporation
+    cik: "0000080661"
+  - ticker: CB
+    name: Chubb Limited
+    cik: "0000896159"
+  - ticker: HIG
+    name: The Hartford Financial Services Group, Inc.
+    cik: "0000874766"
+  - ticker: AIG
+    name: American International Group, Inc.
+    cik: "0000005272"
+  - ticker: MET
+    name: MetLife, Inc.
+    cik: "0001099219"
+  - ticker: PRU
+    name: Prudential Financial, Inc.
+    cik: "0001137774"
+  - ticker: RNR
+    name: RenaissanceRe Holdings Ltd.
+    cik: "0000913144"
+  - ticker: EG
+    name: Everest Group, Ltd.
+    cik: "0001095073"
+  - ticker: AXS
+    name: AXIS Capital Holdings Limited
+    cik: "0001214816"
+  - ticker: MMC
+    name: Marsh & McLennan Companies, Inc.
+    cik: "0000062709"
+  - ticker: AON
+    name: Aon plc
+    cik: "0000315293"
+  - ticker: WTW
+    name: Willis Towers Watson Public Limited Company
+    cik: "0001140536"

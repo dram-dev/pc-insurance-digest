@@ -1,0 +1,111 @@
+# P&C insurance & financial services RSS feeds.
+# topic_hint is a starting prior for triage — not a hard assignment.
+
+feeds:
+  # ── Core trade press ─────────────────────────────────────────
+  - name: insurance_journal
+    url: https://www.insurancejournal.com/rss/news/
+    topic_hint: commercial_specialty
+    limit: 25
+
+  - name: insurance_journal_national
+    url: https://www.insurancejournal.com/rss/news/national/
+    topic_hint: commercial_specialty
+    limit: 25
+
+  - name: reinsurance_news
+    url: https://www.reinsurancene.ws/feed/
+    topic_hint: reinsurance_cycle
+    limit: 25
+
+  - name: artemis_bm
+    url: https://www.artemis.bm/feed/
+    topic_hint: reinsurance_cycle
+    limit: 25
+
+  - name: carrier_management
+    url: https://www.carriermanagement.com/feed/
+    topic_hint: underwriting_results
+    limit: 20
+
+  - name: insurance_erm
+    url: https://www.insuranceerm.com/rss
+    topic_hint: analytics_modeling
+    limit: 15
+
+  - name: business_insurance
+    url: https://www.businessinsurance.com/section/rss
+    topic_hint: commercial_specialty
+    limit: 20
+
+  - name: claims_journal
+    url: https://www.claimsjournal.com/rss/news/
+    topic_hint: reserving
+    limit: 15
+
+  - name: pc360
+    url: https://www.propertycasualty360.com/feed/
+    topic_hint: personal_lines
+    limit: 20
+
+  # ── Reinsurance-cycle specialists ────────────────────────────
+  - name: trading_risk
+    url: https://www.trading-risk.com/feed/
+    topic_hint: reinsurance_cycle
+    limit: 15
+
+  - name: intelligent_insurer
+    url: https://www.intelligentinsurer.com/rss
+    topic_hint: reinsurance_cycle
+    limit: 15
+
+  # ── Regulatory + rating agency ───────────────────────────────
+  # AM Best has limited RSS; this is the news feed.
+  - name: am_best_news
+    url: https://news.ambest.com/rss/newsdetail.aspx?cat=BN
+    topic_hint: ma_capital
+    limit: 20
+
+  # NAIC press releases (RSS)
+  - name: naic_news
+    url: https://content.naic.org/feed/news
+    topic_hint: regulatory_rate
+    limit: 15
+
+  # ── Google News searches (aggregates Reuters/Bloomberg/WSJ on insurance) ──
+  - name: google_news_pc_insurance
+    url: 'https://news.google.com/rss/search?q=when:48h+(%22P%26C+insurance%22+OR+%22property+casualty%22+OR+%22reinsurance%22)&hl=en-US&gl=US&ceid=US:en'
+    topic_hint: commercial_specialty
+    limit: 25
+
+  - name: google_news_cat_losses
+    url: 'https://news.google.com/rss/search?q=when:48h+(%22catastrophe+losses%22+OR+%22insured+losses%22+OR+%22hurricane+insurance%22+OR+%22wildfire+insurance%22)&hl=en-US&gl=US&ceid=US:en'
+    topic_hint: cat_event
+    limit: 20
+
+  - name: google_news_insurtech
+    url: 'https://news.google.com/rss/search?q=when:48h+(insurtech+OR+%22insurance+AI%22+OR+%22underwriting+AI%22+OR+%22claims+automation%22)&hl=en-US&gl=US&ceid=US:en'
+    topic_hint: ai_insurtech
+    limit: 15
+
+  - name: google_news_litigation_tplf
+    url: 'https://news.google.com/rss/search?q=when:7d+(%22litigation+funding%22+OR+%22third+party+funding%22+OR+%22nuclear+verdict%22+OR+%22mass+tort%22)&hl=en-US&gl=US&ceid=US:en'
+    topic_hint: social_inflation
+    limit: 15
+
+  - name: google_news_insurer_ma
+    url: 'https://news.google.com/rss/search?q=when:7d+(%22insurer+acquisition%22+OR+%22insurance+M%26A%22+OR+%22carrier+merger%22+OR+%22broker+acquisition%22)&hl=en-US&gl=US&ceid=US:en'
+    topic_hint: ma_capital
+    limit: 15
+
+  - name: google_news_state_doi
+    url: 'https://news.google.com/rss/search?q=when:7d+(%22rate+filing%22+OR+%22Department+of+Insurance%22+OR+%22SERFF%22+OR+%22insurance+commissioner%22)&hl=en-US&gl=US&ceid=US:en'
+    topic_hint: regulatory_rate
+    limit: 15
+
+  # ── NOAA / catastrophe early warning (Wave 2 NHC ingestor will supersede) ──
+  # Wave 1 captures via Google News. Wave 2 swaps in direct NHC feeds.
+  - name: google_news_nhc_storms
+    url: 'https://news.google.com/rss/search?q=when:24h+(%22NHC%22+OR+%22hurricane+center%22+OR+%22tropical+storm%22+OR+%22major+hurricane%22)&hl=en-US&gl=US&ceid=US:en'
+    topic_hint: cat_event
+    limit: 15

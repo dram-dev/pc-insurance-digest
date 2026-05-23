@@ -1,0 +1,38 @@
+# P&C insurance-focused Substacks & newsletters.
+# topic_hint is a starting prior for triage, not a hard assignment.
+# Verify URLs if a feed returns 0 entries — Substacks rename / disappear.
+
+feeds:
+  # ── Insurance industry analysis ──────────────────────────────────────
+  - name: insurance_insider_substack
+    url: https://insuranceinsider.substack.com/feed
+    topic_hint: reinsurance_cycle
+    limit: 8
+
+  - name: matt_levine_money_stuff
+    url: https://www.bloomberg.com/opinion/authors/ARbTQlRLRjE/matthew-s-levine.rss
+    topic_hint: ma_capital
+    limit: 8
+
+  # ── Risk / cat / climate ─────────────────────────────────────────────
+  - name: climate_proof_dynamo
+    url: https://www.climateproof.net/feed
+    topic_hint: climate_risk
+    limit: 5
+
+  # ── Insurtech ────────────────────────────────────────────────────────
+  - name: coverager
+    url: https://coverager.com/feed/
+    topic_hint: ai_insurtech
+    limit: 10
+
+  - name: insurtech_substack
+    url: https://insurtechdigital.substack.com/feed
+    topic_hint: ai_insurtech
+    limit: 5
+
+  # ── Macro spillovers (kept narrow — most macro reads belong in the macro digest) ──
+  - name: macro_compass_alf
+    url: https://themacrocompass.substack.com/feed
+    topic_hint: rates_cost_of_capital
+    limit: 5
