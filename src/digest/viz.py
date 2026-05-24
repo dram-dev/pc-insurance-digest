@@ -261,7 +261,7 @@ def _chart_svg(
             cx, cy = _sx(qi), _sy(v, vmin, vmax)
             p.append(
                 f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="4.5" '
-                f'fill="{color}" stroke="var(--card-bg,#1e1e2e)" stroke-width="1.2" '
+                f'fill="{color}" stroke="var(--background-primary,#1e1e2e)" stroke-width="1.2" '
                 f'fill-opacity="0.88" style="cursor:default">'
                 f'<title>{QUARTERS[qi]} — {label}: {v:.1f}</title>'
                 f'</circle>'
@@ -366,41 +366,12 @@ def _query_db_intensity() -> dict[str, float]:
         return {}
 
 
-# ── CSS ─────────────────────────────────────────────────────────────────────
-
-_CSS = """\
-:root{--bg:#1e1e2e;--card:#2a2a3e;--text:#cdd6f4;--sub:#a6adc8;
-  --accent:#cba6f7;--border:#45475a;--notebg:#313244}
-@media(prefers-color-scheme:light){:root{--bg:#f8f8f8;--card:#fff;
-  --text:#1e1e2e;--sub:#6c7086;--accent:#7c3aed;--border:#e2e8f0;--notebg:#f1f5f9}}
-*{box-sizing:border-box;margin:0;padding:0}
-body{background:var(--bg);color:var(--text);
-  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
-  font-size:14px;line-height:1.5;padding:24px;max-width:960px;margin:0 auto}
-h1{font-size:21px;font-weight:600;margin-bottom:4px}
-.regime{display:inline-block;background:var(--accent);color:var(--bg);
-  padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;margin-left:8px;
-  vertical-align:middle}
-.meta{color:var(--sub);font-size:12px;margin-bottom:20px}
-nav{margin-bottom:20px;display:flex;gap:10px;flex-wrap:wrap}
-nav a{color:var(--accent);text-decoration:none;font-size:13px;
-  padding:3px 10px;border:1px solid var(--border);border-radius:4px}
-nav a:hover{background:var(--card)}
-.cov{background:var(--card);border:1px solid var(--border);border-radius:8px;
-  padding:16px 18px;margin-bottom:18px}
-.cov h2{font-size:15px;font-weight:600;margin-bottom:6px}
-.note{font-size:12px;color:var(--sub);margin-bottom:12px;background:var(--notebg);
-  padding:6px 10px;border-radius:4px;border-left:3px solid var(--accent)}
-.foot-note{font-size:11px;color:var(--sub);margin-top:6px;font-style:italic}
-footer{margin-top:28px;padding-top:10px;border-top:1px solid var(--border);
-  font-size:11px;color:var(--sub)}
-"""
+# ── Markdown assembly ───────────────────────────────────────────────────────
+# Output as .md with inline SVG — more reliable than .html in Obsidian.
+# currentColor adapts to the active Obsidian theme automatically.
 
 
-# ── HTML assembly ───────────────────────────────────────────────────────────
-
-
-def generate_personal_auto_html(db_bands: dict[str, float] | None = None) -> str:
+def generate_personal_auto_md(db_bands: dict[str, float] | None = None) -> str:
     if db_bands is None:
         db_bands = _query_db_intensity()
 
@@ -412,67 +383,68 @@ def generate_personal_auto_html(db_bands: dict[str, float] | None = None) -> str
     except Exception:
         regime_txt = "regime unknown"
 
-    nav = " ".join(
-        f'<a href="#{slug}">{title}</a>'
-        for slug, title, _, _ in _COVERAGES
-    )
     has_bands = any(db_bands.get(q, 0) > 0.2 for q in QUARTERS)
-    foot_note = (
-        "⊕ Amber bands = quarters with elevated liability signal intensity (digest DB materiality scores)."
+    n_bands   = sum(1 for q in QUARTERS if db_bands.get(q, 0) > 0.2)
+    band_note = (
+        f"⊕ Amber bands = {n_bands} quarters with elevated liability signal intensity (DB)."
         if has_bands else
-        "Synthetic index data only — no DB signal overlay yet for this coverage period."
+        "_Synthetic index data — no DB signal overlay yet for this coverage period._"
     )
 
-    sections: list[str] = []
-    for slug, title, series, note in _COVERAGES:
-        chart = _chart_svg(slug, series, db_bands)
-        sections.append(f"""
-<div class="cov" id="{slug}">
-  <h2>{title}</h2>
-  <div class="note">{note}</div>
-  {chart}
-  <p class="foot-note">{foot_note}</p>
-</div>""")
+    nav_links = " · ".join(
+        f"[[#{''.join(c for c in title if c.isalnum() or c in ' ')}|{title.split('(')[0].strip()}]]"
+        for _, title, _, _ in _COVERAGES
+    )
 
-    n_bands = len([q for q in QUARTERS if db_bands.get(q, 0) > 0.2])
-    return f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Personal Auto — Claims Trend Index</title>
-<style>{_CSS}</style>
-</head>
-<body>
-<h1>Personal Auto — Claims Trend Index<span class="regime">{regime_txt}</span></h1>
-<p class="meta">Generated {now} &nbsp;·&nbsp; Synthetic scaffold 2018Q1–2025Q4 (index = 100)
-&nbsp;·&nbsp; Hover dots for quarter values &nbsp;·&nbsp; {n_bands} quarters with DB signal overlay</p>
-<nav>{nav}</nav>
-{"".join(sections)}
-<footer>
-  Synthetic series derived from CAS trend studies, ISO/Verisk industry averages, and published
-  carrier investor supplements. DB intensity bands sourced from digest materiality scores
-  (social_inflation · reserving · commercial_specialty). Replace synthetic series with NAIC
-  Schedule P actuals when Wave 3 actuarial pipeline ships.
-</footer>
-</body>
-</html>"""
+    lines: list[str] = []
+    lines.append(f"# Personal Auto — Claims Trend Index")
+    lines.append(f"")
+    lines.append(f"> Generated {now} · {regime_txt} · Synthetic 2018Q1–2025Q4 (index = 100) · hover dots for values")
+    lines.append(f"")
+    lines.append(f"**Jump to:** {nav_links}")
+    lines.append(f"")
+
+    for slug, title, series, note in _COVERAGES:
+        lines.append(f"---")
+        lines.append(f"")
+        lines.append(f"## {title}")
+        lines.append(f"")
+        lines.append(f"> {note}")
+        lines.append(f"")
+        lines.append(_chart_svg(slug, series, db_bands))
+        lines.append(f"")
+        lines.append(f"_{band_note}_")
+        lines.append(f"")
+
+    lines.append("---")
+    lines.append("")
+    lines.append(
+        "_Synthetic series from CAS trend studies, ISO/Verisk industry averages, and carrier "
+        "investor supplements. Replace with NAIC Schedule P actuals when Wave 3 actuarial "
+        "pipeline ships._"
+    )
+    return "\n".join(lines)
 
 
 # ── Write entry point ───────────────────────────────────────────────────────
 
 
 def write_viz_pages(open_after: bool = False) -> list[Path]:
-    """Generate HTML viz pages into the Obsidian vault. Returns paths written."""
+    """Generate markdown viz pages into the Obsidian vault. Returns paths written."""
     from digest.obsidian import Paths
 
     paths = Paths.resolve()
     viz_dir = paths.digest_root / "Viz"
     viz_dir.mkdir(parents=True, exist_ok=True)
 
+    # Remove stale .html file if present from the earlier approach
+    stale = viz_dir / "Personal Auto.html"
+    if stale.exists():
+        stale.unlink()
+
     db_bands = _query_db_intensity()
-    out = viz_dir / "Personal Auto.html"
-    out.write_text(generate_personal_auto_html(db_bands), encoding="utf-8")
+    out = viz_dir / "Personal Auto.md"
+    out.write_text(generate_personal_auto_md(db_bands), encoding="utf-8")
 
     if open_after and sys.platform == "darwin":
         subprocess.run(["open", str(out)], check=False)
