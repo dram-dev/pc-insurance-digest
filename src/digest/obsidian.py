@@ -333,6 +333,68 @@ def _render_summary_item(row: sqlite3.Row) -> str:
     return "\n".join(lines)
 
 
+def _render_regime_callout(regime) -> str:
+    """One-block summary of the current PC two-axis regime."""
+    cycle = regime.market_cycle.replace("_", " ").title()
+    cat   = regime.cat_load.replace("_", " ").title()
+    src   = regime.source
+    note  = "" if src == "detector" else f" _(source: {src})_"
+    lines = [
+        "> [!abstract]+ 📡 P&C Regime",
+        f"> **Market cycle:** {cycle}  ·  **CAT load:** {cat}  ·  **Multiplier:** ×{regime.multiplier:.2f}{note}",
+    ]
+    market_judgment = (regime.evidence or {}).get("market_judgment", {})
+    evidence_txt = market_judgment.get("evidence") if isinstance(market_judgment, dict) else None
+    if evidence_txt:
+        lines.append(f"> _{evidence_txt}_")
+    return "\n".join(lines)
+
+
+def _render_leaderboard_item(row: sqlite3.Row, rank: int) -> str:
+    title = _safe(row["title"]) or "(untitled)"
+    url   = _safe(row["url"])
+    slug  = _safe(_row_get(row, "topic")) or "other"
+    score = row["score"] if "score" in row.keys() else None
+    title_display = (
+        title.replace("\n", " ").replace("|", "│")
+             .replace("[", "(").replace("]", ")")[:110]
+    )
+    link = f"[{title_display}]({url})" if url else title_display
+    score_part = f"`⭐ {float(score):.2f}`" if score is not None else ""
+    return f"{rank}. **{link}**  ·  `{topic_label(slug)}`  ·  {score_part}  ·  {_chat_link(row)}"
+
+
+def _render_leaderboard_section(rows: list, header: str, intro: str | None = None) -> list[str]:
+    if not rows:
+        return []
+    out = [f"## {header}", ""]
+    if intro:
+        out.append(f"_{intro}_")
+        out.append("")
+    for i, row in enumerate(rows, 1):
+        out.append(_render_leaderboard_item(row, i))
+    out.append("")
+    return out
+
+
+def _render_source_quality_table(rows: list) -> list[str]:
+    if not rows:
+        return []
+    out = ["## 📊 Signal Quality by Source", "",
+           "_Which feeds earned their keep this week — average leaderboard score by source._", "",
+           "| Source | Items | Avg score | Max score |",
+           "|---|---:|---:|---:|"]
+    for r in rows:
+        try:
+            avg = float(r["avg_score"])
+            mx  = float(r["max_score"])
+        except (TypeError, ValueError):
+            continue
+        out.append(f"| {r['source']} | {r['n']} | {avg:.2f} | {mx:.2f} |")
+    out.append("")
+    return out
+
+
 def _render_unsummarized_item(row: sqlite3.Row) -> str:
     """One-line bullet for kept-but-not-summarized items."""
     title  = _safe(row["title"]) or "(untitled)"
@@ -361,11 +423,17 @@ def _group_by_topic(rows: list[sqlite3.Row]) -> dict[str, list[sqlite3.Row]]:
 def render_daily_note(
     date_iso: str,
     market_snapshot_md: str = "",
+    regime=None,
+    top_signals: list | None = None,
 ) -> tuple[str, list[int]]:
     """Build the markdown for a daily note. Returns (text, list of item IDs touched).
 
     market_snapshot_md: pre-rendered ## Market Snapshot section (Obsidian Charts
-    blocks + PNG embed). Pass empty string to omit the section.
+        blocks + PNG embed). Pass empty string to omit the section.
+    regime:        optional RegimeSignal — if provided, renders a callout block
+        near the top of the daily note.
+    top_signals:   optional list of rows (top_signal_scores output) — if provided,
+        renders a "Top Signals" leaderboard section above the topic groups.
     """
     bundle = db.items_for_publish(date_iso)
     summarized = bundle["summarized"]
@@ -391,8 +459,10 @@ def render_daily_note(
     lines.append(f"# Digest — {date_iso}")
     lines.append("")
 
-    # Wave 1 P&C: no regime callout yet (regime detector lands in Wave 2).
-    # Wave 1 P&C: no market snapshot yet (chart features deferred).
+    # ── Regime callout (Wave 2) ──────────────────────────────────────────
+    if regime is not None:
+        lines.append(_render_regime_callout(regime))
+        lines.append("")
 
     # ── Market Snapshot (charts) ─────────────────────────────────────────
     if market_snapshot_md:
@@ -428,6 +498,14 @@ def render_daily_note(
                     lines.append(">")
                     lines.append(f"> {insight}")
                 lines.append("")
+
+    # ── Top signals leaderboard (Wave 2) ─────────────────────────────
+    if top_signals:
+        lines.extend(_render_leaderboard_section(
+            top_signals,
+            header="🏆 Top Signals",
+            intro="Highest-scored items by leaderboard formula (source × regime × topic × recency × materiality).",
+        ))
 
     # ── Clipped-for-investigation section (always on top) ────────────
     if clipped_rows:
@@ -488,9 +566,32 @@ def write_daily_note(date_iso: str, paths: Paths) -> tuple[Path, int]:
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date_iso):
         raise ValueError(f"date_iso must be YYYY-MM-DD, got: {date_iso!r}")
 
-    # Wave 1: no market snapshot charts. Pass empty string; charts arrive in
-    # Wave 2 alongside the cat-load tracker.
-    text, item_ids = render_daily_note(date_iso, market_snapshot_md="")
+    # Wave 2: pull regime + top-5 leaderboard so the daily note has the
+    # P&C two-axis multiplier in plain sight.
+    try:
+        from digest.regime import current_regime
+        regime = current_regime()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("daily: regime lookup failed (%s); rendering without callout", exc)
+        regime = None
+
+    try:
+        # Top signals ingested in last 36h — covers both AM and PM runs without
+        # double-counting prior days' winners.
+        top_signals = db.top_signal_scores(
+            limit=5,
+            since_iso=(datetime.now(timezone.utc) - timedelta(hours=36)).isoformat(),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("daily: leaderboard fetch failed (%s); omitting top signals", exc)
+        top_signals = []
+
+    text, item_ids = render_daily_note(
+        date_iso,
+        market_snapshot_md="",
+        regime=regime,
+        top_signals=top_signals,
+    )
     target = paths.daily_dir / f"{date_iso}.md"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(text, encoding="utf-8")
@@ -703,6 +804,8 @@ def render_weekly_note(
     synthesis: dict,
     rows: list[sqlite3.Row],
     regime_md: str | None = None,
+    top_signals: list | None = None,
+    source_quality: list | None = None,
 ) -> str:
     """Build the Markdown for a weekly digest note."""
     period = f"{monday.isoformat()} – {sunday.isoformat()}"
@@ -724,6 +827,18 @@ def render_weekly_note(
     if not rows:
         lines.append("_No summarized items this week._")
         return "\n".join(lines).rstrip() + "\n"
+
+    # ── Top 15 signals of the week (Wave 2) ──────────────────────────
+    if top_signals:
+        lines.extend(_render_leaderboard_section(
+            top_signals,
+            header="🏆 Top 15 Signals This Week",
+            intro="Ranked by leaderboard formula across all items ingested this week.",
+        ))
+
+    # ── Per-source signal quality (Wave 2) ───────────────────────────
+    if source_quality:
+        lines.extend(_render_source_quality_table(source_quality))
 
     # ── Themes ──────────────────────────────────────────────────────
     themes = synthesis.get("themes") or []
@@ -829,7 +944,32 @@ def publish_weekly(date_iso: str | None = None) -> dict:
     paths = Paths.resolve()
     paths.ensure()
 
-    text = render_weekly_note(week_iso, monday, sunday, {}, rows, regime_md=None)
+    # Wave 2: regime + top-15 leaderboard + per-source quality
+    regime_md = None
+    try:
+        from digest.regime import current_regime
+        regime_md = _render_regime_callout(current_regime())
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("weekly: regime lookup failed (%s)", exc)
+
+    try:
+        top_signals = db.top_signal_scores(limit=15, since_iso=monday.isoformat())
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("weekly: leaderboard fetch failed (%s)", exc)
+        top_signals = []
+
+    try:
+        source_quality = db.signal_quality_by_source(since_iso=monday.isoformat())
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("weekly: source-quality fetch failed (%s)", exc)
+        source_quality = []
+
+    text = render_weekly_note(
+        week_iso, monday, sunday, {}, rows,
+        regime_md=regime_md,
+        top_signals=top_signals,
+        source_quality=source_quality,
+    )
     target = paths.weekly_dir / f"{week_iso}.md"
     target.write_text(text, encoding="utf-8")
     logger.info("obsidian: wrote weekly %s (%d items)", target.name, len(rows))

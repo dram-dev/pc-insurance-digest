@@ -169,10 +169,12 @@ def summarize(limit: int | None) -> None:
 @click.option("--run-type", default="manual", help="Tag for run_log (am/pm/manual)")
 @click.option("--skip-publish", is_flag=True, help="Don't write to Obsidian (debug)")
 def pipeline(run_type: str, skip_publish: bool) -> None:
-    """Full pipeline: ingest → triage → summarize → publish."""
+    """Full pipeline: ingest → triage → summarize → regime → signals → publish."""
     from digest.triage import run_triage
     from digest.summarize import run_summarize
     from digest.obsidian import publish as obs_publish
+    from digest.regime import compute_regime, is_stale, current_regime
+    from digest.signals import run_signals
 
     db.init_db()
 
@@ -197,10 +199,28 @@ def pipeline(run_type: str, skip_publish: bool) -> None:
         f"  [green]✓[/green] succeeded={s['succeeded']} failed={s['failed']} ready={s['ready']}"
     )
 
+    console.rule("[bold cyan]stage 4: regime")
+    try:
+        if is_stale():
+            r = compute_regime()
+            console.print(f"  [green]✓[/green] recomputed: {r.summary_line()}")
+        else:
+            r = current_regime()
+            console.print(f"  [dim]✓ cached:[/dim] {r.summary_line()}")
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"  [red]✗[/red] regime failed: {exc}")
+
+    console.rule("[bold cyan]stage 5: signals")
+    try:
+        sig = run_signals()
+        console.print(f"  [green]✓[/green] scored={sig['scored']}")
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"  [red]✗[/red] signals failed: {exc}")
+
     if skip_publish:
-        console.rule("[bold yellow]stage 4: publish (skipped)")
+        console.rule("[bold yellow]stage 6: publish (skipped)")
         return
-    console.rule("[bold cyan]stage 4: publish")
+    console.rule("[bold cyan]stage 6: publish")
     try:
         result = obs_publish()
         console.print(
@@ -210,6 +230,60 @@ def pipeline(run_type: str, skip_publish: bool) -> None:
         console.print(f"  [dim]→ {result['daily_path']}[/dim]")
     except Exception as exc:  # noqa: BLE001
         console.print(f"  [red]✗[/red] publish failed: {exc}")
+
+
+@main.command()
+@click.option("--force", is_flag=True, help="Recompute even if last signal < 72h old")
+def regime(force: bool) -> None:
+    """Compute or display the current PC two-axis regime (market_cycle × cat_load)."""
+    from digest.regime import compute_regime, current_regime, is_stale
+
+    db.init_db()
+    if force or is_stale():
+        console.rule("[bold cyan]regime: recompute")
+        r = compute_regime(force=force)
+    else:
+        console.rule("[bold cyan]regime: cached")
+        r = current_regime()
+    console.print(f"  {r.summary_line()}")
+    console.print(f"  [dim]as_of={r.as_of}  source={r.source}[/dim]")
+    market_judgment = (r.evidence or {}).get("market_judgment", {})
+    if isinstance(market_judgment, dict) and market_judgment.get("evidence"):
+        console.print(f"  [dim]evidence: {market_judgment['evidence']}[/dim]")
+
+
+@main.command()
+@click.option("--limit", default=10, help="Top-N to display")
+@click.option("--recompute/--no-recompute", default=True,
+              help="Recompute scores before displaying (default: on)")
+def signals(limit: int, recompute: bool) -> None:
+    """Score every kept+summarized item and display the top-N leaderboard."""
+    from digest.signals import run_signals
+
+    db.init_db()
+    if recompute:
+        console.rule("[bold cyan]signals: rescore")
+        counts = run_signals()
+        console.print(f"  [green]✓[/green] scored={counts['scored']}")
+
+    rows = db.top_signal_scores(limit=limit)
+    if not rows:
+        console.print("[yellow]No scored items yet. Run `digest pipeline` or `digest signals`.[/yellow]")
+        return
+
+    table = Table(title=f"Top {limit} signals")
+    table.add_column("Score", justify="right")
+    table.add_column("Topic")
+    table.add_column("Source")
+    table.add_column("Title")
+    for r in rows:
+        table.add_row(
+            f"{r['score']:.2f}",
+            (r["topic"] or "")[:20],
+            (r["source"] or "")[:10],
+            (r["title"] or "")[:70],
+        )
+    console.print(table)
 
 
 @main.command()
