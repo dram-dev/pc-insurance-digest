@@ -50,7 +50,7 @@ Each is committed on `master` and pushed to
 | NIFC ingestor (`nifc.py`) — WFIGS ArcGIS API (InciWeb RSS dead); active wildfires ≥1000 ac, <100% contained | ✅ |
 | Market-cycle regime detector (hard/soft) + CAT-load regime detector — two-dimensional, multiplied: see "Regime concept" below | ⬜ deferred |
 | Signal leaderboard (port from macro digest's `signals.py`) | ⬜ deferred |
-| Tighten triage prompt to auto-discard adjacent-but-not-insurance items (China NHC vs US NHC, generic travel-volume, road-funding policy) | ⬜ deferred |
+| Regulatory Sonar lite — `burden_direction` / `burden_intensity` triage fields, `burden_intensity_boost` in leaderboard scoring, daily-note callout on high-intensity items. See "Regulatory Sonar" below. | ⬜ deferred |
 
 **Wave 3:**
 - AM Best rating actions (currently a Google News site:ambest.com proxy
@@ -59,10 +59,17 @@ Each is committed on `master` and pushed to
   inconsistent schemas)
 - Lloyd's / Bermuda reinsurance market (Artemis ILS data, syndicate
   results)
+- Tighten triage prompt to auto-discard adjacent-but-not-insurance items
+  (China NHC vs US NHC, generic travel-volume, road-funding policy)
+- **Regulatory Sonar full** — `src/digest/regulatory_sonar.py` periodic
+  detector (3-day cadence), LegiScan API ingestor for state bills,
+  per-state burden-pressure index, weekly note section, daily callout
+  on trend-fire. See "Regulatory Sonar" below.
 
 After Wave 2 lands, extract the shared core into a `digest-core`
 framework package; PC Digest and macro-ai-digest become thin domain
-plug-ins.
+plug-ins. Trigger: all 3 Wave 2 items shipped + **1 week max** of daily
+dogfooding before cutting seams.
 
 ## Locked design decisions
 
@@ -124,6 +131,78 @@ Without this cap, broad-keyword Google News feeds drown out substantive
 P&C content. Items dropped by the cap remain triage=keep and appear in
 the kept-unsummarized section of the daily note. Add new caps by editing
 this dict.
+
+### Topic priority emphasis (locked — user preference)
+
+**Personal lines auto + homeowners/fire is the highest-priority topic
+signal.** This applies across the pipeline:
+
+- **Scoring (Wave 2 leaderboard):** `topic_priority_boost = {"personal_lines": 1.3}`
+  applied as the last factor in the score formula
+  (`source_mult × regime_mult × topic_relevance × recency × llm_judgment × topic_priority_boost`).
+- **Topic ordering:** `personal_lines` lifted near top of `TOPIC_ORDER` in
+  [src/digest/obsidian.py](src/digest/obsidian.py). Only `cat_event`
+  precedes it, and only when regime = `post_major_event` or `active_season`.
+- **Triage prefer-keep:** prompt explicitly favors personal auto pricing,
+  homeowners pricing, wildfire-driven market exits (CA/FL/LA),
+  telematics rollouts, FAIR Plan / state insurer-of-last-resort changes,
+  fire-line reinsurance.
+- **LLM materiality (Wave 2):** Qwen3.5 judgment prompt weights personal
+  auto + homeowners/fire as high-relevance.
+- **Ingest gap-check:** state DOI bulletins (CA, FL, LA), state
+  insurer-of-last-resort feeds, APCIA/NAII statements. Likely needs
+  Google News `site:` proxies until SERFF (Wave 3).
+
+**Fire-content topic routing** (avoid duplication):
+- Wildfire as event (acres, evac, deaths) → `cat_event`
+- Wildfire's market response (exits, rate hikes, FAIR Plan growth) → `personal_lines`
+- Long-run physical risk / ESG framing → `climate_risk`
+
+### Regulatory Sonar (Wave 2 lite + Wave 3 full)
+
+Legislative and regulatory environment is extremely impactful in P&C.
+The sonar continuously detects **negative oversight trends that put
+burdens on insurers** — rate suppression, expanded claims liability
+statutes, mandated coverage, anti-redlining underwriting restrictions,
+climate mandates, FAIR Plan assessment expansions, federal encroachment.
+
+**Schema (Wave 2 lite):**
+Two new triage output fields, populated by LLM for `regulatory_rate`
+items only (null elsewhere):
+- `burden_direction`: `increasing | neutral | decreasing`
+- `burden_intensity`: `high | medium | low`
+
+These are proper columns (3-way classifications, not flags), so they
+ship with a one-time SQLite migration.
+
+**Scoring (Wave 2 lite):**
+Adds `burden_intensity_boost` as the last factor in the leaderboard
+formula — `{high: 1.3, medium: 1.1, low: 1.0, null: 1.0}`. High-intensity
+oversight items rank above routine filings.
+
+**Detector (Wave 3 full — `src/digest/regulatory_sonar.py`):**
+- Cadence: 3 days, triggered from AM job if last run > 72h.
+- Reads trailing 90d of `regulatory_rate` items + their burden tags.
+- Computes per-state + federal **burden pressure index**
+  (intensity-weighted count).
+- Trend fires when a state's 30d window exceeds its 90d baseline.
+- LLM judgment confirms significance (no fixed-baseline noise).
+
+**Sources for sonar ingest:**
+- LegiScan API (free tier) — state bill metadata
+- State DOI bulletins (CA, FL, LA priority)
+- NAIC committee minutes + actions
+- NCOIL bulletins
+- APCIA / NAMIC trade-body alerts
+- Federal: FIO, Treasury, CFPB
+
+Scope is US state + federal only. No international.
+
+**Output surfaces:**
+- Daily note: one-liner callout when a high-intensity item is ingested
+  (Wave 2 lite); fuller callout when sonar detector fires (Wave 3).
+- Weekly note: "Regulatory Sonar — top burden trends, by state, with
+  citations" section (Wave 3).
 
 ### Regime concept (Wave 2, two-dimensional)
 
