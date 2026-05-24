@@ -256,7 +256,7 @@ def _call_haiku_api(user_prompt: str) -> str:
         },
         json={
             "model": "claude-haiku-4-5-20251001",
-            "max_tokens": 600,
+            "max_tokens": 800,
             "system": [{
                 "type": "text",
                 "text": SYSTEM_PROMPT,
@@ -308,7 +308,7 @@ def _call_local_qwen(user_prompt: str) -> str:
             "prompt": user_prompt,
             "stream": False,
             "format": "json",
-            "options": {"temperature": 0.2, "num_predict": 600, "num_ctx": 8192},
+            "options": {"temperature": 0.2, "num_predict": 800, "num_ctx": 8192},
         },
         timeout=settings.summarizer_timeout_sec,
     )
@@ -337,7 +337,7 @@ def _call_mlx_local(user_prompt: str) -> str:
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": user_prompt},
                 ],
-                "max_tokens": 600,
+                "max_tokens": 800,
                 "temperature": 0.2,
                 "chat_template_kwargs": {"enable_thinking": False},
             },
