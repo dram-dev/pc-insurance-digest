@@ -47,15 +47,28 @@ class SummaryOutput:
 
 # ── Prompt construction ────────────────────────────────────────────────
 
-SYSTEM_PROMPT = """You are a personal research analyst. The reader is a senior data/AI leader in financial services with deep interest in: Fed policy & markets, China macro/geopolitics, AI thinkers (Karpathy, Mollick, Willison, Weng, Lambert, Dwarkesh), AI capex by hyperscalers, AI business applications, AI semis, and data-viz inspiration.
+SYSTEM_PROMPT = """You are a personal research analyst. The reader spans four personas, served by one digest:
+industry analyst, public insurer investor, P&C underwriter/risk professional, and broker / market-intelligence reader.
+Focus is US P&C insurance and financial services: catastrophe events, reinsurance cycle, regulation, underwriting results,
+reserves, M&A and capital, climate risk, cyber, social inflation, insurtech & AI, distribution, personal lines,
+commercial/specialty, rates & cost of capital, supply chain, analytics & modeling.
 
-For each item, you produce a JSON object with five fields:
+For each item, produce a JSON object with five fields:
 
-1. "topic": one of [fed_markets, china, ai_thinkers, ai_capex, ai_business_apps, ai_semis, data_viz, other]
-2. "summary": 2-3 sentences. State the actual content — what was reported, claimed, or shown. No filler like "this article discusses..."
-3. "why_it_matters": 1-2 sentences. Frame the implication FOR THIS READER given their interests. Be specific. Bad: "this is important for AI." Good: "Suggests hyperscaler 2026 capex guides may surprise to the upside, with implications for NVDA Q3 expectations."
-4. "confidence": "low" | "medium" | "high" — how reliable is this signal? High = primary source (filing, FRED print, named expert). Medium = reputable secondary reporting. Low = social-media speculation, anonymous posts, single-source claims.
-5. "see_also": a list of 0-3 short phrases describing topics or events from the user's domain that this item connects to. Examples: "2s10s spread inversion", "Microsoft Q1 capex guide", "Karpathy Software 3.0 thesis". Empty list is acceptable.
+1. "topic": exactly one of [cat_event, reinsurance_cycle, regulatory_rate, underwriting_results, reserving, ma_capital,
+   climate_risk, cyber, social_inflation, ai_insurtech, distribution, personal_lines, commercial_specialty,
+   macro_linkage, rates_cost_of_capital, supply_chain, analytics_modeling]
+2. "summary": 2-3 sentences. State the actual content — what was reported, filed, modeled, or claimed. No filler.
+3. "why_it_matters": 1-2 sentences. Frame the implication for the P&C reader: P&L impact, capital, capacity, reserves,
+   cycle direction, regulatory exposure, or distribution shift. Be specific. Bad: "important for insurers."
+   Good: "Adverse development on 2022 GL accident year suggests TRV reserve guide may be light vs. consensus."
+4. "confidence": "low" | "medium" | "high" — how reliable is the signal?
+   High = primary source (insurer 10-K/8-K, NHC advisory, AM Best rating action, NAIC release, named industry expert).
+   Medium = reputable secondary reporting (Insurance Journal, Reinsurance News, Artemis, WSJ/FT/Bloomberg insurance desk).
+   Low = social-media speculation, anonymous posts, single-source claims.
+5. "see_also": a list of 0-3 short phrases describing connected events, peers, or themes. Examples:
+   "FL hurricane CAT load", "1/1 reinsurance renewal pricing", "MMC Q3 organic growth", "TPLF disclosure rule".
+   Empty list is acceptable.
 
 Respond with ONLY a single JSON object — no preamble, no markdown fences, no commentary."""
 
@@ -118,15 +131,20 @@ def _extract_json(raw: str) -> dict[str, Any] | None:
 
 
 def _normalize_summary(parsed: dict[str, Any], fallback_topic: str) -> SummaryOutput:
+    # Keep in sync with TOPICS in digest/triage.py
     valid_topics = {
-        "fed_markets", "china", "ai_thinkers", "ai_capex",
-        "ai_business_apps", "ai_semis", "data_viz", "other",
+        "cat_event", "reinsurance_cycle", "regulatory_rate", "underwriting_results",
+        "reserving", "ma_capital", "climate_risk", "cyber", "social_inflation",
+        "ai_insurtech", "distribution", "personal_lines", "commercial_specialty",
+        "macro_linkage", "rates_cost_of_capital", "supply_chain", "analytics_modeling",
     }
     valid_confidence = {"low", "medium", "high"}
 
     topic = str(parsed.get("topic", fallback_topic)).lower().strip()
     if topic not in valid_topics:
-        topic = fallback_topic if fallback_topic in valid_topics else "other"
+        # Prefer triage's classification; otherwise default to macro_linkage
+        # (broader catchall than the old "other"; better than mislabeling).
+        topic = fallback_topic if fallback_topic in valid_topics else "macro_linkage"
 
     confidence = str(parsed.get("confidence", "medium")).lower().strip()
     if confidence not in valid_confidence:
