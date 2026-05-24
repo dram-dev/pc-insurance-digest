@@ -138,6 +138,37 @@ MIGRATIONS = [
         UNIQUE(event_type, event_date, title)
     )""",
     "CREATE INDEX IF NOT EXISTS idx_events_date ON upcoming_events(event_date)",
+    # Wave 2: PC two-axis regime detector (market_cycle × cat_load)
+    """CREATE TABLE IF NOT EXISTS regime_signals (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        as_of             TEXT NOT NULL,
+        market_cycle      TEXT NOT NULL,
+        cat_load          TEXT NOT NULL,
+        market_cycle_mult REAL NOT NULL,
+        cat_load_mult     REAL NOT NULL,
+        multiplier        REAL NOT NULL,
+        evidence_json     TEXT,
+        source            TEXT NOT NULL DEFAULT 'detector'
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_regime_signals_as_of ON regime_signals(as_of DESC)",
+    # Wave 2: per-item leaderboard score history
+    """CREATE TABLE IF NOT EXISTS signal_scores (
+        item_id          INTEGER NOT NULL,
+        computed_at      TEXT NOT NULL DEFAULT (datetime('now')),
+        score            REAL NOT NULL,
+        source_mult      REAL,
+        regime_mult      REAL,
+        topic_relevance  REAL,
+        recency          REAL,
+        llm_judgment     REAL,
+        topic_boost      REAL,
+        burden_boost     REAL,
+        PRIMARY KEY(item_id, computed_at)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_signal_scores_score ON signal_scores(score DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_signal_scores_computed ON signal_scores(computed_at DESC)",
+    # Wave 2: materiality score from summarizer (feeds llm_judgment factor)
+    "ALTER TABLE items ADD COLUMN materiality_score REAL",
 ]
 
 
@@ -264,7 +295,7 @@ def items_for_signals() -> list[sqlite3.Row]:
         SELECT id, source, url, title, author,
                published_at, ingested_at,
                topic, summary, why_it_matters, confidence, see_also,
-               triage_score, metadata_json,
+               triage_score, materiality_score, metadata_json,
                ensemble_consensus, ensemble_dispersion, cluster_id,
                sentiment_label, sentiment_score
         FROM items
@@ -1057,3 +1088,218 @@ def mark_published(item_ids: list[int]) -> None:
     """
     with get_conn() as conn:
         conn.execute(sql, tuple(item_ids))
+
+
+# ── Wave 2: PC regime detector (two-axis: market_cycle × cat_load) ────
+
+
+def upsert_regime_signal(
+    as_of: str,
+    market_cycle: str,
+    cat_load: str,
+    market_cycle_mult: float,
+    cat_load_mult: float,
+    multiplier: float,
+    evidence_json: str,
+    source: str = "detector",
+) -> int:
+    """Insert a new regime_signals row. Returns rowid."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO regime_signals
+                 (as_of, market_cycle, cat_load,
+                  market_cycle_mult, cat_load_mult, multiplier,
+                  evidence_json, source)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (as_of, market_cycle, cat_load,
+             market_cycle_mult, cat_load_mult, multiplier,
+             evidence_json, source),
+        )
+        return cur.lastrowid or 0
+
+
+def latest_regime_signal() -> sqlite3.Row | None:
+    """Most recent regime_signals row, or None if none computed yet."""
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM regime_signals ORDER BY as_of DESC LIMIT 1"
+        ).fetchone()
+
+
+def recent_regime_signals(n: int = 3) -> list[sqlite3.Row]:
+    """Most recent N regime_signals rows for hysteresis comparison."""
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM regime_signals ORDER BY as_of DESC LIMIT ?",
+            (n,),
+        ).fetchall()
+
+
+def cat_load_counts(
+    storm_window_days: int = 14,
+    quake_window_days: int = 30,
+) -> dict[str, int]:
+    """Counts that feed the CAT-load detector.
+
+    Returns dict with:
+      - active_nhc: distinct NHC items ingested in last `storm_window_days`
+      - recent_major_eq: USGS items M ≥ 6 ingested in last `quake_window_days`
+      - recent_wildfire: NIFC items in last `storm_window_days`
+    """
+    with get_conn() as conn:
+        active_nhc = conn.execute(
+            "SELECT COUNT(*) FROM items WHERE source='nhc' "
+            "AND ingested_at >= datetime('now', ?)",
+            (f"-{storm_window_days} days",),
+        ).fetchone()[0]
+        recent_major_eq = conn.execute(
+            "SELECT COUNT(*) FROM items WHERE source='usgs' "
+            "AND ingested_at >= datetime('now', ?) "
+            "AND CAST(json_extract(metadata_json, '$.magnitude') AS REAL) >= 6.0",
+            (f"-{quake_window_days} days",),
+        ).fetchone()[0]
+        recent_wildfire = conn.execute(
+            "SELECT COUNT(*) FROM items WHERE source='nifc' "
+            "AND ingested_at >= datetime('now', ?)",
+            (f"-{storm_window_days} days",),
+        ).fetchone()[0]
+    return {
+        "active_nhc":      int(active_nhc or 0),
+        "recent_major_eq": int(recent_major_eq or 0),
+        "recent_wildfire": int(recent_wildfire or 0),
+    }
+
+
+def items_for_market_cycle(window_days: int = 60, limit: int = 80) -> list[sqlite3.Row]:
+    """Trailing-window summarized items in underwriting_results + reinsurance_cycle.
+
+    Used as evidence by the market_cycle LLM judgment call.
+    """
+    sql = """
+        SELECT id, source, title, published_at, ingested_at,
+               topic, summary, why_it_matters
+        FROM items
+        WHERE triage_decision = 'keep'
+          AND summary IS NOT NULL
+          AND topic IN ('underwriting_results', 'reinsurance_cycle')
+          AND ingested_at >= datetime('now', ?)
+        ORDER BY ingested_at DESC
+        LIMIT ?
+    """
+    with get_conn() as conn:
+        return conn.execute(sql, (f"-{window_days} days", limit)).fetchall()
+
+
+# ── Wave 2: signal leaderboard ────────────────────────────────────────
+
+
+def update_materiality(item_id: int, score: float | None) -> None:
+    """Persist the materiality_score from summarize on an item."""
+    if score is None:
+        return
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE items SET materiality_score = ? WHERE id = ?",
+            (float(score), item_id),
+        )
+
+
+def upsert_signal_scores(rows: list[dict]) -> int:
+    """Batch-insert a list of {item_id, score, source_mult, regime_mult, ...}.
+
+    PRIMARY KEY is (item_id, computed_at); pass distinct computed_at values per
+    batch to keep history. Returns row count inserted.
+    """
+    if not rows:
+        return 0
+    sql = """
+        INSERT OR REPLACE INTO signal_scores
+            (item_id, computed_at, score,
+             source_mult, regime_mult, topic_relevance, recency,
+             llm_judgment, topic_boost, burden_boost)
+        VALUES
+            (:item_id, :computed_at, :score,
+             :source_mult, :regime_mult, :topic_relevance, :recency,
+             :llm_judgment, :topic_boost, :burden_boost)
+    """
+    with get_conn() as conn:
+        n = 0
+        for r in rows:
+            cur = conn.execute(sql, r)
+            n += cur.rowcount or 0
+        return n
+
+
+def top_signal_scores(
+    limit: int = 5,
+    since_iso: str | None = None,
+    source_filter: str | None = None,
+) -> list[sqlite3.Row]:
+    """Top-N items by latest score, optionally filtered by ingest date / source.
+
+    Joins items so callers can render titles/summaries directly.
+    """
+    clauses = ["i.triage_decision = 'keep'", "i.summary IS NOT NULL"]
+    params: list = []
+    if since_iso:
+        clauses.append("i.ingested_at >= ?")
+        params.append(since_iso)
+    if source_filter:
+        clauses.append("i.source = ?")
+        params.append(source_filter)
+    where_sql = " AND ".join(clauses)
+
+    sql = f"""
+        WITH latest AS (
+            SELECT item_id, MAX(computed_at) AS computed_at
+            FROM signal_scores
+            GROUP BY item_id
+        )
+        SELECT i.id, i.source, i.title, i.url, i.author, i.published_at,
+               i.topic, i.summary, i.why_it_matters, i.confidence,
+               i.see_also, i.triage_score, i.materiality_score,
+               s.score, s.source_mult, s.regime_mult,
+               s.topic_relevance, s.recency, s.llm_judgment,
+               s.topic_boost, s.burden_boost
+        FROM signal_scores s
+        JOIN latest l ON s.item_id = l.item_id AND s.computed_at = l.computed_at
+        JOIN items   i ON i.id = s.item_id
+        WHERE {where_sql}
+        ORDER BY s.score DESC, i.ingested_at DESC
+        LIMIT ?
+    """
+    params.append(limit)
+    with get_conn() as conn:
+        return conn.execute(sql, params).fetchall()
+
+
+def signal_quality_by_source(since_iso: str | None = None) -> list[sqlite3.Row]:
+    """Per-source aggregate: avg score, item count, since `since_iso` (or all-time).
+
+    Used in the weekly note's 'which feeds earned their keep' table.
+    """
+    clauses = ["i.triage_decision = 'keep'", "i.summary IS NOT NULL"]
+    params: list = []
+    if since_iso:
+        clauses.append("i.ingested_at >= ?")
+        params.append(since_iso)
+    where_sql = " AND ".join(clauses)
+    sql = f"""
+        WITH latest AS (
+            SELECT item_id, MAX(computed_at) AS computed_at
+            FROM signal_scores
+            GROUP BY item_id
+        )
+        SELECT i.source           AS source,
+               COUNT(*)            AS n,
+               AVG(s.score)        AS avg_score,
+               MAX(s.score)        AS max_score
+        FROM signal_scores s
+        JOIN latest l ON s.item_id = l.item_id AND s.computed_at = l.computed_at
+        JOIN items   i ON i.id = s.item_id
+        WHERE {where_sql}
+        GROUP BY i.source
+        ORDER BY avg_score DESC
+    """
+    with get_conn() as conn:
+        return conn.execute(sql, params).fetchall()

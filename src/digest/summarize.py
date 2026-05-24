@@ -43,6 +43,7 @@ class SummaryOutput:
     why_it_matters: str              # 1-2 sentences, user-specific framing
     confidence: str                  # "low" | "medium" | "high"
     see_also: list[str] = field(default_factory=list)
+    materiality: float = 1.0         # 0.5-1.5, feeds Wave 2 leaderboard llm_judgment
 
 
 # ── Prompt construction ────────────────────────────────────────────────
@@ -69,6 +70,14 @@ For each item, produce a JSON object with five fields:
 5. "see_also": a list of 0-3 short phrases describing connected events, peers, or themes. Examples:
    "FL hurricane CAT load", "1/1 reinsurance renewal pricing", "MMC Q3 organic growth", "TPLF disclosure rule".
    Empty list is acceptable.
+6. "materiality": a float in [0.5, 1.5] gauging how material this item is to a P&C reader who
+   prioritizes personal-lines auto and homeowners/fire signal. Anchor your score on these guides:
+     1.5  Severe near-term financial/operational impact (active landfall, major insolvency,
+          sweeping rate suppression in a top-5 state, CA/FL/LA wildfire-driven personal-lines exit).
+     1.2  Notable industry development with multi-carrier or systemic implications.
+     1.0  Standard substantive item — single-carrier action, reinsurer commentary, routine filing.
+     0.8  Marginal — adjacent news, weak primary signal, mostly context.
+     0.5  Barely material — included for completeness, easily skipped.
 
 Respond with ONLY a single JSON object — no preamble, no markdown fences, no commentary."""
 
@@ -166,12 +175,19 @@ def _normalize_summary(parsed: dict[str, Any], fallback_topic: str) -> SummaryOu
         see_also_raw = [see_also_raw]
     see_also = [str(s).strip() for s in see_also_raw if str(s).strip()][:3]
 
+    try:
+        materiality = float(parsed.get("materiality", 1.0))
+    except (TypeError, ValueError):
+        materiality = 1.0
+    materiality = max(0.5, min(1.5, materiality))
+
     return SummaryOutput(
         topic=topic,
         summary=str(parsed.get("summary", "")).strip(),
         why_it_matters=str(parsed.get("why_it_matters", "")).strip(),
         confidence=confidence,
         see_also=see_also,
+        materiality=materiality,
     )
 
 
@@ -490,9 +506,14 @@ def run_summarize(
             )
             return {"ready": len(rows), "succeeded": 0, "failed": 0}
 
-    # Wave 1: no regime framing yet. Wave 2 will reintroduce when the P&C
-    # market-cycle + CAT-load regime detector lands.
-    regime_framing = ""
+    # Wave 2: pull the current regime so the summarizer knows whether we're
+    # in hard-market / post-major-event when scoring materiality.
+    try:
+        from digest.regime import current_regime
+        regime_framing = current_regime().summary_line()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("summarize: regime lookup failed (%s); proceeding without framing", exc)
+        regime_framing = ""
 
     counts = {"ready": len(rows), "succeeded": 0, "failed": 0}
     for row in rows:
@@ -514,11 +535,12 @@ def run_summarize(
                 confidence=output.confidence,
                 see_also=output.see_also,
             )
+            db.update_materiality(item_id, output.materiality)
             output_chars = len(output.summary) + len(output.why_it_matters)
             counts["succeeded"] += 1
             logger.info(
-                "summarize: id=%d topic=%s confidence=%s (%.1fs)",
-                item_id, output.topic, output.confidence,
+                "summarize: id=%d topic=%s confidence=%s materiality=%.2f (%.1fs)",
+                item_id, output.topic, output.confidence, output.materiality,
                 time.perf_counter() - t0,
             )
         except BackendError as exc:
