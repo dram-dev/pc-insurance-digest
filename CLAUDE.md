@@ -1,0 +1,257 @@
+# pc-insurance-digest — Claude context
+
+User nickname for this project: **"PC Digest"** (or "the PC Digest"). The
+sibling project is **macro-ai-digest** ("the macro digest"), at
+[dram-dev/macro-ai-digest](https://github.com/dram-dev/macro-ai-digest).
+
+## What this project is
+
+A curated daily + weekly digest covering **US P&C insurance and financial
+services**. Built by copy-modify from `macro-ai-digest` to deliberately
+prove out a second concrete domain — the divergence between the two will
+later define the seams for a shared `digest-core` framework. **Do not
+pre-design the framework**; wait until Wave 2 of PC Digest is done and
+the actual divergence is visible.
+
+Pipeline shape:
+```
+ingest → triage (Ollama Qwen2.5:14b) → summarize (MLX Qwen3.5-27B) → publish (Obsidian)
+```
+
+Both Ollama and the MLX server are **shared with macro-ai-digest** and
+run as launchd jobs managed by that project. PC Digest only writes its
+own `com.dr.pcdigest.*` jobs.
+
+## Current state — Wave 1 shipped
+
+| Component | Status |
+|---|---|
+| Repo + scaffold (copy-modify from macro-ai-digest) | ✅ |
+| 17-topic P&C taxonomy in triage + summarize | ✅ |
+| 14-insurer EDGAR universe + Python auto-keep hook | ✅ |
+| Trade-press RSS (Insurance Journal, Reinsurance News, Artemis, Carrier Mgmt) + Google News proxies | ✅ |
+| Reddit (r/Insurance, r/Actuary, r/CFP, weather/EQ) + Substack + HN | ✅ |
+| 35% per-topic cap on `ai_insurtech` (configurable in `summarize.py` → `TOPIC_CAP_PCT`) | ✅ |
+| Obsidian publish to `81 P&C Digest/{Daily,Topics,Weekly,_meta}` | ✅ |
+| launchd jobs loaded: `am` 04:00, `pm` 16:00 daily, `weekly` Sat 06:00 | ✅ |
+
+Each is committed on `master` and pushed to
+[github.com/dram-dev/pc-insurance-digest](https://github.com/dram-dev/pc-insurance-digest).
+
+## Wave 2 / 3 roadmap (deferred — do not implement without user OK)
+
+**Wave 2:**
+- NOAA/NHC/USGS catastrophe event ingestors (replace the Google News
+  `google_news_nhc_storms` proxy with direct feeds)
+- Market-cycle regime detector (hard/soft) + CAT-load regime detector —
+  two-dimensional, multiplied: see "Regime concept" below
+- Signal leaderboard (port from macro digest's `signals.py`)
+- Tighten triage prompt to auto-discard adjacent-but-not-insurance items
+  (China NHC vs US NHC, generic travel-volume, road-funding policy)
+
+**Wave 3:**
+- AM Best rating actions (currently a Google News site:ambest.com proxy
+  because the direct RSS is Radware-blocked — try a real browser UA)
+- NAIC + state DOI rate filings via SERFF (the hardest — state-by-state,
+  inconsistent schemas)
+- Lloyd's / Bermuda reinsurance market (Artemis ILS data, syndicate
+  results)
+
+After Wave 2 lands, extract the shared core into a `digest-core`
+framework package; PC Digest and macro-ai-digest become thin domain
+plug-ins.
+
+## Locked design decisions
+
+### Topic taxonomy (17 topics + 1 sub-tag)
+
+Canonical list lives in [src/digest/triage.py](src/digest/triage.py)
+`TOPICS` and must stay in sync with `valid_topics` in
+[src/digest/summarize.py](src/digest/summarize.py) and `TOPIC_LABELS`,
+`TOPIC_CALLOUT`, `TOPIC_EMOJI`, `TOPIC_ORDER` in
+[src/digest/obsidian.py](src/digest/obsidian.py).
+
+1. `cat_event` — active named storms, EQ, severe convective storms, wildfire, flood
+2. `reinsurance_cycle` — 1/1, 4/1, 7/1 renewals; capacity; retro; ILS
+3. `regulatory_rate` — state DOI rate filings (SERFF), NAIC actions, FIO/Treasury
+4. `underwriting_results` — combined ratio, loss/expense ratios
+5. `reserving` — adverse/favorable development, IBNR, asbestos/PFAS
+6. `ma_capital` — insurer M&A, IPO, raises, buybacks, dividends
+7. `climate_risk` — physical & transition risk, ESG, market exits (CA/FL/LA)
+8. `cyber` — cyber insurance market, breach impact, AI as attack surface
+9. `social_inflation` — nuclear verdicts, severity, tort reform
+   *(sub-tag `litigation_tplf` for TPLF funders, MDLs, attorney economics)*
+10. `ai_insurtech` — AI in UW/claims, insurtech funding, MGAs
+11. `distribution` — broker M&A (MMC/AON/WTW/BRO/AJG/RYAN), agency networks
+12. `personal_lines` — auto/home pricing, telematics, market exits
+13. `commercial_specialty` — E&S, workers comp, D&O, E&O, environmental
+14. `macro_linkage` — CPI→loss costs, FX, geopolitics, energy→CAT
+15. `rates_cost_of_capital` — rate impact on investment income, debt, cat bonds
+16. `supply_chain` — auto parts/labor, contractor capacity, medical/Rx
+17. `analytics_modeling` — cat models (RMS/AIR/Verisk/KCC), pricing, CAS
+
+### Source multipliers (signal scoring)
+
+| Source | Mult |
+|---|---:|
+| EDGAR 8-K (insurers) · NOAA/NHC active advisories | **1.3** |
+| AM Best · State DOI (SERFF) · NAIC | **1.2** |
+| Lloyd's / Bermuda updates | **1.1** |
+| Insurance Journal · Reinsurance News · Artemis · Carrier Mgmt | **1.0** |
+| WSJ/FT/Bloomberg insurance desk · Substack | **0.9** |
+| Reddit (r/Insurance etc.) | **0.7** |
+| HN | **0.6** |
+
+### Triage prompt rules (locked)
+
+- **Hybrid auto-keep:** Python at triage entry hard-enforces EDGAR 8-K/10-K/10-Q
+  from the 14 named insurer tickers (cannot silently fail on material disclosures).
+  All other auto-keep rules live in the prompt for the model to handle in context.
+- **sub_tags is a list of strings** (`[]` or `["litigation_tplf"]`) — future-proof
+  schema avoids migration when new sub-tags are added.
+- **`reason` ≤ 50 words** — enough room for judgment calls without bloat.
+
+### Per-topic share caps
+
+Lives in [src/digest/summarize.py](src/digest/summarize.py) `TOPIC_CAP_PCT`:
+```python
+TOPIC_CAP_PCT = {"ai_insurtech": 0.35}
+```
+Without this cap, broad-keyword Google News feeds drown out substantive
+P&C content. Items dropped by the cap remain triage=keep and appear in
+the kept-unsummarized section of the daily note. Add new caps by editing
+this dict.
+
+### Regime concept (Wave 2, two-dimensional)
+
+PC Digest has two regime axes (vs. macro digest's one):
+- **Market cycle:** hard_market (1.20×) · transitioning_to_hard (1.10×) ·
+  stable (1.00×) · transitioning_to_soft (0.95×) · soft_market (0.85×)
+- **CAT load:** low_season (1.00×) · active_season (1.10×) · post_major_event (1.20×)
+- Combined regime multiplier = `market_cycle × cat_load`
+
+Detector inputs (when implemented): combined-ratio trend, capacity narrative
+from trade press, ILS pricing, active NHC advisories, recent EQ M ≥ 6.0.
+
+### MLX scheduling (no contention with macro digest)
+
+| Job | Macro time | PC Digest time |
+|---|---|---|
+| `am` daily | 01:00 | **04:00** |
+| `pm` daily | 13:00 | **16:00** |
+| `weekly` | Fri 19:00 | **Sat 06:00** |
+
+Both projects POST to the single shared `mlx_lm.server` on localhost:8080
+(managed by macro digest's `com.dr.mlx.server` launchd job, KeepAlive).
+Stagger is 3 h on daily, full overnight gap before the weekly.
+
+Future bulletproof deconfliction (deferred): lockfile at `/tmp/mlx.lock`
+checked in `summarize.py`.
+
+### Insurer ticker universe (Wave 1)
+
+Lives in [config/edgar_tickers.yaml](config/edgar_tickers.yaml) AND as
+the Python set `INSURER_TICKERS_WAVE1` in
+[src/digest/triage.py](src/digest/triage.py). **Keep them in sync** —
+the triage Python auto-keep hook reads the Python set directly.
+
+TRV · ALL · PGR · CB · HIG · AIG · MET · PRU · RNR · EG · AXS · MMC · AON · WTW
+
+### Obsidian output
+
+Vault is **shared with macro digest** at `OBSIDIAN_VAULT_PATH` (set in
+`.env`). PC Digest writes to **`81 P&C Digest/`** (Johnny Decimal sibling
+to macro digest's `80 Digest/`).
+
+Folder layout:
+- `Daily/YYYY-MM-DD.md` — one file per day, regenerated each publish
+- `Topics/<Topic Label>.md` — one file per topic with summarized items,
+  upserted by ID
+- `Weekly/<YYYY-WW>.md` — Saturday weekly rollup (Wave 1: items grouped
+  by topic; Wave 2 will add synthesis)
+- `_meta/Run Log.md` — append-only operations log
+
+## Known issues / debt
+
+- **6 trade-press RSS feeds dead or bot-blocked** (insurance_erm,
+  pc360, trading_risk, intelligent_insurer, am_best_news, naic_news).
+  Wave 1 replaced them with Google News `site:` and keyword proxies. AM
+  Best especially worth revisiting with a real browser UA.
+- **Triage prompt is too permissive on edge cases**: Chinese NHC (not
+  Hurricane Center) slipped through, generic travel-volume articles,
+  road-funding policy, AI model PR. Hand-curated dropouts have been
+  applied; systemic fix in Wave 2.
+- **`AI & Insurtech` skews high** even with the 35% cap. The
+  `google_news_insurtech` query is broad — narrow it for Wave 2 (require
+  insurance-specific qualifier, exclude general AI model releases).
+- **Weekly note is bare**: Wave 1 just groups items by topic. No
+  synthesis, no themes, no must-reads. Wave 2 reintroduces these.
+
+## Architecture quick-reference
+
+```
+src/digest/
+├── cli.py        # Click commands: ingest, triage, summarize, pipeline, publish, weekly, stats, recent, health, init-db
+├── config.py     # pydantic-settings; reads .env
+├── db.py         # SQLite schema + queries; shares schema with macro for portability
+├── triage.py     # P&C system prompt, 17-topic enum, Python auto-keep hook for EDGAR 8-K
+├── summarize.py  # MLX summarizer; per-topic share cap; P&C reader persona prompt
+├── obsidian.py   # Markdown writer; 17-topic label/callout/emoji dicts; daily + weekly + topic archives
+├── health.py     # Launchd job status + DB stats
+├── security.py   # secrets scan + file-perm audit
+└── ingest/
+    ├── base.py        # IngestorBase, IngestedItem dataclass
+    ├── rss.py
+    ├── edgar.py
+    ├── reddit.py
+    ├── substack.py
+    └── hackernews.py
+```
+
+## Sample next-feature prompts
+
+Pick one of these from a mobile session and Claude will have enough
+context from this file to act:
+
+- **Tighten the triage prompt.** "Add auto-discard rules in triage.py for
+  the patterns we hand-curated yesterday: Chinese NHC (require
+  'U.S./Caribbean threat'), generic travel-volume reporting, road-funding
+  policy, AI model PR. Show me the prompt diff before committing."
+
+- **Narrow the insurtech Google News query.** "The `google_news_insurtech`
+  feed pulls in too much general AI/SaaS content. Rewrite the query to
+  require an insurance-context qualifier (e.g., `insurance OR insurer OR
+  carrier OR underwriter`) and exclude unrelated AI model releases."
+
+- **NOAA/NHC ingestor (Wave 2).** "Implement
+  `src/digest/ingest/nhc.py` that fetches the NHC public advisory RSS
+  feeds and emits IngestedItem rows when there's an active named storm
+  with U.S./Caribbean threat. Add the corresponding Python auto-keep
+  hook in triage.py and wire it into the pipeline."
+
+- **Market-cycle regime detector (Wave 2).** "Implement
+  `src/digest/market_regime.py` that infers the current market cycle
+  position (hard/soft/transitioning) from combined-ratio trends and
+  trade-press capacity narrative. Two-axis: cycle × cat-load."
+
+- **Tighten the weekly note.** "Port the weekly synthesis from
+  macro-ai-digest's `weekly.py` and add it to PC Digest. P&C reader
+  persona, themes + must-reads + contrarian signal, no macro-AI
+  intersection section."
+
+## How to run locally (Mac mini setup)
+
+```bash
+cd ~/Projects/pc-insurance-digest
+uv sync
+cp .env.example .env  # fill in OBSIDIAN_VAULT_PATH, EDGAR_USER_AGENT, REDDIT_*
+uv run digest init-db
+uv run digest pipeline --run-type manual  # smoke test
+bash scripts/install_launchd.sh           # when ready to schedule
+launchctl list | grep com.dr.pcdigest
+```
+
+For mobile / cloud Claude Code sessions, the codebase is fully working
+from this repo — but the live MLX/Ollama servers and Obsidian vault are
+on the user's Mac mini and not reachable. Develop code; user runs it
+locally.
