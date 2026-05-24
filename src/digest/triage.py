@@ -110,15 +110,42 @@ confidence in {high, medium, low}: how sure are you the topic and score are righ
   medium  source is reliable but content requires interpretation
   low     source quality is mixed OR content is speculative/rumor
 
+REGULATORY SONAR — burden classification (regulatory_rate items only)
+=====================================================================
+For items you assign topic=regulatory_rate, also fill burden_direction and
+burden_intensity. They describe how this oversight action shifts the cost or
+operational burden on US P&C insurers. Use null for every other topic.
+
+burden_direction:
+  increasing  — tightens oversight, raises insurer burden (rate suppression,
+                expanded liability statutes, mandated coverage, anti-redlining
+                rules, climate mandates, FAIR Plan assessment expansions)
+  decreasing  — loosens oversight, reduces insurer burden (rate flexibility,
+                tort reform, FAIR Plan offload, federal preemption favoring
+                carriers, mandated coverage repeal)
+  neutral     — administrative, procedural, or symbolic (process changes,
+                routine filings without material impact, conference statements)
+
+burden_intensity:
+  high    — affects a top-5 P&C market (CA, FL, TX, NY, LA) OR sweeps multiple
+            states OR fundamentally reprices a major line OR sets binding
+            federal precedent
+  medium  — single-state material change, single-line repricing, or a notable
+            committee action likely to shape future rulemaking
+  low     — routine filing, narrow scope, predictable rate change, or one of
+            many comparable actions
+
 OUTPUT — JSON only, no prose, no markdown fences
 ================================================
 {
-  "decision":   "keep" | "drop",
-  "score":      float 0.0-1.0,
-  "topic":      one of the 17 topics above,
-  "sub_tags":   [] or ["litigation_tplf"],
-  "confidence": "high" | "medium" | "low",
-  "reason":     string, max 50 words; cite the specific signal driving the call
+  "decision":         "keep" | "drop",
+  "score":            float 0.0-1.0,
+  "topic":            one of the 17 topics above,
+  "sub_tags":         [] or ["litigation_tplf"],
+  "confidence":       "high" | "medium" | "low",
+  "reason":           string, max 50 words; cite the specific signal driving the call,
+  "burden_direction": "increasing" | "neutral" | "decreasing" | null,
+  "burden_intensity": "high" | "medium" | "low" | null
 }"""
 
 USER_TEMPLATE = """Source:    {source}
@@ -208,13 +235,26 @@ def _normalize_verdict(verdict: dict[str, Any]) -> dict[str, Any]:
     if confidence not in ("high", "medium", "low"):
         confidence = "medium"
 
+    # Regulatory Sonar lite — burden fields populated only for regulatory_rate.
+    burden_direction: str | None = None
+    burden_intensity: str | None = None
+    if topic == "regulatory_rate":
+        raw_dir = str(verdict.get("burden_direction") or "").lower().strip()
+        if raw_dir in ("increasing", "neutral", "decreasing"):
+            burden_direction = raw_dir
+        raw_int = str(verdict.get("burden_intensity") or "").lower().strip()
+        if raw_int in ("high", "medium", "low"):
+            burden_intensity = raw_int
+
     return {
-        "decision":   decision,
-        "score":      score,
-        "topic":      topic,
-        "sub_tags":   sub_tags,
-        "confidence": confidence,
-        "reason":     str(verdict.get("reason", ""))[:400],  # ~50 words ≈ 350 chars
+        "decision":         decision,
+        "score":            score,
+        "topic":            topic,
+        "sub_tags":         sub_tags,
+        "confidence":       confidence,
+        "reason":           str(verdict.get("reason", ""))[:400],  # ~50 words ≈ 350 chars
+        "burden_direction": burden_direction,
+        "burden_intensity": burden_intensity,
     }
 
 
@@ -256,12 +296,14 @@ def triage_item(item: dict[str, Any]) -> dict[str, Any]:
     if not verdict:
         logger.warning("triage: failed to parse Qwen output for item %s", item.get("id"))
         return {
-            "decision":   "drop",
-            "score":      0.0,
-            "topic":      "macro_linkage",
-            "sub_tags":   [],
-            "confidence": "low",
-            "reason":     "parse_error",
+            "decision":         "drop",
+            "score":            0.0,
+            "topic":            "macro_linkage",
+            "sub_tags":         [],
+            "confidence":       "low",
+            "reason":           "parse_error",
+            "burden_direction": None,
+            "burden_intensity": None,
         }
     return _normalize_verdict(verdict)
 
@@ -321,20 +363,27 @@ def run_triage(limit: int = 200) -> dict[str, int]:
                 decision=verdict["decision"],
                 score=verdict["score"],
                 topic=verdict["topic"],
+                burden_direction=verdict.get("burden_direction"),
+                burden_intensity=verdict.get("burden_intensity"),
             )
             if verdict["decision"] == "keep":
                 counts["kept"] += 1
                 seen_titles.append(title)
             else:
                 counts["dropped"] += 1
+            burden_part = (
+                f" burden={verdict['burden_direction']}/{verdict['burden_intensity']}"
+                if verdict.get("burden_intensity") else ""
+            )
             logger.info(
-                "triage: id=%d %s/%.2f topic=%s sub=%s conf=%s (%.1fs) — %s",
+                "triage: id=%d %s/%.2f topic=%s sub=%s conf=%s%s (%.1fs) — %s",
                 item_dict["id"],
                 verdict["decision"],
                 verdict["score"],
                 verdict["topic"],
                 verdict["sub_tags"],
                 verdict["confidence"],
+                burden_part,
                 elapsed,
                 verdict.get("reason", ""),
             )
