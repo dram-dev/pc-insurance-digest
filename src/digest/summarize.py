@@ -73,6 +73,17 @@ For each item, produce a JSON object with five fields:
 Respond with ONLY a single JSON object — no preamble, no markdown fences, no commentary."""
 
 
+# ── Per-topic caps ─────────────────────────────────────────────────────
+# Hard cap on a topic's share of the final summarize queue. Without this,
+# broad-keyword Google News feeds (insurtech especially) can drown out
+# substantive P&C content. Lowest-score items from over-cap topics are
+# left in the kept-unsummarized state — still visible in the daily note,
+# but don't burn MLX time on shallow items.
+TOPIC_CAP_PCT: dict[str, float] = {
+    "ai_insurtech": 0.35,
+}
+
+
 USER_TEMPLATE = """Source: {source}
 Title: {title}
 Author: {author}
@@ -368,6 +379,49 @@ def summarize_item(item: dict[str, Any], regime_framing: str = "") -> SummaryOut
     return _normalize_summary(parsed, fallback_topic=item.get("topic") or "other")
 
 
+def _enforce_topic_caps(
+    rows: list,
+    caps: dict[str, float],
+) -> tuple[list, dict[str, int]]:
+    """Drop lowest-score items from over-cap topics so each capped topic's
+    share of the final queue stays ≤ its max_pct.
+
+    Args:
+        rows: queue from items_ready_for_summary, sorted by triage_score desc.
+        caps: {topic_slug: max_pct} where max_pct is the maximum fraction of
+              the final queue this topic may occupy (0.35 = 35%).
+
+    Returns: (filtered_rows_in_original_order, {topic: count_dropped}).
+    """
+    if not caps or not rows:
+        return list(rows), {}
+
+    by_topic: dict[str, list] = {}
+    for r in rows:
+        by_topic.setdefault(r["topic"] or "", []).append(r)
+
+    keep_ids: set = {r["id"] for r in rows}
+    dropped: dict[str, int] = {}
+
+    for topic, max_pct in caps.items():
+        if not 0.0 < max_pct < 1.0 or topic not in by_topic:
+            continue
+        target_count = len(by_topic[topic])
+        other_count  = len(rows) - target_count
+        # target ≤ max_pct × (target + other)  ⇒  target ≤ (max_pct / (1 - max_pct)) × other
+        max_allowed = int((max_pct / (1.0 - max_pct)) * other_count)
+        if target_count <= max_allowed:
+            continue
+        # Drop the lowest-score items from this topic.
+        ranked = sorted(by_topic[topic], key=lambda r: r["triage_score"] or 0, reverse=True)
+        to_drop = ranked[max_allowed:]
+        dropped[topic] = len(to_drop)
+        for r in to_drop:
+            keep_ids.discard(r["id"])
+
+    return [r for r in rows if r["id"] in keep_ids], dropped
+
+
 def run_summarize(
     limit: int | None = None,
     source: str | None = None,
@@ -395,6 +449,17 @@ def run_summarize(
     if not rows:
         logger.info("summarize: nothing ready (source=%s)", source or "all")
         return {"ready": 0, "succeeded": 0, "failed": 0}
+
+    # Apply per-topic share caps so a noisy keyword feed doesn't drown
+    # substantive items. Items dropped here remain triage=keep and will
+    # show up in the kept-unsummarized section of the daily note.
+    rows, dropped_by_topic = _enforce_topic_caps(rows, TOPIC_CAP_PCT)
+    if dropped_by_topic:
+        for topic, n in dropped_by_topic.items():
+            logger.info(
+                "summarize: topic cap dropped %d %s items (kept-unsummarized)",
+                n, topic,
+            )
 
     backend = settings.summarizer_backend
 
