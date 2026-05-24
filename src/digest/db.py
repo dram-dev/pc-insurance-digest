@@ -568,6 +568,48 @@ def auto_keep_quantitative() -> int:
         return cur.rowcount or 0
 
 
+def auto_keep_nhc_advisories() -> int:
+    """Auto-keep all untriaged NHC items with score=1.0, topic=cat_event.
+
+    The NHC ingestor only emits when a storm has a U.S./Caribbean threat,
+    so every item that reaches the DB is material — equivalent 1.3× weight
+    to EDGAR 8-K per the source-multiplier design decision.
+    """
+    sql = """
+        UPDATE items
+        SET triage_decision = 'keep',
+            triage_score    = 1.0,
+            topic           = 'cat_event',
+            triaged_at      = datetime('now')
+        WHERE source = 'nhc'
+          AND triage_decision IS NULL
+    """
+    with get_conn() as conn:
+        cur = conn.execute(sql)
+        return cur.rowcount or 0
+
+
+def auto_keep_usgs_major() -> int:
+    """Auto-keep untriaged USGS earthquakes M≥6.0 with score=0.95, topic=cat_event.
+
+    The triage prompt already lists M≥6.0 as in-prompt auto-keep; this Python
+    hook guarantees Ollama can't silently drop a major earthquake.
+    """
+    sql = """
+        UPDATE items
+        SET triage_decision = 'keep',
+            triage_score    = 0.95,
+            topic           = 'cat_event',
+            triaged_at      = datetime('now')
+        WHERE source = 'usgs'
+          AND triage_decision IS NULL
+          AND CAST(json_extract(metadata_json, '$.magnitude') AS REAL) >= 6.0
+    """
+    with get_conn() as conn:
+        cur = conn.execute(sql)
+        return cur.rowcount or 0
+
+
 def update_triage(
     item_id: int,
     decision: str,        # 'keep' or 'drop'

@@ -30,6 +30,11 @@ INGESTORS = {
     "reddit":   "digest.ingest.reddit:RedditIngestor",
     "substack": "digest.ingest.substack:SubstackIngestor",
     "hn":       "digest.ingest.hackernews:HNIngestor",
+    # Wave 2 — direct government hazard feeds
+    "nhc":      "digest.ingest.nhc:NHCIngestor",
+    "usgs":     "digest.ingest.usgs:USGSIngestor",
+    "spc":      "digest.ingest.spc:SPCIngestor",
+    "nifc":     "digest.ingest.nifc:NIFCIngestor",
 }
 
 

@@ -268,15 +268,23 @@ def triage_item(item: dict[str, Any]) -> dict[str, Any]:
 
 def run_triage(limit: int = 200) -> dict[str, int]:
     """Triage all pending items (up to `limit`)."""
-    # Python auto-keep hook — mandatory cases that cannot silently fail.
-    # (Wave 1: only EDGAR 8-K/10-K/10-Q from named insurer tickers. NHC
-    # advisory auto-keep lands in Wave 2 with the NHC ingestor.)
+    # Python auto-keep hooks — mandatory cases that cannot silently fail.
     auto_kept = db.auto_keep_insurer_filings(
         tickers=INSURER_TICKERS_WAVE1,
         form_types=MANDATORY_FORM_TYPES,
     )
     if auto_kept:
         logger.info("triage: auto-kept %d insurer filings (bypassing Ollama)", auto_kept)
+
+    nhc_kept = db.auto_keep_nhc_advisories()
+    if nhc_kept:
+        logger.info("triage: auto-kept %d NHC storm advisories", nhc_kept)
+
+    usgs_kept = db.auto_keep_usgs_major()
+    if usgs_kept:
+        logger.info("triage: auto-kept %d USGS M≥6.0 earthquakes", usgs_kept)
+
+    auto_kept += nhc_kept + usgs_kept
 
     items = db.items_needing_triage(limit=limit)
     if not items:
