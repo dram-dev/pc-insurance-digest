@@ -53,18 +53,29 @@ Each is committed on `master` and pushed to
 | Regulatory Sonar lite — `burden_direction` / `burden_intensity` triage fields on `regulatory_rate` items, `burden_intensity_boost` in leaderboard scoring, daily-note callout on high-intensity items. See "Regulatory Sonar" below. | ✅ |
 
 **Wave 3:**
-- AM Best rating actions (currently a Google News site:ambest.com proxy
-  because the direct RSS is Radware-blocked — try a real browser UA)
-- NAIC + state DOI rate filings via SERFF (the hardest — state-by-state,
-  inconsistent schemas)
-- Lloyd's / Bermuda reinsurance market (Artemis ILS data, syndicate
-  results)
-- Tighten triage prompt to auto-discard adjacent-but-not-insurance items
-  (China NHC vs US NHC, generic travel-volume, road-funding policy)
-- **Regulatory Sonar full** — `src/digest/regulatory_sonar.py` periodic
-  detector (3-day cadence), LegiScan API ingestor for state bills,
-  per-state burden-pressure index, weekly note section, daily callout
-  on trend-fire. See "Regulatory Sonar" below.
+
+*Liability Intelligence cluster (new — highest user priority):*
+
+| Item | Detail |
+|---|---|
+| **Verdict / docket tracker** | CourtListener/RECAP API for federal MDL filings (free, open); Law360 + ILR/ATRA RSS for verdict reporting. 3-tier jurisdiction: Tier 1 FL/CA/NY/IL/PA/NJ · Emerging GA/TX/LA · Tier 3 OK/MO/NV/MI/OH + all federal circuits. Auto-keep hook → `social_inflation`. |
+| **TPLF dedicated ingestor** | Sources: PACER court RSS, ILR/ATRA advocacy publications, Law360/Bloomberg Law RSS, LegiScan state disclosure bills (shared LegiScan client with Regulatory Sonar). Promote `litigation_tplf` sub_tag to a first-class leaderboard boost factor. |
+| **Claims / actuarial dataset** | (a) NAIC Schedule P triangles — reserve development by line of business, annual cadence, parsed for adverse-dev signals. (b) Insurer investor supplement PDFs — quarterly frequency, paid severity, and pending-count tables for the 14-insurer universe. Both feed `reserving` and `social_inflation` signals. |
+
+*Source expansion (carried over):*
+
+| Item | Detail |
+|---|---|
+| **AM Best rating actions** | Currently `site:ambest.com` Google News proxy. Try direct RSS with a real browser `User-Agent`; Radware-blocked on default UA. |
+| **NAIC + state DOI / SERFF** | Rate filings with ≥5% requested change. Hardest item — state-by-state, inconsistent schemas. |
+| **Lloyd's / Bermuda** | Artemis ILS data + syndicate results. Feeds `reinsurance_cycle` and `rates_cost_of_capital`. |
+
+*Pipeline quality (carried over):*
+
+| Item | Detail |
+|---|---|
+| **Triage prompt tightening** | Auto-discard: Chinese NHC (require U.S./Caribbean mention), generic travel-volume reporting, road-funding policy, AI model PR with no insurance angle. |
+| **Regulatory Sonar full** | `src/digest/regulatory_sonar.py` periodic detector (3-day cadence), LegiScan API ingestor for state bills, per-state burden-pressure index, weekly note section, daily callout on trend-fire. See "Regulatory Sonar" below. |
 
 After Wave 2 lands, extract the shared core into a `digest-core`
 framework package; PC Digest and macro-ai-digest become thin domain
