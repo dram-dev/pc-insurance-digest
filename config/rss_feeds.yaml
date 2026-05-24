@@ -28,10 +28,8 @@ feeds:
     topic_hint: underwriting_results
     limit: 20
 
-  - name: insurance_erm
-    url: https://www.insuranceerm.com/rss
-    topic_hint: analytics_modeling
-    limit: 15
+  # insurance_erm dropped — Cloudflare bot challenge blocks our UA.
+  # Investigate later: try a real browser UA or move to a Google News proxy.
 
   - name: business_insurance
     url: https://www.businessinsurance.com/section/rss
@@ -43,33 +41,37 @@ feeds:
     topic_hint: reserving
     limit: 15
 
-  - name: pc360
-    url: https://www.propertycasualty360.com/feed/
-    topic_hint: personal_lines
-    limit: 20
+  # pc360 dropped — publisher killed direct RSS (404). Replaced by
+  # google_news_personal_lines below.
 
   # ── Reinsurance-cycle specialists ────────────────────────────
-  - name: trading_risk
-    url: https://www.trading-risk.com/feed/
-    topic_hint: reinsurance_cycle
-    limit: 15
-
-  - name: intelligent_insurer
-    url: https://www.intelligentinsurer.com/rss
-    topic_hint: reinsurance_cycle
-    limit: 15
+  # trading_risk dropped — redirects to a Zephr paywall on insurance_insider_ils.
+  # intelligent_insurer dropped — /feed and /rss both return 404 (publisher killed RSS).
+  # Both replaced by google_news_reinsurance below.
 
   # ── Regulatory + rating agency ───────────────────────────────
-  # AM Best has limited RSS; this is the news feed.
-  - name: am_best_news
-    url: https://news.ambest.com/rss/newsdetail.aspx?cat=BN
+  # am_best_news direct RSS blocked by Radware bot detection. Replaced by
+  # Google News site:ambest.com proxy below.
+  # naic_news direct RSS dead (URL pattern changed). Replaced by
+  # Google News site:naic.org proxy below.
+  - name: google_news_am_best
+    url: 'https://news.google.com/rss/search?q=when:7d+site:ambest.com&hl=en-US&gl=US&ceid=US:en'
     topic_hint: ma_capital
-    limit: 20
+    limit: 15
 
-  # NAIC press releases (RSS)
-  - name: naic_news
-    url: https://content.naic.org/feed/news
+  - name: google_news_naic
+    url: 'https://news.google.com/rss/search?q=when:14d+site:naic.org&hl=en-US&gl=US&ceid=US:en'
     topic_hint: regulatory_rate
+    limit: 15
+
+  - name: google_news_personal_lines
+    url: 'https://news.google.com/rss/search?q=when:48h+(%22auto+insurance%22+OR+%22home+insurance%22+OR+%22homeowners+insurance%22+OR+%22telematics%22+OR+%22market+exit%22+insurance)&hl=en-US&gl=US&ceid=US:en'
+    topic_hint: personal_lines
+    limit: 15
+
+  - name: google_news_reinsurance
+    url: 'https://news.google.com/rss/search?q=when:7d+(%221%2F1+renewal%22+OR+%22reinsurance+pricing%22+OR+%22reinsurance+capacity%22+OR+%22cat+bond%22+OR+%22ILS+capacity%22+OR+%22retro+market%22)&hl=en-US&gl=US&ceid=US:en'
+    topic_hint: reinsurance_cycle
     limit: 15
 
   # ── Google News searches (aggregates Reuters/Bloomberg/WSJ on insurance) ──
