@@ -29,7 +29,7 @@ own `com.dr.pcdigest.*` jobs.
 | Repo + scaffold (copy-modify from macro-ai-digest) | ✅ |
 | 17-topic P&C taxonomy in triage + summarize | ✅ |
 | 14-insurer EDGAR universe + Python auto-keep hook | ✅ |
-| Trade-press RSS (Insurance Journal, Reinsurance News, Artemis, Carrier Mgmt) + Google News proxies | ✅ |
+| Trade-press RSS (Insurance Journal, Reinsurance News, Artemis, Carrier Mgmt) + Google News proxies (NHC proxy superseded by direct `nhc` ingestor in Wave 2) | ✅ |
 | Reddit (r/Insurance, r/Actuary, r/CFP, weather/EQ) + Substack + HN | ✅ |
 | 35% per-topic cap on `ai_insurtech` (configurable in `summarize.py` → `TOPIC_CAP_PCT`) | ✅ |
 | Obsidian publish to `81 P&C Digest/{Daily,Topics,Weekly,_meta}` | ✅ |
@@ -38,16 +38,19 @@ own `com.dr.pcdigest.*` jobs.
 Each is committed on `master` and pushed to
 [github.com/dram-dev/pc-insurance-digest](https://github.com/dram-dev/pc-insurance-digest).
 
-## Wave 2 / 3 roadmap (deferred — do not implement without user OK)
+## Wave 2 / 3 roadmap
 
 **Wave 2:**
-- NOAA/NHC/USGS catastrophe event ingestors (replace the Google News
-  `google_news_nhc_storms` proxy with direct feeds)
-- Market-cycle regime detector (hard/soft) + CAT-load regime detector —
-  two-dimensional, multiplied: see "Regime concept" below
-- Signal leaderboard (port from macro digest's `signals.py`)
-- Tighten triage prompt to auto-discard adjacent-but-not-insurance items
-  (China NHC vs US NHC, generic travel-volume, road-funding policy)
+
+| Component | Status |
+|---|---|
+| NHC advisory ingestor (`nhc.py`) — Atlantic/E.Pac/C.Pac RSS, U.S./Caribbean-threat filter + Python auto-keep (score=1.0) | ✅ |
+| USGS earthquake ingestor (`usgs.py`) — M4.5+ GeoJSON, fetch-filtered to M≥5.0; Python auto-keep M≥6.0 (score=0.95) | ✅ |
+| SPC ingestor (`spc.py`) — watch/warning RSS, filtered to tornado/severe thunderstorm/enhanced+ | ✅ |
+| NIFC ingestor (`nifc.py`) — WFIGS ArcGIS API (InciWeb RSS dead); active wildfires ≥1000 ac, <100% contained | ✅ |
+| Market-cycle regime detector (hard/soft) + CAT-load regime detector — two-dimensional, multiplied: see "Regime concept" below | ⬜ deferred |
+| Signal leaderboard (port from macro digest's `signals.py`) | ⬜ deferred |
+| Tighten triage prompt to auto-discard adjacent-but-not-insurance items (China NHC vs US NHC, generic travel-volume, road-funding policy) | ⬜ deferred |
 
 **Wave 3:**
 - AM Best rating actions (currently a Google News site:ambest.com proxy
