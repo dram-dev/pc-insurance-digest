@@ -71,6 +71,12 @@ framework package; PC Digest and macro-ai-digest become thin domain
 plug-ins. Trigger: all 3 Wave 2 items shipped + **1 week max** of daily
 dogfooding before cutting seams.
 
+**Scaffolded:** `packages/digest-core/` holds the empty package skeleton
+and [EXTRACTION_PLAN.md](packages/digest-core/EXTRACTION_PLAN.md) — a
+concrete what-moves-where map (definite-core / definite-domain / tricky
+seams) authored while Wave 2 divergence is fresh. The actual code lift
+waits for the dogfooding window to close.
+
 ## Locked design decisions
 
 ### Topic taxonomy (17 topics + 1 sub-tag)
