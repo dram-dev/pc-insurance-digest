@@ -175,7 +175,13 @@ def score_item(row: Any, regime: RegimeSignal) -> Score:
     llm_j = max(0.5, min(1.5, llm_j))
 
     topic_boost  = TOPIC_PRIORITY_BOOST.get(topic, 1.0)
-    burden_boost = 1.0   # Wave 2 lite: populate from items.burden_intensity once Sonar ships
+
+    burden_intensity = (
+        row["burden_intensity"] if "burden_intensity" in row.keys() else None
+    )
+    burden_boost = BURDEN_INTENSITY_BOOST.get(
+        (burden_intensity or "").lower(), 1.0
+    )
 
     score = (
         src_mult * rg_mult * topic_rel * rec

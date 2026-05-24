@@ -169,6 +169,10 @@ MIGRATIONS = [
     "CREATE INDEX IF NOT EXISTS idx_signal_scores_computed ON signal_scores(computed_at DESC)",
     # Wave 2: materiality score from summarizer (feeds llm_judgment factor)
     "ALTER TABLE items ADD COLUMN materiality_score REAL",
+    # Wave 2 lite: Regulatory Sonar — burden classification on regulatory_rate items
+    "ALTER TABLE items ADD COLUMN burden_direction TEXT",   # increasing|neutral|decreasing|null
+    "ALTER TABLE items ADD COLUMN burden_intensity TEXT",   # high|medium|low|null
+    "CREATE INDEX IF NOT EXISTS idx_items_burden ON items(burden_intensity)",
 ]
 
 
@@ -295,7 +299,8 @@ def items_for_signals() -> list[sqlite3.Row]:
         SELECT id, source, url, title, author,
                published_at, ingested_at,
                topic, summary, why_it_matters, confidence, see_also,
-               triage_score, materiality_score, metadata_json,
+               triage_score, materiality_score,
+               burden_direction, burden_intensity, metadata_json,
                ensemble_consensus, ensemble_dispersion, cluster_id,
                sentiment_label, sentiment_score
         FROM items
@@ -646,19 +651,28 @@ def update_triage(
     decision: str,        # 'keep' or 'drop'
     score: float,
     topic: str | None,
+    burden_direction: str | None = None,
+    burden_intensity: str | None = None,
 ) -> None:
-    """Record a triage outcome on an item."""
+    """Record a triage outcome on an item.
+
+    burden_direction / burden_intensity are populated by the LLM for
+    regulatory_rate items only (Regulatory Sonar lite). Pass None for all
+    other topics — the columns will remain NULL.
+    """
     with get_conn() as conn:
         conn.execute(
             """
             UPDATE items
-            SET triage_decision = ?,
-                triage_score    = ?,
-                topic           = ?,
-                triaged_at      = datetime('now')
+            SET triage_decision  = ?,
+                triage_score     = ?,
+                topic            = ?,
+                burden_direction = ?,
+                burden_intensity = ?,
+                triaged_at       = datetime('now')
             WHERE id = ?
             """,
-            (decision, score, topic, item_id),
+            (decision, score, topic, burden_direction, burden_intensity, item_id),
         )
 
 
@@ -756,7 +770,7 @@ def items_for_publish(date_iso: str) -> dict[str, list[sqlite3.Row]]:
         SELECT id, source, source_id, url, title, author, content,
                published_at, ingested_at, metadata_json,
                topic, summary, why_it_matters, confidence, see_also,
-               triage_score
+               triage_score, burden_direction, burden_intensity
         FROM items
         WHERE date(ingested_at) = date(?)
           AND triage_decision = 'keep'

@@ -333,6 +333,34 @@ def _render_summary_item(row: sqlite3.Row) -> str:
     return "\n".join(lines)
 
 
+def _render_sonar_callout(rows: list) -> str | None:
+    """One-liner callout when a high-intensity regulatory_rate item lands.
+
+    Wave 2 lite: just count + list titles. Wave 3's full Regulatory Sonar
+    detector replaces this with the per-state burden-pressure index callout
+    when trend-fires fire.
+    """
+    high = [
+        r for r in rows
+        if (_row_get(r, "topic") == "regulatory_rate"
+            and (_row_get(r, "burden_intensity") or "").lower() == "high")
+    ]
+    if not high:
+        return None
+    n = len(high)
+    word = "item" if n == 1 else "items"
+    lines = [
+        f"> [!warning]+ 📡 Regulatory pressure today: {n} high-intensity oversight {word}",
+    ]
+    for r in high[:5]:
+        title = (_safe(r["title"]) or "(untitled)")[:100]
+        url   = _safe(r["url"])
+        link  = f"[{title}]({url})" if url else title
+        direction = (_row_get(r, "burden_direction") or "?").lower()
+        lines.append(f"> - **{direction}** — {link}")
+    return "\n".join(lines)
+
+
 def _render_regime_callout(regime) -> str:
     """One-block summary of the current PC two-axis regime."""
     cycle = regime.market_cycle.replace("_", " ").title()
@@ -462,6 +490,12 @@ def render_daily_note(
     # ── Regime callout (Wave 2) ──────────────────────────────────────────
     if regime is not None:
         lines.append(_render_regime_callout(regime))
+        lines.append("")
+
+    # ── Regulatory Sonar lite callout (Wave 2 lite) ──────────────────
+    sonar_md = _render_sonar_callout(list(summarized) + list(kept_unsum))
+    if sonar_md:
+        lines.append(sonar_md)
         lines.append("")
 
     # ── Market Snapshot (charts) ─────────────────────────────────────────

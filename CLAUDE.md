@@ -48,9 +48,9 @@ Each is committed on `master` and pushed to
 | USGS earthquake ingestor (`usgs.py`) — M4.5+ GeoJSON, fetch-filtered to M≥5.0; Python auto-keep M≥6.0 (score=0.95) | ✅ |
 | SPC ingestor (`spc.py`) — watch/warning RSS, filtered to tornado/severe thunderstorm/enhanced+ | ✅ |
 | NIFC ingestor (`nifc.py`) — WFIGS ArcGIS API (InciWeb RSS dead); active wildfires ≥1000 ac, <100% contained | ✅ |
-| Market-cycle regime detector (hard/soft) + CAT-load regime detector — two-dimensional, multiplied: see "Regime concept" below | ⬜ deferred |
-| Signal leaderboard (port from macro digest's `signals.py`) | ⬜ deferred |
-| Regulatory Sonar lite — `burden_direction` / `burden_intensity` triage fields, `burden_intensity_boost` in leaderboard scoring, daily-note callout on high-intensity items. See "Regulatory Sonar" below. | ⬜ deferred |
+| Market-cycle regime detector (`regime.py`) — Qwen3.5 cycle judgment over 60d window + mechanical cat_load; 72h cadence; 2-recompute hysteresis; `config/regime_override.yaml` override | ✅ |
+| Signal leaderboard (`signals.py`) — `source × regime × topic_relevance × recency × llm_judgment × topic_priority_boost × burden_intensity_boost`; top-5 daily, top-15 + per-source quality weekly | ✅ |
+| Regulatory Sonar lite — `burden_direction` / `burden_intensity` triage fields on `regulatory_rate` items, `burden_intensity_boost` in leaderboard scoring, daily-note callout on high-intensity items. See "Regulatory Sonar" below. | ✅ |
 
 **Wave 3:**
 - AM Best rating actions (currently a Google News site:ambest.com proxy
@@ -273,12 +273,18 @@ Folder layout:
 
 ```
 src/digest/
-├── cli.py        # Click commands: ingest, triage, summarize, pipeline, publish, weekly, stats, recent, health, init-db
+├── cli.py        # Click commands: ingest, triage, summarize, regime, signals,
+│                 # pipeline, publish, weekly, stats, recent, health, init-db
 ├── config.py     # pydantic-settings; reads .env
 ├── db.py         # SQLite schema + queries; shares schema with macro for portability
 ├── triage.py     # P&C system prompt, 17-topic enum, Python auto-keep hook for EDGAR 8-K
+│                 # + Wave 2 lite Regulatory Sonar burden_direction/intensity fields
 ├── summarize.py  # MLX summarizer; per-topic share cap; P&C reader persona prompt
+│                 # + Wave 2 materiality field for leaderboard llm_judgment
+├── regime.py     # Wave 2 two-axis regime detector (market_cycle × cat_load)
+├── signals.py    # Wave 2 leaderboard formula + per-item score persistence
 ├── obsidian.py   # Markdown writer; 17-topic label/callout/emoji dicts; daily + weekly + topic archives
+│                 # + Wave 2 regime callout, top-N leaderboard, sonar one-liner
 ├── health.py     # Launchd job status + DB stats
 ├── security.py   # secrets scan + file-perm audit
 └── ingest/
@@ -287,7 +293,11 @@ src/digest/
     ├── edgar.py
     ├── reddit.py
     ├── substack.py
-    └── hackernews.py
+    ├── hackernews.py
+    ├── nhc.py         # Wave 2 — NHC tropical cyclone RSS (US/Caribbean threat filter)
+    ├── usgs.py        # Wave 2 — USGS M ≥ 5.0 earthquake GeoJSON
+    ├── spc.py         # Wave 2 — SPC convective outlook RSS
+    └── nifc.py        # Wave 2 — NIFC WFIGS active wildfire ArcGIS REST
 ```
 
 ## Sample next-feature prompts
