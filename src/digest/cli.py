@@ -368,6 +368,22 @@ def health() -> None:
     console.rule(f"[{overall_color}]overall: {overall}[/{overall_color}]")
 
 
+@main.command()
+@click.option("--open", "open_after", is_flag=True, help="Open generated files in the OS default app")
+def viz(open_after: bool) -> None:
+    """Generate claims trend SVG visualizations into the Obsidian vault."""
+    from digest.viz import write_viz_pages
+
+    db.init_db()
+    console.rule("[bold cyan]viz")
+    try:
+        paths = write_viz_pages(open_after=open_after)
+        for p in paths:
+            console.print(f"  [green]✓[/green] {p}")
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"  [red]✗[/red] {exc}")
+
+
 @main.command("init-db")
 def init_db_cmd() -> None:
     """Create the SQLite DB and schema."""
