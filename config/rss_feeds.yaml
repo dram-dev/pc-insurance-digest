@@ -105,9 +105,6 @@ feeds:
     topic_hint: regulatory_rate
     limit: 15
 
-  # ── NOAA / catastrophe early warning (Wave 2 NHC ingestor will supersede) ──
-  # Wave 1 captures via Google News. Wave 2 swaps in direct NHC feeds.
-  - name: google_news_nhc_storms
-    url: 'https://news.google.com/rss/search?q=when:24h+(%22NHC%22+OR+%22hurricane+center%22+OR+%22tropical+storm%22+OR+%22major+hurricane%22)&hl=en-US&gl=US&ceid=US:en'
-    topic_hint: cat_event
-    limit: 15
+  # ── NOAA / catastrophe early warning ─────────────────────────
+  # Direct feeds now live in src/digest/ingest/{nhc,usgs,spc,nifc}.py
+  # (Wave 2). Google News NHC proxy retired.
