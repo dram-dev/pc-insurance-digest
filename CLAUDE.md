@@ -141,9 +141,19 @@ this dict.
 ### Topic priority emphasis (locked — user preference)
 
 **Personal lines auto + homeowners/fire is the highest-priority topic
-signal.** This applies across the pipeline:
+signal. Liability trends (social inflation, commercial specialty, reserving)
+are boosted above personal lines to keep them from being buried by cat_event
+volume.** This applies across the pipeline:
 
-- **Scoring (Wave 2 leaderboard):** `topic_priority_boost = {"personal_lines": 1.3}`
+- **Scoring (Wave 2 leaderboard):**
+  ```python
+  topic_priority_boost = {
+      "personal_lines":      1.3,
+      "social_inflation":    1.4,   # nuclear verdicts, tort reform, TPLF
+      "commercial_specialty": 1.4,  # GL, WC, D&O/E&O, E&S
+      "reserving":           1.4,   # adverse dev, IBNR, long-tail
+  }
+  ```
   applied as the last factor in the score formula
   (`source_mult × regime_mult × topic_relevance × recency × llm_judgment × topic_priority_boost`).
 - **Topic ordering:** `personal_lines` lifted near top of `TOPIC_ORDER` in

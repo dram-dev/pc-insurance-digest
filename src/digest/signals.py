@@ -70,7 +70,11 @@ SOURCE_MULT: dict[str, float] = {
 # ── Topic priority boost (locked in CLAUDE.md) ────────────────────────
 
 TOPIC_PRIORITY_BOOST: dict[str, float] = {
-    "personal_lines": 1.3,
+    "personal_lines":     1.3,
+    # Liability-trend topics — user preference: outrank cat_event by default
+    "social_inflation":   1.4,
+    "commercial_specialty": 1.4,
+    "reserving":          1.4,
 }
 
 
