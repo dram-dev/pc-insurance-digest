@@ -1,0 +1,26 @@
+# Phase 2 direct-scraper sources for industry research (LexisNexis + JD Power).
+# Phase 1 is the google_news_industry_research RSS proxy in rss_feeds.yaml.
+# Flip enabled:true after validating the CSS selector with curl on the Mac mini:
+#   curl -sL -A 'Mozilla/5.0' <url> | grep -A5 'article\|post\|press\|release'
+#
+# title_filter is a case-insensitive substring match; only items whose title
+# contains this string are emitted.
+
+sources:
+  - name: lexisnexis_risk
+    vendor: LexisNexis Risk Solutions
+    url: "https://risk.lexisnexis.com/insights-resources"
+    title_filter: "auto insurance"
+    # Common patterns for insight-hub pages; verify before enabling.
+    # TODO: curl https://risk.lexisnexis.com/insights-resources and check structure.
+    selector: "article, .insight-card, .resource-item, .content-card"
+    enabled: false
+
+  - name: jdpower_auto
+    vendor: JD Power
+    url: "https://www.jdpower.com/business/press-releases"
+    title_filter: "auto insurance"
+    # JD Power press releases listing; likely table or list of PR entries.
+    # TODO: curl https://www.jdpower.com/business/press-releases and confirm selector.
+    selector: ".press-release-item, article.press, .pr-list li, table.press-releases tr"
+    enabled: false
