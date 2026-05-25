@@ -62,6 +62,17 @@ Each is committed on `master` and pushed to
 | Scaffolded ingestors registered + no-op safe: `courtlistener`, `collision`, `state_doi` | ✅ |
 | Industry-research direct scraper (`industry_research.py`) — Phase 2 LexisNexis + JD Power; config-driven with per-source enabled flag; topic=`personal_lines` | ✅ |
 
+**Wave 3 Phase 1 (shipped 2026-05-25):**
+
+| Component | Status |
+|---|---|
+| Triage prompt tightening — auto-discard rules for non-U.S./Caribbean tropical cyclones (Chinese NHC pattern), generic travel-volume reporting, road/infrastructure funding without insurance linkage, and general AI/LLM vendor PR without insurance use case | ✅ |
+| `google_news_insurtech` narrowed — requires insurance-domain qualifier (insurance/insurer/carrier/underwriter/MGA/broker) alongside the AI/tech term; reduces reliance on the 35% `ai_insurtech` share cap | ✅ |
+| 4 industry-economics GN proxies (`google_news_{ft,economist,wsj,bloomberg}_insurance`) — site-scoped queries with insurance keywords + Lloyd's for London-market coverage; 14d window; topic_hint=`macro_linkage` | ✅ |
+| **Databricks medallion DDL** — `packages/digest-core/sql/databricks/{bronze,silver,gold}.sql`. Bronze: ingested_items (incl. drops, partitioned by source), fred_observations (full series), regime_signals, pipeline_telemetry. Silver: triage_verdicts, signal_scores (all 10 boost factors as columns), summaries, manual_ratings (Wave 4 placeholder). Gold: latest_scores helper + daily/weekly leaderboards, source_quality, score_calibration, regime_history, pipeline_slos. Join key: `item_hash = sha256(source || '::' || source_id)` derived at sink-write time | ✅ |
+| **`DatabricksSink` scaffold** — `src/digest/sinks/databricks.py` + `src/digest/sinks/__init__.py`. Lazy connection, lazy import of `databricks-sql-connector` (optional dep). Best-effort writes: errors logged + swallowed; SQLite remains source of truth. No-op when `DATABRICKS_ENABLED=false` (default). Settings: `DATABRICKS_{ENABLED,HOST,HTTP_PATH,TOKEN,CATALOG}` | ✅ |
+| **Sink wired into `db.py`** — 7 write checkpoints: `upsert_items` → bronze.ingested_items; `log_run` → bronze.pipeline_telemetry (stage=ingest); `update_triage` → silver.triage_verdicts; `update_summary` → silver.summaries; `log_summarizer` → bronze.pipeline_telemetry (stage=summarize); `upsert_regime_signal` → bronze.regime_signals; `upsert_signal_scores` → silver.signal_scores. Sink calls run AFTER each `with get_conn()` commits, so SQLite is durable before any Databricks interaction. Caller signatures unchanged | ✅ |
+
 **Wave 3:**
 
 *Liability Intelligence cluster (new — highest user priority):*
@@ -85,8 +96,8 @@ Each is committed on `master` and pushed to
 
 | Item | Detail |
 |---|---|
-| **Triage prompt tightening** | Auto-discard: Chinese NHC (require U.S./Caribbean mention), generic travel-volume reporting, road-funding policy, AI model PR with no insurance angle. |
-| **Regulatory Sonar full** | `src/digest/regulatory_sonar.py` periodic detector (3-day cadence), LegiScan API ingestor for state bills, per-state burden-pressure index, weekly note section, daily callout on trend-fire. See "Regulatory Sonar" below. |
+| **Triage prompt tightening** | ✅ Wave 3 Phase 1 — Chinese NHC, travel-volume, road-funding, AI-vendor-PR auto-discard rules shipped in `triage.py` SYSTEM_PROMPT. |
+| **Regulatory Sonar full** | `src/digest/regulatory_sonar.py` periodic detector (3-day cadence), LegiScan API ingestor for state bills, per-state burden-pressure index, weekly note section, daily callout on trend-fire. See "Regulatory Sonar" below. Wave 3 Phase 1 plan defers this to Wave 4 — waits for SERFF + LegiScan signal density. |
 
 After Wave 2 lands, extract the shared core into a `digest-core`
 framework package; PC Digest and macro-ai-digest become thin domain
@@ -396,6 +407,17 @@ src/digest/
     ├── collision_data.py     # Wave 3 — CCC + Mitchell quarterly reports; TODO validate CSS selectors on Mac mini
     ├── state_doi.py          # Wave 3 — direct state DOI press scrapers; all states enabled:false; TODO validate selectors + enable CA first
     └── industry_research.py  # Wave 3 — LexisNexis Risk + JD Power direct scraper; config/industry_research_sources.yaml; all disabled pending selector validation
+
+src/digest/sinks/      # Wave 3 Phase 1 — secondary write destinations
+├── __init__.py        # exports module-level `sink` singleton
+└── databricks.py      # DatabricksSink (no-op when DATABRICKS_ENABLED=false)
+                       # 7 write methods: ingested/fred/regime/telemetry/triage/score/summary
+                       # lazy import + lazy connection + best-effort writes
+
+packages/digest-core/sql/databricks/   # Wave 3 Phase 1 — medallion DDL
+├── bronze.sql         # 4 tables — raw firehose incl. drops + full FRED + telemetry
+├── silver.sql         # 4 tables — triage / scores (10 boost factors) / summaries / manual_ratings
+└── gold.sql           # helper + 6 curated views — leaderboards / source_quality / SLOs
 ```
 
 ## Sample next-feature prompts
