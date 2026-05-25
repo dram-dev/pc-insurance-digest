@@ -682,16 +682,23 @@ def auto_keep_usgs_major() -> int:
 
 
 def auto_keep_courtlistener_dockets() -> int:
-    """Auto-keep untriaged CourtListener dockets with score=0.85, topic=social_inflation.
+    """Auto-keep untriaged CourtListener dockets, topic=social_inflation.
 
-    CourtListener items are pre-filtered to P&C-relevant nature-of-suit codes
-    in the ingestor; every item that reaches the DB is a candidate MDL/mass-tort
-    filing worth keeping without Ollama re-gating.
+    Score depends on the metadata.mdl_match field set by the ingestor when the
+    docket's case_name matched a configured mass-tort MDL keyword:
+      - 0.95 when mdl_match is non-null (asbestos, PFAS, Roundup, opioid, etc.)
+      - 0.85 otherwise (P&C-relevant nature-of-suit only, no MDL keyword)
+
+    Every item that reaches the DB has already passed the ingestor's NOS filter,
+    so it's worth keeping without Ollama re-gating.
     """
     sql = """
         UPDATE items
         SET triage_decision = 'keep',
-            triage_score    = 0.85,
+            triage_score    = CASE
+                                WHEN json_extract(metadata_json, '$.mdl_match') IS NOT NULL THEN 0.95
+                                ELSE 0.85
+                              END,
             topic           = 'social_inflation',
             triaged_at      = datetime('now')
         WHERE source = 'courtlistener'

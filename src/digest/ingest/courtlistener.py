@@ -36,10 +36,19 @@ _REQUEST_TIMEOUT = 20
 _SLEEP_BETWEEN_CALLS = 12   # 5 req/min cap
 _DAILY_REQUEST_CAP = 100    # stay under 125/day; leave headroom for retries
 
-# Nature-of-suit codes that map to P&C-relevant mass-tort / property-damage dockets.
+# Nature-of-suit codes that map to P&C-relevant dockets. Expanded 2026-05-25
+# from {365,360,385,480,870} to include auto liability (350/355), med-mal
+# (362), pharma mass torts (367), asbestos (368 — major long-tail P&C
+# exposure), and other property damage (380).
 _PC_RELEVANT_NOS = frozenset({
-    "365",  # Personal Injury — Product Liability
+    "350",  # Motor Vehicle — auto liability suits
+    "355",  # Motor Vehicle Product Liability — auto manufacturer defects
     "360",  # Other Personal Injury
+    "362",  # Personal Injury — Medical Malpractice
+    "365",  # Personal Injury — Product Liability
+    "367",  # Health Care / Pharmaceutical Personal Injury Product Liability
+    "368",  # Asbestos Personal Injury Product Liability — long-tail P&C
+    "380",  # Other Personal Property Damage
     "385",  # Property Damage — Product Liability
     "480",  # Consumer Credit
     "870",  # Tax (insurer tax disputes)
@@ -82,6 +91,21 @@ def _is_pc_relevant(docket: dict) -> bool:
     return False
 
 
+def _match_mdl_keyword(case_name: str, keywords: list[str]) -> str | None:
+    """Substring-match case_name (case-insensitive) against MDL keywords.
+
+    Returns the first matching keyword (as configured) or None. Case names
+    are formal legal text — substring match has low false-positive rate.
+    """
+    if not case_name or not keywords:
+        return None
+    name_lower = case_name.lower()
+    for kw in keywords:
+        if kw.lower() in name_lower:
+            return kw
+    return None
+
+
 class CourtListenerIngestor(IngestorBase):
     name = "courtlistener"
 
@@ -94,6 +118,7 @@ class CourtListenerIngestor(IngestorBase):
         if not _CONFIG_PATH.exists():
             raise RuntimeError(f"CourtListener courts config missing: {_CONFIG_PATH}")
         self.config = yaml.safe_load(_CONFIG_PATH.read_text())
+        self.mdl_keywords: list[str] = self.config.get("mdl_keywords") or []
 
     def fetch(self) -> list[IngestedItem]:
         if not self.enabled:
@@ -142,6 +167,7 @@ class CourtListenerIngestor(IngestorBase):
                     abs_url = docket.get("absolute_url")
                     full_url = urljoin("https://www.courtlistener.com", abs_url) if abs_url else None
                     case_name = docket.get("case_name") or f"Docket {docket.get('id', '?')}"
+                    mdl_match = _match_mdl_keyword(case_name, self.mdl_keywords)
                     items.append(
                         IngestedItem(
                             source=self.name,
@@ -158,6 +184,7 @@ class CourtListenerIngestor(IngestorBase):
                                 "nature_of_suit": docket.get("nature_of_suit"),
                                 "date_filed":     docket.get("date_filed"),
                                 "docket_number":  docket.get("docket_number"),
+                                "mdl_match":      mdl_match,   # None unless case_name hit a keyword
                             },
                         )
                     )

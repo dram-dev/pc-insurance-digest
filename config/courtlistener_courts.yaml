@@ -51,7 +51,54 @@ federal_circuits:
   - cadc
   - cafc
 
-# Optional: ticker/MDL mapping — populate when wiring up real fetch.
-# Useful for routing dockets to specific insurer-relevant cases
-# (asbestos, PFAS, talc, opioid, paraquat, hair-relaxer, Roundup, etc.).
-mdl_keywords: []
+# Active mass-tort MDL keywords. Substring-matched (case-insensitive) against
+# docket case_name during ingest. A match attaches metadata.mdl_match=<keyword>
+# and bumps the auto-keep score from 0.85 to 0.95 (auto_keep_courtlistener_dockets
+# in db.py). Grouped by category; multi-word phrases must match as written.
+mdl_keywords:
+  # ── Asbestos / mesothelioma — long-tail P&C exposure ─────────
+  - asbestos
+  - mesothelioma
+
+  # ── PFAS / forever-chemicals (incl. AFFF firefighting foam) ──
+  - PFAS
+  - perfluoroalkyl
+  - AFFF
+  - firefighting foam
+
+  # ── Pharma / chemical mass torts ─────────────────────────────
+  - Roundup
+  - glyphosate
+  - paraquat
+  - Zantac
+  - ranitidine
+  - acetaminophen
+  - Tylenol autism
+
+  # ── Personal-care product liability ──────────────────────────
+  - hair relaxer
+  - talc
+  - talcum
+  - baby powder
+
+  # ── Medical device / implant ─────────────────────────────────
+  - transvaginal mesh
+  - pelvic mesh
+  - hernia mesh
+
+  # ── Opioid / addiction ───────────────────────────────────────
+  - opioid
+  - OxyContin
+
+  # ── Military / environmental exposure ────────────────────────
+  - 3M earplug
+  - Combat Arms
+  - Camp Lejeune
+
+  # ── Vaping / nicotine ────────────────────────────────────────
+  - JUUL
+  - e-cigarette
+
+  # ── Emerging (tech / privacy / social media) ─────────────────
+  - social media addiction
+  - BIPA
