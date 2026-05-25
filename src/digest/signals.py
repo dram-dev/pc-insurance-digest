@@ -44,15 +44,19 @@ import math
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
+import yaml
+
 from digest import db
+from digest.config import settings
 from digest.regime import current_regime, RegimeSignal
 
 logger = logging.getLogger(__name__)
 
 
-# ── Source multipliers (from CLAUDE.md "Source multipliers" table) ────
+# ── Source multipliers (defaults; user can override via _meta/Scoring Weights.md) ────
 
 SOURCE_MULT_DEFAULT = 0.7
 
@@ -60,25 +64,32 @@ SOURCE_MULT: dict[str, float] = {
     # Tier 1.3 — primary disclosures + government hazard advisories
     "edgar":   1.3,
     "nhc":     1.3,
-    # Tier 1.2 — Wave 3 placeholders (NAIC / state DOI / AM Best)
-    "usgs":    1.2,   # treat structured hazard data like a primary source
-    "fred":    1.2,   # quantitative cost-driver anomalies (already σ-gated)
-    # Tier 1.0 — trade press (handled by RSS source rolled up via the "rss" tag)
-    "rss":     1.0,
-    "spc":     1.0,
-    "nifc":    1.0,
+    "clipped": 1.3,   # user self-curated, bypasses scoring tiers
+    # Tier 1.2 — structured / regulatory primaries
+    "usgs":             1.2,
+    "fred":             1.2,
+    "courtlistener":    1.2,   # federal docket primary source (MDL filings)
+    "state_doi":        1.2,
+    "serff":            1.2,
+    "naic_schedp":      1.2,
+    # Tier 1.1 — quarterly carrier disclosures
+    "investor_supp":    1.1,
+    # Tier 1.0 — trade press, curated reports, structured government datasets
+    "rss":              1.0,
+    "spc":              1.0,
+    "nifc":             1.0,
+    "collision":        1.0,
+    "industry_research": 1.0,
     # Tier 0.9 — Substack longform
     "substack": 0.9,
     # Tier 0.7 — Reddit
     "reddit":  0.7,
     # Tier 0.6 — HN
     "hn":      0.6,
-    # Clipped items the user self-curated bypass scoring tiers
-    "clipped": 1.3,
 }
 
 
-# ── Topic priority boost (locked in CLAUDE.md) ────────────────────────
+# ── Topic priority boost (defaults; user can override) ────────────────
 
 TOPIC_PRIORITY_BOOST: dict[str, float] = {
     "personal_lines":       1.3,
@@ -183,6 +194,111 @@ _REGULATORY_KEYWORDS = (
 _REGULATORY_RE = re.compile("|".join(_REGULATORY_KEYWORDS), re.IGNORECASE)
 
 
+# ── User-editable weights (Obsidian _meta/Scoring Weights.md) ─────────
+#
+# The dict constants above are baked-in defaults. The user can override
+# any value by editing the YAML frontmatter of `Scoring Weights.md` in
+# the Obsidian vault's `_meta/` folder. The file is re-read at scoring
+# time when its mtime changes — no Python edits needed for tuning.
+#
+# Missing file → use defaults. Malformed YAML → use defaults, warning
+# logged. Unknown keys in overrides are ignored. Non-numeric values
+# are ignored with a warning. The pipeline never breaks on a bad edit.
+
+_DEFAULT_WEIGHTS: dict[str, dict[str, float]] = {
+    "sources":          dict(SOURCE_MULT),
+    "topics":           dict(TOPIC_PRIORITY_BOOST),
+    "insurer_priority": dict(PRIORITY_INSURERS_BOOST),
+    "keyword_boosts":   {"inflation": 1.2, "regulatory": 1.2, "tplf": 1.3},
+    "burden_intensity": dict(BURDEN_INTENSITY_BOOST),
+}
+
+# Cache shape: (path, mtime, weights). Re-read only when the file's
+# mtime changes; the helpers can call _load_scoring_weights() freely.
+_WEIGHTS_CACHE: tuple[Path | None, float, dict[str, dict[str, float]]] | None = None
+
+
+def _scoring_weights_path() -> Path | None:
+    if not settings.obsidian_vault_path:
+        return None
+    return (
+        Path(settings.obsidian_vault_path)
+        / settings.obsidian_digest_dir
+        / "_meta"
+        / "Scoring Weights.md"
+    )
+
+
+def _read_overrides(path: Path | None) -> dict[str, Any]:
+    """Read YAML frontmatter from the Obsidian scoring file. Empty dict
+    on missing file or unparseable YAML."""
+    if not path or not path.exists():
+        return {}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        logger.warning("scoring: read %s failed: %s", path, exc)
+        return {}
+    if not text.startswith("---"):
+        return {}
+    end = text.find("\n---", 4)
+    if end < 0:
+        return {}
+    try:
+        parsed = yaml.safe_load(text[4:end]) or {}
+    except yaml.YAMLError as exc:
+        logger.warning(
+            "scoring: YAML parse failed in %s: %s — falling back to defaults",
+            path, exc,
+        )
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _coerce_float_dict(raw: Any) -> dict[str, float]:
+    """Filter an override section to {str: float}; warn on bad entries."""
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, float] = {}
+    for k, v in raw.items():
+        try:
+            out[str(k)] = float(v)
+        except (TypeError, ValueError):
+            logger.warning("scoring: ignoring non-numeric override %s=%r", k, v)
+    return out
+
+
+def _load_scoring_weights() -> dict[str, dict[str, float]]:
+    """Defaults merged with user overrides from Obsidian. Cached on mtime.
+
+    The merge is per-section shallow — user-supplied keys override the
+    matching default key; defaults for unmentioned keys are preserved.
+    Sections the user doesn't mention fall through to defaults entirely.
+    """
+    global _WEIGHTS_CACHE
+    path = _scoring_weights_path()
+    mtime = 0.0
+    if path and path.exists():
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            mtime = 0.0
+    cached = _WEIGHTS_CACHE
+    if cached and cached[0] == path and cached[1] == mtime:
+        return cached[2]
+    overrides = _read_overrides(path)
+    merged: dict[str, dict[str, float]] = {}
+    for section, defaults in _DEFAULT_WEIGHTS.items():
+        merged[section] = {**defaults, **_coerce_float_dict(overrides.get(section))}
+    _WEIGHTS_CACHE = (path, mtime, merged)
+    if overrides:
+        logger.info(
+            "scoring: weights loaded from %s (mtime=%.0f, sections=%s)",
+            path, mtime, sorted(overrides.keys()),
+        )
+    return merged
+
+
 # ── TPLF / litigation-financing first-class boost (Wave 3 Phase 2) ────
 #
 # Fires when EITHER the LLM-classified sub_tags list contains
@@ -209,8 +325,17 @@ _TPLF_KEYWORDS = (
 _TPLF_RE = re.compile("|".join(_TPLF_KEYWORDS), re.IGNORECASE)
 
 
-def _litigation_tplf_boost(row: Any) -> float:
-    """Return LITIGATION_TPLF_BOOST when the LLM tagged the item with
+def _text_blob(row: Any) -> str:
+    """Concatenate title + summary + why_it_matters for keyword scanning."""
+    parts: list[str] = []
+    for key in ("title", "summary", "why_it_matters"):
+        if key in row.keys() and row[key]:
+            parts.append(str(row[key]))
+    return " ".join(parts)
+
+
+def _litigation_tplf_boost(row: Any, boost_value: float = 1.3) -> float:
+    """Returns `boost_value` when the LLM tagged the item with
     litigation_tplf sub_tag OR the title/summary names a TPLF / MDL signal.
     """
     sub_tags_json = row["sub_tags"] if "sub_tags" in row.keys() else None
@@ -218,46 +343,39 @@ def _litigation_tplf_boost(row: Any) -> float:
         try:
             tags = json.loads(sub_tags_json)
             if "litigation_tplf" in tags:
-                return LITIGATION_TPLF_BOOST
+                return boost_value
         except (TypeError, ValueError):
             pass
-    parts: list[str] = []
-    for key in ("title", "summary", "why_it_matters"):
-        if key in row.keys() and row[key]:
-            parts.append(str(row[key]))
-    blob = " ".join(parts)
-    return LITIGATION_TPLF_BOOST if blob and _TPLF_RE.search(blob) else 1.0
+    blob = _text_blob(row)
+    return boost_value if blob and _TPLF_RE.search(blob) else 1.0
 
 
-def _regulatory_action_boost(row: Any) -> float:
-    """Return 1.2 if title/summary/why_it_matters names a state DOI action,
+def _regulatory_action_boost(row: Any, boost_value: float = 1.2) -> float:
+    """Returns `boost_value` if title/summary names a state DOI action,
     insurer of last resort, or SERFF rate filing. Fires across topics so
     fire-routed personal_lines items with regulatory substance still benefit.
     """
-    parts: list[str] = []
-    for key in ("title", "summary", "why_it_matters"):
-        if key in row.keys():
-            val = row[key]
-            if val:
-                parts.append(str(val))
-    blob = " ".join(parts)
-    return 1.2 if blob and _REGULATORY_RE.search(blob) else 1.0
+    blob = _text_blob(row)
+    return boost_value if blob and _REGULATORY_RE.search(blob) else 1.0
 
 
-def _inflation_keyword_boost(row: Any) -> float:
-    """Return 1.2 if title/summary/why_it_matters names an inflation driver."""
-    parts: list[str] = []
-    for key in ("title", "summary", "why_it_matters"):
-        if key in row.keys():
-            val = row[key]
-            if val:
-                parts.append(str(val))
-    blob = " ".join(parts)
-    return 1.2 if blob and _INFLATION_RE.search(blob) else 1.0
+def _inflation_keyword_boost(row: Any, boost_value: float = 1.2) -> float:
+    """Returns `boost_value` if title/summary names an inflation driver."""
+    blob = _text_blob(row)
+    return boost_value if blob and _INFLATION_RE.search(blob) else 1.0
 
 
-def _insurer_priority_boost(source: str, metadata_json: Any) -> float:
-    """Return per-ticker boost for EDGAR items; 1.0 otherwise."""
+def _insurer_priority_boost(
+    source: str,
+    metadata_json: Any,
+    insurer_map: dict[str, float] | None = None,
+) -> float:
+    """Returns per-ticker boost for EDGAR items; 1.0 otherwise.
+
+    `insurer_map` defaults to the module-level PRIORITY_INSURERS_BOOST so
+    older external callers (tests, scripts) continue to work; production
+    callers pass the user-overridable map from _load_scoring_weights().
+    """
     if source != "edgar" or not metadata_json:
         return 1.0
     try:
@@ -268,7 +386,8 @@ def _insurer_priority_boost(source: str, metadata_json: Any) -> float:
     # Normalize BRK.A / BRK.B / BRK-B → BRK for matching
     if ticker.startswith("BRK"):
         ticker = "BRK"
-    return PRIORITY_INSURERS_BOOST.get(ticker, 1.0)
+    table = insurer_map if insurer_map is not None else PRIORITY_INSURERS_BOOST
+    return table.get(ticker, 1.0)
 
 
 # ── Recency ────────────────────────────────────────────────────────────
@@ -350,12 +469,26 @@ class Score:
         }
 
 
-def score_item(row: Any, regime: RegimeSignal) -> Score:
-    """Compute the leaderboard score for one item row."""
+def score_item(
+    row: Any,
+    regime: RegimeSignal,
+    weights: dict[str, dict[str, float]] | None = None,
+) -> Score:
+    """Compute the leaderboard score for one item row.
+
+    Weights resolution order: explicit `weights` arg → cached load from
+    Obsidian _meta/Scoring Weights.md → module-level defaults. Production
+    `run_signals` passes a single resolved dict so a per-batch reload
+    happens at most once; ad-hoc callers can omit and pay the cached lookup.
+    """
+    if weights is None:
+        weights = _load_scoring_weights()
+
     source     = (row["source"] or "").lower()
     topic      = (row["topic"]  or "").lower()
 
-    src_mult   = SOURCE_MULT.get(source, SOURCE_MULT_DEFAULT)
+    sources    = weights["sources"]
+    src_mult   = sources.get(source, sources.get("default", SOURCE_MULT_DEFAULT))
     rg_mult    = regime.multiplier
     topic_rel  = _topic_relevance(topic, regime)
     rec        = _recency(
@@ -370,20 +503,21 @@ def score_item(row: Any, regime: RegimeSignal) -> Score:
         llm_j = 1.0
     llm_j = max(0.5, min(1.5, llm_j))
 
-    topic_boost  = TOPIC_PRIORITY_BOOST.get(topic, 1.0)
+    topic_boost  = weights["topics"].get(topic, 1.0)
 
     burden_intensity = (
         row["burden_intensity"] if "burden_intensity" in row.keys() else None
     )
-    burden_boost = BURDEN_INTENSITY_BOOST.get(
+    burden_boost = weights["burden_intensity"].get(
         (burden_intensity or "").lower(), 1.0
     )
 
+    kw = weights["keyword_boosts"]
     metadata_json = row["metadata_json"] if "metadata_json" in row.keys() else None
-    insurer_boost    = _insurer_priority_boost(source, metadata_json)
-    inflation_boost  = _inflation_keyword_boost(row)
-    regulatory_boost = _regulatory_action_boost(row)
-    tplf_boost       = _litigation_tplf_boost(row)
+    insurer_boost    = _insurer_priority_boost(source, metadata_json, weights["insurer_priority"])
+    inflation_boost  = _inflation_keyword_boost(row,  kw.get("inflation",  1.2))
+    regulatory_boost = _regulatory_action_boost(row,  kw.get("regulatory", 1.2))
+    tplf_boost       = _litigation_tplf_boost(row,    kw.get("tplf",       1.3))
 
     score = (
         src_mult * rg_mult * topic_rel * rec
@@ -419,10 +553,14 @@ def run_signals() -> dict[str, int]:
         logger.info("signals: nothing to score")
         return {"scored": 0}
 
+    # Resolve weights once per batch so the YAML mtime stat happens at most
+    # once even when scoring hundreds of items. Edits to Scoring Weights.md
+    # land on the next run, not mid-batch.
+    weights = _load_scoring_weights()
     computed_at = datetime.now(timezone.utc).isoformat()
     scored: list[dict[str, Any]] = []
     for row in rows:
-        s = score_item(row, regime)
+        s = score_item(row, regime, weights=weights)
         scored.append(s.as_row(computed_at))
 
     inserted = db.upsert_signal_scores(scored)

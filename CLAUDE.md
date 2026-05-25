@@ -218,6 +218,17 @@ across the pipeline:
   Final formula:
   `score = source × regime × topic_relevance × recency × llm_judgment × topic_priority_boost × burden_intensity_boost × insurer_priority_boost × inflation_keyword_boost × regulatory_action_boost × litigation_tplf_boost`.
 
+  **User-editable weights** (Wave 3 Phase 4, shipped 2026-05-25): the
+  boost VALUES above are now defaults — the user can override any of
+  them by editing the YAML frontmatter of
+  `${OBSIDIAN_VAULT_PATH}/81 P&C Digest/_meta/Scoring Weights.md`.
+  `signals.py` re-reads the file on each `digest signals` run when its
+  mtime changes (cached otherwise). Missing file or malformed YAML →
+  fall back to defaults silently with a warning. Unknown keys ignored.
+  Sections: `sources`, `topics`, `insurer_priority`, `keyword_boosts`,
+  `burden_intensity`. Regex patterns for the keyword boosts stay
+  code-side; only the boost VALUES are tunable.
+
 - **LLM materiality anchors** (`summarize.py` SYSTEM_PROMPT, sharpened
   2026-05-24 after Score Higher review): the 1.5 tier now explicitly
   requires industry-wide records ("biggest in N years"), top-5-state
