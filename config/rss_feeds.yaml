@@ -182,6 +182,33 @@ feeds:
     topic_hint: personal_lines
     limit: 12
 
+  # ── Industry economics + business press (Wave 3 Phase 1) ─────
+  # Top-tier financial-press insurance-desk coverage. Site-scoped GN
+  # queries surface industry-level economics + major-company trends
+  # that don't make trade-press feeds. Topic hint is macro_linkage
+  # but triage will reclassify per-article (ma_capital for deals,
+  # underwriting_results for combined-ratio coverage, etc.).
+
+  - name: google_news_ft_insurance
+    url: 'https://news.google.com/rss/search?q=when:14d+site:ft.com+(insurance+OR+insurer+OR+reinsurance+OR+%22Lloyd%27s%22)&hl=en-US&gl=US&ceid=US:en'
+    topic_hint: macro_linkage
+    limit: 12
+
+  - name: google_news_economist_insurance
+    url: 'https://news.google.com/rss/search?q=when:14d+site:economist.com+(insurance+OR+insurer+OR+reinsurance)&hl=en-US&gl=US&ceid=US:en'
+    topic_hint: macro_linkage
+    limit: 10
+
+  - name: google_news_wsj_insurance
+    url: 'https://news.google.com/rss/search?q=when:14d+site:wsj.com+(insurance+OR+insurer+OR+reinsurance+OR+%22Lloyd%27s%22)&hl=en-US&gl=US&ceid=US:en'
+    topic_hint: macro_linkage
+    limit: 12
+
+  - name: google_news_bloomberg_insurance
+    url: 'https://news.google.com/rss/search?q=when:14d+site:bloomberg.com+(insurance+OR+insurer+OR+reinsurance+OR+%22Lloyd%27s%22)&hl=en-US&gl=US&ceid=US:en'
+    topic_hint: macro_linkage
+    limit: 12
+
   # ── NOAA / catastrophe early warning ─────────────────────────
   # Direct feeds now live in src/digest/ingest/{nhc,usgs,spc,nifc}.py
   # (Wave 2). Google News NHC proxy retired.
