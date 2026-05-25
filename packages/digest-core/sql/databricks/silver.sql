@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS silver.triage_verdicts (
 )
 USING DELTA;
 
--- Per-item leaderboard score with all 10 multiplicative factors broken out.
+-- Per-item leaderboard score with all 11 multiplicative factors broken out.
 -- Enables back-testing: "if I bump PGR insurer_boost to 1.7×, what would last
 -- week's top-5 have looked like?" Columns mirror SQLite signal_scores exactly.
 CREATE TABLE IF NOT EXISTS silver.signal_scores (
@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS silver.signal_scores (
     insurer_boost     DOUBLE,
     inflation_boost   DOUBLE,
     regulatory_boost  DOUBLE,
+    tplf_boost        DOUBLE,                      -- Wave 3 Phase 2: TPLF / mass-tort sub_tag boost
     CONSTRAINT silver_score_pk PRIMARY KEY (item_hash, computed_at)
 )
 USING DELTA;

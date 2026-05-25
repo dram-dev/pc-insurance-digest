@@ -388,6 +388,7 @@ def run_triage(limit: int = 200) -> dict[str, int]:
                 topic=verdict["topic"],
                 burden_direction=verdict.get("burden_direction"),
                 burden_intensity=verdict.get("burden_intensity"),
+                sub_tags=verdict.get("sub_tags"),
             )
             if verdict["decision"] == "keep":
                 counts["kept"] += 1

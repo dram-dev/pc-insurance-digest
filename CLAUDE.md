@@ -192,7 +192,7 @@ across the pipeline:
       "regulatory_rate":      1.2,   # state DOI / SERFF / NAIC (stacks with burden_boost)
   }
   ```
-  applied alongside three additional cross-cutting factors (Wave 2.x):
+  applied alongside four additional cross-cutting factors (Wave 2.x + Wave 3 Phase 2):
 
   ```python
   insurer_priority_boost = {   # EDGAR items only, keyed on metadata.ticker
@@ -208,10 +208,15 @@ across the pipeline:
                                  # insurer of last resort (FAIR Plan, Citizens),
                                  # SERFF rate filing, NAIC adoption, NYDFS/CDI/
                                  # FLOIR/TDI/LDI bulletin, tort-reform bill
+  litigation_tplf_boost  = 1.3   # Wave 3 Phase 2 — fires when (a) the LLM tags
+                                 # sub_tags=['litigation_tplf'] OR (b) title/
+                                 # summary names TPLF/MDL/nuclear-verdict
+                                 # signals. Stacks on top of social_inflation's
+                                 # 1.4× topic_priority_boost → 1.82× combined.
   ```
 
   Final formula:
-  `score = source × regime × topic_relevance × recency × llm_judgment × topic_priority_boost × burden_intensity_boost × insurer_priority_boost × inflation_keyword_boost × regulatory_action_boost`.
+  `score = source × regime × topic_relevance × recency × llm_judgment × topic_priority_boost × burden_intensity_boost × insurer_priority_boost × inflation_keyword_boost × regulatory_action_boost × litigation_tplf_boost`.
 
 - **LLM materiality anchors** (`summarize.py` SYSTEM_PROMPT, sharpened
   2026-05-24 after Score Higher review): the 1.5 tier now explicitly

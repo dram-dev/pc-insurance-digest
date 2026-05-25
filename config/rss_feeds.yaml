@@ -98,6 +98,15 @@ feeds:
     topic_hint: social_inflation
     limit: 15
 
+  - name: google_news_ilr_atra
+    # Wave 3 Phase 2 — Tort-reform advocacy publications (ILR + ATRA + American
+    # Tort Reform Foundation). Higher-trust source for TPLF / mass-tort policy
+    # reads than the broader google_news_litigation_tplf feed; topic_hint stays
+    # social_inflation so the litigation_tplf sub_tag + tplf_boost can stack.
+    url: 'https://news.google.com/rss/search?q=when:14d+(%22Institute+for+Legal+Reform%22+OR+%22American+Tort+Reform%22+OR+(%22ILR%22+%22litigation%22)+OR+(%22ATRA%22+%22tort%22)+OR+%22judicial+hellholes%22)&hl=en-US&gl=US&ceid=US:en'
+    topic_hint: social_inflation
+    limit: 12
+
   - name: google_news_insurer_ma
     url: 'https://news.google.com/rss/search?q=when:7d+(%22insurer+acquisition%22+OR+%22insurance+M%26A%22+OR+%22carrier+merger%22+OR+%22broker+acquisition%22)&hl=en-US&gl=US&ceid=US:en'
     topic_hint: ma_capital

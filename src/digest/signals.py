@@ -183,6 +183,52 @@ _REGULATORY_KEYWORDS = (
 _REGULATORY_RE = re.compile("|".join(_REGULATORY_KEYWORDS), re.IGNORECASE)
 
 
+# ── TPLF / litigation-financing first-class boost (Wave 3 Phase 2) ────
+#
+# Fires when EITHER the LLM-classified sub_tags list contains
+# 'litigation_tplf' OR the title/summary regex hits one of the explicit
+# TPLF / mass-tort phrasings. Stacks on top of topic_priority_boost for
+# social_inflation (1.4×) — a TPLF item lands at 1.4 × 1.3 = 1.82× topic
+# weight, which is the user's intent given the Liability Intelligence
+# cluster scope in Wave 3.
+
+LITIGATION_TPLF_BOOST = 1.3
+
+_TPLF_KEYWORDS = (
+    r"\bthird[- ]party (?:litigation )?(?:financ\w+|fund\w+)\b",
+    r"\bTPLF\b",
+    r"\blitigation (?:funder|financier|finance|funding)\b",
+    r"\battorney (?:advance|funding)\b",
+    r"\bjudgment monetization\b",
+    r"\bmass tort (?:funder|MDL)\b",
+    r"\bnuclear verdict\b",
+    r"\baggregate (?:settlement|verdict)\b",
+    r"\bMDL panel\b",
+)
+
+_TPLF_RE = re.compile("|".join(_TPLF_KEYWORDS), re.IGNORECASE)
+
+
+def _litigation_tplf_boost(row: Any) -> float:
+    """Return LITIGATION_TPLF_BOOST when the LLM tagged the item with
+    litigation_tplf sub_tag OR the title/summary names a TPLF / MDL signal.
+    """
+    sub_tags_json = row["sub_tags"] if "sub_tags" in row.keys() else None
+    if sub_tags_json:
+        try:
+            tags = json.loads(sub_tags_json)
+            if "litigation_tplf" in tags:
+                return LITIGATION_TPLF_BOOST
+        except (TypeError, ValueError):
+            pass
+    parts: list[str] = []
+    for key in ("title", "summary", "why_it_matters"):
+        if key in row.keys() and row[key]:
+            parts.append(str(row[key]))
+    blob = " ".join(parts)
+    return LITIGATION_TPLF_BOOST if blob and _TPLF_RE.search(blob) else 1.0
+
+
 def _regulatory_action_boost(row: Any) -> float:
     """Return 1.2 if title/summary/why_it_matters names a state DOI action,
     insurer of last resort, or SERFF rate filing. Fires across topics so
@@ -283,6 +329,7 @@ class Score:
     insurer_boost: float
     inflation_boost: float
     regulatory_boost: float
+    tplf_boost: float
 
     def as_row(self, computed_at: str) -> dict[str, Any]:
         return {
@@ -299,6 +346,7 @@ class Score:
             "insurer_boost":    self.insurer_boost,
             "inflation_boost":  self.inflation_boost,
             "regulatory_boost": self.regulatory_boost,
+            "tplf_boost":       self.tplf_boost,
         }
 
 
@@ -335,11 +383,13 @@ def score_item(row: Any, regime: RegimeSignal) -> Score:
     insurer_boost    = _insurer_priority_boost(source, metadata_json)
     inflation_boost  = _inflation_keyword_boost(row)
     regulatory_boost = _regulatory_action_boost(row)
+    tplf_boost       = _litigation_tplf_boost(row)
 
     score = (
         src_mult * rg_mult * topic_rel * rec
         * llm_j * topic_boost * burden_boost
         * insurer_boost * inflation_boost * regulatory_boost
+        * tplf_boost
     )
     return Score(
         item_id=int(row["id"]),
@@ -354,6 +404,7 @@ def score_item(row: Any, regime: RegimeSignal) -> Score:
         insurer_boost=round(insurer_boost, 3),
         inflation_boost=round(inflation_boost, 3),
         regulatory_boost=round(regulatory_boost, 3),
+        tplf_boost=round(tplf_boost, 3),
     )
 
 

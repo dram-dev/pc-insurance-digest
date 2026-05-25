@@ -174,7 +174,7 @@ class DatabricksSink:
             "score":            score_row.get("score"),
             "source_mult":      score_row.get("source_mult"),
             "regime_mult":      score_row.get("regime_mult"),
-            "topic_relevance":  score_row.get("topic_relevance"),
+            "topic_relevance": score_row.get("topic_relevance"),
             "recency":          score_row.get("recency"),
             "llm_judgment":     score_row.get("llm_judgment"),
             "topic_boost":      score_row.get("topic_boost"),
@@ -182,6 +182,7 @@ class DatabricksSink:
             "insurer_boost":    score_row.get("insurer_boost"),
             "inflation_boost":  score_row.get("inflation_boost"),
             "regulatory_boost": score_row.get("regulatory_boost"),
+            "tplf_boost":       score_row.get("tplf_boost"),
         }
         self._insert("silver.signal_scores", [row])
 

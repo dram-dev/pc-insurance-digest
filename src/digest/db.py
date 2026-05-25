@@ -182,6 +182,10 @@ MIGRATIONS = [
     "ALTER TABLE signal_scores ADD COLUMN inflation_boost REAL DEFAULT 1.0",
     # Score Higher review (2026-05-24): regulatory/state-action keyword boost
     "ALTER TABLE signal_scores ADD COLUMN regulatory_boost REAL DEFAULT 1.0",
+    # Wave 3 Phase 2 (2026-05-25): persist triage sub_tags (JSON list of strings,
+    # e.g. ["litigation_tplf"]) + dedicated TPLF leaderboard boost.
+    "ALTER TABLE items ADD COLUMN sub_tags TEXT DEFAULT '[]'",
+    "ALTER TABLE signal_scores ADD COLUMN tplf_boost REAL DEFAULT 1.0",
 ]
 
 
@@ -330,7 +334,7 @@ def items_for_signals() -> list[sqlite3.Row]:
                published_at, ingested_at,
                topic, summary, why_it_matters, confidence, see_also,
                triage_score, materiality_score,
-               burden_direction, burden_intensity, metadata_json,
+               burden_direction, burden_intensity, sub_tags, metadata_json,
                ensemble_consensus, ensemble_dispersion, cluster_id,
                sentiment_label, sentiment_score
         FROM items
@@ -737,13 +741,19 @@ def update_triage(
     topic: str | None,
     burden_direction: str | None = None,
     burden_intensity: str | None = None,
+    sub_tags: list[str] | None = None,
 ) -> None:
     """Record a triage outcome on an item.
 
     burden_direction / burden_intensity are populated by the LLM for
     regulatory_rate items only (Regulatory Sonar lite). Pass None for all
     other topics — the columns will remain NULL.
+
+    sub_tags is the LLM's sub-classification list (currently only
+    ['litigation_tplf'] for TPLF / MDL / attorney economics). Stored as
+    JSON; consumed by signals.py for the tplf_boost factor.
     """
+    sub_tags_json = json.dumps(sub_tags or [])
     pair: tuple[str, str] | None = None
     with get_conn() as conn:
         row = conn.execute(
@@ -759,16 +769,19 @@ def update_triage(
                 topic            = ?,
                 burden_direction = ?,
                 burden_intensity = ?,
+                sub_tags         = ?,
                 triaged_at       = datetime('now')
             WHERE id = ?
             """,
-            (decision, score, topic, burden_direction, burden_intensity, item_id),
+            (decision, score, topic, burden_direction, burden_intensity,
+             sub_tags_json, item_id),
         )
     if pair:
         sink.write_triage(pair[0], pair[1], {
             "decision":         decision,
             "score":            score,
             "topic":             topic,
+            "sub_tags":         sub_tags or [],
             "burden_direction": burden_direction,
             "burden_intensity": burden_intensity,
         })
@@ -1377,12 +1390,12 @@ def upsert_signal_scores(rows: list[dict]) -> int:
             (item_id, computed_at, score,
              source_mult, regime_mult, topic_relevance, recency,
              llm_judgment, topic_boost, burden_boost,
-             insurer_boost, inflation_boost, regulatory_boost)
+             insurer_boost, inflation_boost, regulatory_boost, tplf_boost)
         VALUES
             (:item_id, :computed_at, :score,
              :source_mult, :regime_mult, :topic_relevance, :recency,
              :llm_judgment, :topic_boost, :burden_boost,
-             :insurer_boost, :inflation_boost, :regulatory_boost)
+             :insurer_boost, :inflation_boost, :regulatory_boost, :tplf_boost)
     """
     item_ids = [int(r["item_id"]) for r in rows if r.get("item_id") is not None]
     src_map: dict[int, tuple[str, str]] = {}
