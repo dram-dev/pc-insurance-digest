@@ -52,15 +52,25 @@ Each is committed on `master` and pushed to
 | Signal leaderboard (`signals.py`) — `source × regime × topic_relevance × recency × llm_judgment × topic_priority_boost × burden_intensity_boost`; top-5 daily, top-15 + per-source quality weekly | ✅ |
 | Regulatory Sonar lite — `burden_direction` / `burden_intensity` triage fields on `regulatory_rate` items, `burden_intensity_boost` in leaderboard scoring, daily-note callout on high-intensity items. See "Regulatory Sonar" below. | ✅ |
 
+**Wave 2.x (shipped 2026-05-24 from Score Higher review):**
+
+| Component | Status |
+|---|---|
+| 9 new state-DOI / FAIR Plan / trade-body Google News RSS proxies in `config/rss_feeds.yaml` (CA CDI, FL FLOIR, TX TDI, NY DFS, LA LDI, FAIR Plan, personal-auto rates, homeowners rates, APCIA/NAMIC, Triple-I) | ✅ |
+| FRED ingestor — 7 P&C loss-cost CPI/PPI series with ±1.5σ anomaly gate; auto-keep via `auto_keep_quantitative()`; topic locked to `supply_chain` | ✅ |
+| Industry-research Google News proxy (LexisNexis Risk Solutions + JD Power) | ✅ |
+| Scaffolded ingestors registered + no-op safe: `courtlistener`, `collision`, `state_doi` | ✅ |
+
 **Wave 3:**
 
 *Liability Intelligence cluster (new — highest user priority):*
 
 | Item | Detail |
 |---|---|
-| **Verdict / docket tracker** | CourtListener/RECAP API for federal MDL filings (free, open); Law360 + ILR/ATRA RSS for verdict reporting. 3-tier jurisdiction: Tier 1 FL/CA/NY/IL/PA/NJ · Emerging GA/TX/LA · Tier 3 OK/MO/NV/MI/OH + all federal circuits. Auto-keep hook → `social_inflation`. |
-| **TPLF dedicated ingestor** | Sources: PACER court RSS, ILR/ATRA advocacy publications, Law360/Bloomberg Law RSS, LegiScan state disclosure bills (shared LegiScan client with Regulatory Sonar). Promote `litigation_tplf` sub_tag to a first-class leaderboard boost factor. |
-| **Claims / actuarial dataset** | (a) NAIC Schedule P triangles — reserve development by line of business, annual cadence, parsed for adverse-dev signals. (b) Insurer investor supplement PDFs — quarterly frequency, paid severity, and pending-count tables for the 14-insurer universe. Both feed `reserving` and `social_inflation` signals. |
+| **Verdict / docket tracker** | Scaffold in `src/digest/ingest/courtlistener.py` — fetches federal docket entries from selected MDL courts when COURTLISTENER_TOKEN is set. CourtListener/RECAP API (free, 125 req/day). 3-tier jurisdiction lists in `config/courtlistener_courts.yaml`. Add auto-keep Python hook → `social_inflation` when wiring the real fetch. |
+| **TPLF dedicated ingestor** | Sources: PACER court RSS (via CourtListener), ILR/ATRA advocacy publications, Law360/Bloomberg Law RSS, LegiScan state disclosure bills (shared LegiScan client with Regulatory Sonar). Promote `litigation_tplf` sub_tag to a first-class leaderboard boost factor. |
+| **Claims / actuarial dataset** | (a) NAIC Schedule P triangles — reserve development by line of business, annual cadence, parsed for adverse-dev signals. (b) Insurer investor supplement PDFs — quarterly frequency, paid severity, and pending-count tables for the 14-insurer universe. Both feed `reserving` and `social_inflation` signals. (c) CCC/Mitchell quarterly collision reports — scaffold in `src/digest/ingest/collision_data.py`. |
+| **State DOI direct scrapers** | Scaffold in `src/digest/ingest/state_doi.py` + `config/state_doi_sources.yaml`. Per-state enabled flag; build CA first (highest volume), then FL/TX/NY/LA. Complements the Google News proxies (faster bulletin pickup, no Google indexing lag). |
 
 *Source expansion (carried over):*
 
@@ -153,20 +163,50 @@ this dict.
 
 **Personal lines auto + homeowners/fire is the highest-priority topic
 signal. Liability trends (social inflation, commercial specialty, reserving)
-are boosted above personal lines to keep them from being buried by cat_event
-volume.** This applies across the pipeline:
+and inflation cost-driver feeds (supply chain) are boosted above personal
+lines to keep them from being buried by cat_event volume.** This applies
+across the pipeline:
 
 - **Scoring (Wave 2 leaderboard):**
   ```python
   topic_priority_boost = {
-      "personal_lines":      1.3,
-      "social_inflation":    1.4,   # nuclear verdicts, tort reform, TPLF
-      "commercial_specialty": 1.4,  # GL, WC, D&O/E&O, E&S
-      "reserving":           1.4,   # adverse dev, IBNR, long-tail
+      "personal_lines":       1.3,
+      "social_inflation":     1.4,   # nuclear verdicts, tort reform, TPLF
+      "commercial_specialty": 1.4,   # GL, WC, D&O/E&O, E&S
+      "reserving":            1.4,   # adverse dev, IBNR, long-tail
+      "supply_chain":         1.4,   # auto parts, construction, labor, medical/Rx
+      "underwriting_results": 1.2,   # combined ratio, AY commentary, industry profitability
+      "distribution":         1.2,   # broker M&A (MMC/AON/WTW/BRO/AJG/RYAN/Patriot)
+      "regulatory_rate":      1.2,   # state DOI / SERFF / NAIC (stacks with burden_boost)
   }
   ```
-  applied as the last factor in the score formula
-  (`source_mult × regime_mult × topic_relevance × recency × llm_judgment × topic_priority_boost`).
+  applied alongside three additional cross-cutting factors (Wave 2.x):
+
+  ```python
+  insurer_priority_boost = {   # EDGAR items only, keyed on metadata.ticker
+      "PGR": 1.5, "ALL": 1.5, "BRK": 1.5,   # personal-auto big-3 (BRK = GEICO parent)
+      "TRV": 1.3, "CB": 1.3,
+      "HIG": 1.2, "AIG": 1.2,
+  }
+  inflation_keyword_boost = 1.2  # title/summary names an inflation driver: auto
+                                 # parts, construction cost, labor cost/supply,
+                                 # verdict/judgement/settlement, tort reform,
+                                 # severity/loss cost, body shop, repair cost
+  regulatory_action_boost = 1.2  # title/summary names a state DOI action,
+                                 # insurer of last resort (FAIR Plan, Citizens),
+                                 # SERFF rate filing, NAIC adoption, NYDFS/CDI/
+                                 # FLOIR/TDI/LDI bulletin, tort-reform bill
+  ```
+
+  Final formula:
+  `score = source × regime × topic_relevance × recency × llm_judgment × topic_priority_boost × burden_intensity_boost × insurer_priority_boost × inflation_keyword_boost × regulatory_action_boost`.
+
+- **LLM materiality anchors** (`summarize.py` SYSTEM_PROMPT, sharpened
+  2026-05-24 after Score Higher review): the 1.5 tier now explicitly
+  requires industry-wide records ("biggest in N years"), top-5-state
+  DOI rate actions ≥10%, FAIR Plan / Citizens actions, tort-reform
+  passage, nuclear verdicts ≥$50M, or reinsurer capital events ≥$500M.
+  Prompt anchors the LLM to ERR HIGH on systemic signals.
 - **Topic ordering:** `personal_lines` lifted near top of `TOPIC_ORDER` in
   [src/digest/obsidian.py](src/digest/obsidian.py). Only `cat_event`
   precedes it, and only when regime = `post_major_event` or `active_season`.
@@ -257,14 +297,39 @@ Stagger is 3 h on daily, full overnight gap before the weekly.
 Future bulletproof deconfliction (deferred): lockfile at `/tmp/mlx.lock`
 checked in `summarize.py`.
 
-### Insurer ticker universe (Wave 1)
+### Insurer ticker universe (Wave 1 + BRK)
 
 Lives in [config/edgar_tickers.yaml](config/edgar_tickers.yaml) AND as
 the Python set `INSURER_TICKERS_WAVE1` in
 [src/digest/triage.py](src/digest/triage.py). **Keep them in sync** —
 the triage Python auto-keep hook reads the Python set directly.
 
-TRV · ALL · PGR · CB · HIG · AIG · MET · PRU · RNR · EG · AXS · MMC · AON · WTW
+TRV · ALL · PGR · CB · HIG · AIG · MET · PRU · RNR · EG · AXS · MMC · AON · WTW · BRK
+
+BRK (Berkshire Hathaway) was added in Wave 2.x to cover GEICO via the
+parent's consolidated filings. The insurer-priority boost treats BRK at
+1.5× (same as PGR/ALL) since GEICO is a personal-auto big-3 carrier.
+
+### EDGAR auto-keep behavior
+
+The Python hook (`db.auto_keep_insurer_filings`) auto-keeps every 8-K /
+10-Q / 10-K from the named ticker universe and **locks the topic at
+triage time** so the summarizer can't reclassify a content-less filing
+as `ai_insurtech`:
+
+| Form    | Locked topic           |
+|---------|------------------------|
+| 8-K     | `underwriting_results` |
+| 10-Q    | `underwriting_results` |
+| 10-K    | `underwriting_results` |
+| 13F-HR  | `ma_capital`           |
+
+`src/digest/ingest/edgar.py` fetches body content for 8-K (EX-99.1 press
+release) and 10-Q/10-K (primary doc head, 5K chars) within a 21-day
+cutoff. Older filings reach summarize.py with empty content; the
+`_maybe_stub_insurer_filing` short-circuit emits a deterministic stub
+(materiality 0.9, confidence low) instead of calling MLX — preventing
+the "...no body content..." hallucination pattern.
 
 ### Obsidian output
 
@@ -324,7 +389,11 @@ src/digest/
     ├── nhc.py         # Wave 2 — NHC tropical cyclone RSS (US/Caribbean threat filter)
     ├── usgs.py        # Wave 2 — USGS M ≥ 5.0 earthquake GeoJSON
     ├── spc.py         # Wave 2 — SPC convective outlook RSS
-    └── nifc.py        # Wave 2 — NIFC WFIGS active wildfire ArcGIS REST
+    ├── nifc.py        # Wave 2 — NIFC WFIGS active wildfire ArcGIS REST
+    ├── fred.py        # Wave 2.x — FRED CPI/PPI cost-driver anomalies (live)
+    ├── courtlistener.py  # Wave 3 — federal MDL docket tracker (scaffold)
+    ├── collision_data.py # Wave 3 — CCC + Mitchell quarterly reports (scaffold)
+    └── state_doi.py      # Wave 3 — direct state DOI press scrapers (scaffold)
 ```
 
 ## Sample next-feature prompts
