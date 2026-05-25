@@ -50,8 +50,12 @@ feeds:
   # Both replaced by google_news_reinsurance below.
 
   # ── Regulatory + rating agency ───────────────────────────────
-  # am_best_news direct RSS blocked by Radware bot detection. Replaced by
-  # Google News site:ambest.com proxy below.
+  # am_best_news direct RSS blocked by Radware bot detection.
+  # Retested 2026-05-25 with a realistic Mozilla/Chrome UA against
+  # news.ambest.com/{RSS.aspx, article.aspx?refnum=newsfeed.rss,
+  # articleslidecontent.aspx?refnum=newsfeed}: all 302-redirect to a JS
+  # challenge page (Server: rdwr). UA alone can't bypass; would need a
+  # headless browser. Keeping the google_news_am_best proxy below.
   # naic_news direct RSS dead (URL pattern changed). Replaced by
   # Google News site:naic.org proxy below.
   - name: google_news_am_best
