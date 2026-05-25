@@ -548,7 +548,7 @@ def auto_keep_clipped() -> int:
 # Quantitative ingestors pre-filter to anomalous readings only — every item
 # that reaches the DB has already passed a z-score or dollar threshold.
 # Letting Qwen re-gate them with prose-oriented criteria drops valid signals.
-QUANT_SOURCES = ("fred", "cboe", "cftc", "yahoo", "insider", "ftd")
+QUANT_SOURCES = ("fred", "cboe", "cftc", "yahoo", "insider", "ftd", "collision", "industry_research")
 
 
 def auto_keep_insurer_filings(
@@ -650,6 +650,48 @@ def auto_keep_usgs_major() -> int:
         WHERE source = 'usgs'
           AND triage_decision IS NULL
           AND CAST(json_extract(metadata_json, '$.magnitude') AS REAL) >= 6.0
+    """
+    with get_conn() as conn:
+        cur = conn.execute(sql)
+        return cur.rowcount or 0
+
+
+def auto_keep_courtlistener_dockets() -> int:
+    """Auto-keep untriaged CourtListener dockets with score=0.85, topic=social_inflation.
+
+    CourtListener items are pre-filtered to P&C-relevant nature-of-suit codes
+    in the ingestor; every item that reaches the DB is a candidate MDL/mass-tort
+    filing worth keeping without Ollama re-gating.
+    """
+    sql = """
+        UPDATE items
+        SET triage_decision = 'keep',
+            triage_score    = 0.85,
+            topic           = 'social_inflation',
+            triaged_at      = datetime('now')
+        WHERE source = 'courtlistener'
+          AND triage_decision IS NULL
+    """
+    with get_conn() as conn:
+        cur = conn.execute(sql)
+        return cur.rowcount or 0
+
+
+def auto_keep_state_doi() -> int:
+    """Auto-keep untriaged state DOI items with score=0.9, topic=regulatory_rate.
+
+    The state_doi ingestor only emits items from enabled states with confirmed
+    selectors; every item that reaches the DB is a direct DOI press release
+    that warrants regulatory_rate classification without Ollama re-gating.
+    """
+    sql = """
+        UPDATE items
+        SET triage_decision = 'keep',
+            triage_score    = 0.9,
+            topic           = 'regulatory_rate',
+            triaged_at      = datetime('now')
+        WHERE source = 'state_doi'
+          AND triage_decision IS NULL
     """
     with get_conn() as conn:
         cur = conn.execute(sql)

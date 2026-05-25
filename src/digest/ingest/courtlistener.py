@@ -1,29 +1,28 @@
-"""CourtListener / RECAP federal docket ingestor — SCAFFOLD.
+"""CourtListener / RECAP federal docket ingestor.
 
-Wave 3 ingestor for federal multidistrict litigation (MDL) and high-impact
-docket activity in target jurisdictions. Pulls from the free PACER mirror
-maintained by the Free Law Project.
+Pulls new federal docket filings from the free PACER mirror maintained by
+the Free Law Project. Targets P&C-relevant MDL courts and filters to
+nature-of-suit codes associated with mass-tort, product-liability, and
+property-damage litigation that drives social inflation.
 
-Status: scaffold only. fetch() returns [] when COURTLISTENER_TOKEN is
-absent, so the ingestor is safe to register in INGESTORS without
-disabling pipelines. When the token is set, the current implementation
-returns [] with a TODO log line — fill in the docket-search logic.
+Rate limits (free tier): 5 req/min, 50 req/hour, 125 req/day.
+This module enforces a 12s inter-request sleep and a 100-request daily
+cap via a module-level counter. Courts are queried in tier order: tier1
+(highest verdict volume) → emerging → tier3. Federal circuits are skipped
+(appellate dockets are less useful for new-filing tracking).
 
-API reference: https://www.courtlistener.com/help/api/rest/v4/overview
-  - Endpoint:  https://www.courtlistener.com/api/rest/v4/dockets/
-  - Auth:      Authorization: Token <token>
-  - Limits:    5 req/min, 50 req/hour, 125 req/day on the free tier
-  - Filter:    ?court=<id>&filed_after=<YYYY-MM-DD>&order_by=-date_filed
-  - Pagination: standard ?page=N
-
-Target topic: social_inflation (1.4 topic boost). Auto-keep via a
-future Python hook in db.py (TODO) once query semantics are stable.
+Token absent → no-op. Source multiplier treated as 1.0 (no explicit
+entry in CLAUDE.md; will be calibrated post-launch).
 """
 from __future__ import annotations
 
 import logging
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import urljoin
 
+import requests
 import yaml
 
 from digest.config import settings
@@ -33,6 +32,54 @@ logger = logging.getLogger(__name__)
 
 _CONFIG_PATH = Path(__file__).resolve().parents[3] / "config" / "courtlistener_courts.yaml"
 _API_BASE = "https://www.courtlistener.com/api/rest/v4"
+_REQUEST_TIMEOUT = 20
+_SLEEP_BETWEEN_CALLS = 12   # 5 req/min cap
+_DAILY_REQUEST_CAP = 100    # stay under 125/day; leave headroom for retries
+
+# Nature-of-suit codes that map to P&C-relevant mass-tort / property-damage dockets.
+_PC_RELEVANT_NOS = frozenset({
+    "365",  # Personal Injury — Product Liability
+    "360",  # Other Personal Injury
+    "385",  # Property Damage — Product Liability
+    "480",  # Consumer Credit
+    "870",  # Tax (insurer tax disputes)
+})
+
+# Lookback window: query dockets filed in the last N days.
+_FILED_AFTER_DAYS = 2
+
+# Module-level counter — reset between process restarts (daily launchd runs).
+_request_count = 0
+
+
+def _parse_date(date_str: str | None) -> datetime | None:
+    if not date_str:
+        return None
+    for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(date_str, fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    return None
+
+
+def _is_pc_relevant(docket: dict) -> bool:
+    """True if the docket's nature-of-suit code is in our P&C list."""
+    nos = str(docket.get("nature_of_suit") or "")
+    # CourtListener may return the code as an integer or string; also try the
+    # nos field as a numeric code extracted from a label like "365: Product Liability".
+    if nos in _PC_RELEVANT_NOS:
+        return True
+    # Sometimes the API returns a string like "365" or an integer
+    try:
+        return str(int(nos)) in _PC_RELEVANT_NOS
+    except (ValueError, TypeError):
+        pass
+    # Fall back: scan for numeric code embedded in label string
+    for code in _PC_RELEVANT_NOS:
+        if nos.startswith(code):
+            return True
+    return False
 
 
 class CourtListenerIngestor(IngestorBase):
@@ -52,45 +99,77 @@ class CourtListenerIngestor(IngestorBase):
         if not self.enabled:
             return []
 
-        # TODO(Wave 3): implement the real fetch loop. Sketch:
-        #
-        #   headers = {"Authorization": f"Token {settings.courtlistener_token}"}
-        #   filed_after = (datetime.now(tz=UTC) - timedelta(days=2)).date().isoformat()
-        #
-        #   for tier in ("tier1", "emerging", "tier3", "federal_circuits"):
-        #       for court_id in self.config.get(tier, []):
-        #           params = {
-        #               "court":       court_id,
-        #               "filed_after": filed_after,
-        #               "order_by":    "-date_filed",
-        #               "page_size":   20,
-        #           }
-        #           r = requests.get(
-        #               f"{_API_BASE}/dockets/", headers=headers, params=params, timeout=20,
-        #           )
-        #           r.raise_for_status()
-        #           for docket in r.json().get("results", []):
-        #               if not _is_pc_relevant(docket): continue   # keyword filter
-        #               items.append(IngestedItem(
-        #                   source="courtlistener",
-        #                   source_id=str(docket["id"]),
-        #                   title=docket.get("case_name") or f"Docket {docket['id']}",
-        #                   url=docket.get("absolute_url") and (
-        #                       "https://www.courtlistener.com" + docket["absolute_url"]
-        #                   ),
-        #                   author=court_id.upper(),
-        #                   published_at=_parse(docket.get("date_filed")),
-        #                   metadata={
-        #                       "topic_hint":   "social_inflation",
-        #                       "court":        court_id,
-        #                       "docket_id":    docket["id"],
-        #                       "tier":         tier,
-        #                       "nature_of_suit": docket.get("nature_of_suit"),
-        #                   },
-        #               ))
-        #           time.sleep(12)   # 5 req/min cap — sleep 12s between calls
-        #
-        # Stay under 125 req/day total. Target courts iterated round-robin
-        # across daily runs to amortize the budget.
-        logger.info("courtlistener: TODO — fetch loop not implemented yet")
-        return []
+        global _request_count
+
+        headers = {"Authorization": f"Token {settings.courtlistener_token}"}
+        filed_after = (datetime.now(tz=timezone.utc) - timedelta(days=_FILED_AFTER_DAYS)).date().isoformat()
+        items: list[IngestedItem] = []
+
+        # Query tier1 + emerging; skip tier3 + federal_circuits unless budget allows.
+        for tier in ("tier1", "emerging", "tier3"):
+            if _request_count >= _DAILY_REQUEST_CAP:
+                logger.warning(
+                    "courtlistener: daily request cap (%d) reached; stopping", _DAILY_REQUEST_CAP
+                )
+                break
+            for court_id in self.config.get(tier, []):
+                if _request_count >= _DAILY_REQUEST_CAP:
+                    break
+                params = {
+                    "court":       court_id,
+                    "filed_after": filed_after,
+                    "order_by":    "-date_filed",
+                    "page_size":   20,
+                }
+                try:
+                    r = requests.get(
+                        f"{_API_BASE}/dockets/",
+                        headers=headers,
+                        params=params,
+                        timeout=_REQUEST_TIMEOUT,
+                    )
+                    r.raise_for_status()
+                    _request_count += 1
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("courtlistener: %s fetch failed: %s", court_id, exc)
+                    _request_count += 1
+                    time.sleep(_SLEEP_BETWEEN_CALLS)
+                    continue
+
+                for docket in r.json().get("results", []):
+                    if not _is_pc_relevant(docket):
+                        continue
+                    abs_url = docket.get("absolute_url")
+                    full_url = urljoin("https://www.courtlistener.com", abs_url) if abs_url else None
+                    case_name = docket.get("case_name") or f"Docket {docket.get('id', '?')}"
+                    items.append(
+                        IngestedItem(
+                            source=self.name,
+                            source_id=str(docket["id"]),
+                            title=f"[{court_id.upper()}] {case_name}",
+                            url=full_url,
+                            author=court_id.upper(),
+                            published_at=_parse_date(docket.get("date_filed")),
+                            metadata={
+                                "topic_hint":     "social_inflation",
+                                "court":          court_id,
+                                "tier":           tier,
+                                "docket_id":      docket.get("id"),
+                                "nature_of_suit": docket.get("nature_of_suit"),
+                                "date_filed":     docket.get("date_filed"),
+                                "docket_number":  docket.get("docket_number"),
+                            },
+                        )
+                    )
+
+                logger.debug(
+                    "courtlistener: court=%s filed_after=%s results=%d requests_used=%d",
+                    court_id, filed_after, len(r.json().get("results", [])), _request_count,
+                )
+                time.sleep(_SLEEP_BETWEEN_CALLS)
+
+        logger.info(
+            "courtlistener: fetch complete — %d items, %d API requests used",
+            len(items), _request_count,
+        )
+        return items

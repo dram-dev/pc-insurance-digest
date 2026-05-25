@@ -332,7 +332,15 @@ def run_triage(limit: int = 200) -> dict[str, int]:
     if quant_kept:
         logger.info("triage: auto-kept %d quantitative items (FRED/etc)", quant_kept)
 
-    auto_kept += nhc_kept + usgs_kept + quant_kept
+    court_kept = db.auto_keep_courtlistener_dockets()
+    if court_kept:
+        logger.info("triage: auto-kept %d CourtListener MDL dockets", court_kept)
+
+    doi_kept = db.auto_keep_state_doi()
+    if doi_kept:
+        logger.info("triage: auto-kept %d state DOI press releases", doi_kept)
+
+    auto_kept += nhc_kept + usgs_kept + quant_kept + court_kept + doi_kept
 
     items = db.items_needing_triage(limit=limit)
     if not items:
