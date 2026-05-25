@@ -1,30 +1,22 @@
-"""Shared types and base class for ingestors."""
+"""Shared types and base class for ingestors.
+
+`IngestedItem` is re-exported from `digest_core.types` after the digest-core
+extraction (2026-05-25) — same dataclass, lifted to the shared package so
+macro-ai-digest can import the same shape. `IngestorBase` stays here for
+now because its `run()` method calls into PC-specific `db.upsert_items` /
+`db.log_run` — lifting `IngestorBase` properly needs a settings-injection
+design (deferred to the next extraction pass).
+"""
 from __future__ import annotations
 
 import logging
 import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Any
 
 from digest import db
+from digest_core.types import IngestedItem
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class IngestedItem:
-    """Normalized item from any source, before triage/summarization."""
-
-    source: str                              # 'gmail' | 'reddit' | 'rss' | 'edgar' | 'fred' | 'hn'
-    source_id: str                           # unique within source
-    title: str
-    url: str | None = None
-    author: str | None = None
-    content: str | None = None
-    published_at: datetime | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class IngestorBase(ABC):

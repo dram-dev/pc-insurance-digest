@@ -7,6 +7,12 @@ resolution-markers = [
     "python_full_version < '3.13'",
 ]
 
+[manifest]
+members = [
+    "digest-core",
+    "pc-insurance-digest",
+]
+
 [[package]]
 name = "annotated-types"
 version = "0.7.0"
@@ -273,6 +279,11 @@ wheels = [
 ]
 
 [[package]]
+name = "digest-core"
+version = "0.0.0"
+source = { editable = "packages/digest-core" }
+
+[[package]]
 name = "et-xmlfile"
 version = "2.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -501,6 +512,7 @@ dependencies = [
     { name = "click" },
     { name = "databricks-sql-connector" },
     { name = "defusedxml" },
+    { name = "digest-core" },
     { name = "feedparser" },
     { name = "pdfplumber" },
     { name = "praw" },
@@ -518,6 +530,7 @@ requires-dist = [
     { name = "click", specifier = ">=8.1" },
     { name = "databricks-sql-connector", specifier = ">=4.2.6" },
     { name = "defusedxml", specifier = ">=0.7" },
+    { name = "digest-core", editable = "packages/digest-core" },
     { name = "feedparser", specifier = ">=6.0" },
     { name = "pdfplumber", specifier = ">=0.11.9" },
     { name = "praw", specifier = ">=7.8" },

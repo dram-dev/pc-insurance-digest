@@ -1,17 +1,19 @@
 """Pipeline sinks — secondary write destinations alongside SQLite.
 
-Currently exposes a single Databricks medallion sink. Future sinks (BigQuery,
-S3 parquet, etc.) follow the same pattern: best-effort writes, no-op when
-disabled, never bricks the local pipeline.
-
-Import the module-level `sink` singleton and call its methods next to existing
-SQLite writes; when the feature flag is off, every call is a fast no-op.
+The Databricks sink implementation lives in `digest_core.sinks.databricks`;
+this module constructs the singleton from PC Digest's settings.
 """
 from __future__ import annotations
 
 from digest.config import settings
-from digest.sinks.databricks import DatabricksSink
+from digest_core.sinks.databricks import DatabricksSink, item_hash
 
-sink: DatabricksSink = DatabricksSink(settings)
+sink: DatabricksSink = DatabricksSink(
+    enabled=settings.databricks_enabled,
+    host=settings.databricks_host,
+    http_path=settings.databricks_http_path,
+    token=settings.databricks_token,
+    catalog=settings.databricks_catalog,
+)
 
-__all__ = ["DatabricksSink", "sink"]
+__all__ = ["DatabricksSink", "item_hash", "sink"]
