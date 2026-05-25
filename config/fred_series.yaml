@@ -1,0 +1,43 @@
+# P&C loss-cost driver CPI/PPI series tracked monthly.
+# Each emits an IngestedItem ONLY when the latest m/m % change exceeds
+# fred_zscore_threshold (default 1.5σ) over the trailing 12-month window.
+# This keeps routine prints out of the queue and only surfaces anomalies.
+
+series:
+  # ── Personal auto severity drivers ──────────────────────────
+  - id: CUSR0000SETC
+    label: Motor Vehicle Parts & Equipment CPI
+    topic_hint: supply_chain
+    direction: cost   # rising = higher loss costs for insurers
+
+  - id: CUSR0000SETD
+    label: Motor Vehicle Maintenance & Repair CPI
+    topic_hint: supply_chain
+    direction: cost
+
+  - id: CUSR0000SETA02
+    label: Used Cars & Trucks CPI
+    topic_hint: supply_chain
+    direction: cost   # rising used-car prices raise total-loss settlements
+
+  - id: CUSR0000SETA01
+    label: New Vehicles CPI
+    topic_hint: supply_chain
+    direction: cost
+
+  - id: PCU33633363
+    label: PPI Motor Vehicle Parts Manufacturing
+    topic_hint: supply_chain
+    direction: cost   # upstream of CUSR0000SETC by ~1-2 months
+
+  # ── Property severity drivers ───────────────────────────────
+  - id: CUSR0000SAH1
+    label: Shelter CPI
+    topic_hint: supply_chain
+    direction: cost   # proxy for home replacement-cost inflation
+
+  # ── BI / medical severity drivers ───────────────────────────
+  - id: CUSR0000SAM2
+    label: Medical Care Services CPI
+    topic_hint: supply_chain
+    direction: cost   # proxy for BI claim severity inflation

@@ -105,6 +105,80 @@ feeds:
     topic_hint: regulatory_rate
     limit: 15
 
+  # ── State DOI specifics (top-5 P&C states) ───────────────────
+  # Added 2026-05-24 from Score Higher review — Personal Lines volume gap.
+  # Each pulls bulletins / press releases from a single-state regulator;
+  # narrower queries than google_news_state_doi above so we catch CA
+  # rate filings that the broader query buries in noise.
+
+  - name: google_news_ca_cdi
+    url: 'https://news.google.com/rss/search?q=when:7d+(%22California+Department+of+Insurance%22+OR+%22California+insurance+commissioner%22+OR+%22Ricardo+Lara%22+OR+%22CA+rate+filing%22)&hl=en-US&gl=US&ceid=US:en'
+    topic_hint: regulatory_rate
+    limit: 15
+
+  - name: google_news_fl_floir
+    url: 'https://news.google.com/rss/search?q=when:7d+(%22Florida+Office+of+Insurance+Regulation%22+OR+%22FLOIR%22+OR+%22Florida+insurance+commissioner%22+OR+%22Citizens+Property+Insurance%22)&hl=en-US&gl=US&ceid=US:en'
+    topic_hint: regulatory_rate
+    limit: 15
+
+  - name: google_news_tx_tdi
+    url: 'https://news.google.com/rss/search?q=when:7d+(%22Texas+Department+of+Insurance%22+OR+%22TDI+rate%22+OR+%22Texas+insurance+commissioner%22+OR+%22Cassie+Brown%22)&hl=en-US&gl=US&ceid=US:en'
+    topic_hint: regulatory_rate
+    limit: 15
+
+  - name: google_news_ny_dfs
+    url: 'https://news.google.com/rss/search?q=when:7d+(%22NYDFS%22+OR+%22New+York+Department+of+Financial+Services%22+%22insurance%22+OR+%22New+York+insurance+commissioner%22)&hl=en-US&gl=US&ceid=US:en'
+    topic_hint: regulatory_rate
+    limit: 15
+
+  - name: google_news_la_ldi
+    url: 'https://news.google.com/rss/search?q=when:14d+(%22Louisiana+Department+of+Insurance%22+OR+%22LDI+rate%22+OR+%22Louisiana+Citizens%22+OR+%22Tim+Temple%22+insurance)&hl=en-US&gl=US&ceid=US:en'
+    topic_hint: regulatory_rate
+    limit: 15
+
+  # ── State insurer-of-last-resort and FAIR-Plan-class coverage ─
+  # Fires the regulatory_action_boost across topics (FAIR Plan, Citizens
+  # auto-route to personal_lines via fire-content rules but the keyword
+  # boost still applies).
+
+  - name: google_news_fair_plan
+    url: 'https://news.google.com/rss/search?q=when:14d+(%22FAIR+Plan%22+OR+%22Citizens+Property+Insurance%22+OR+%22Louisiana+Citizens%22+OR+%22insurer+of+last+resort%22)&hl=en-US&gl=US&ceid=US:en'
+    topic_hint: personal_lines
+    limit: 15
+
+  - name: google_news_personal_auto_rates
+    url: 'https://news.google.com/rss/search?q=when:7d+(%22auto+insurance+rate%22+OR+%22personal+auto+rate%22+OR+%22auto+insurance+premium%22+OR+%22auto+insurance+filing%22)+(approve+OR+filed+OR+seek+OR+raise+OR+hike)&hl=en-US&gl=US&ceid=US:en'
+    topic_hint: personal_lines
+    limit: 15
+
+  - name: google_news_homeowners_rates
+    url: 'https://news.google.com/rss/search?q=when:7d+(%22homeowners+insurance+rate%22+OR+%22homeowners+premium%22+OR+%22property+insurance+rate%22)+(approve+OR+filed+OR+raise+OR+hike+OR+non-renewal)&hl=en-US&gl=US&ceid=US:en'
+    topic_hint: personal_lines
+    limit: 15
+
+  # ── Trade-body advocacy + research ───────────────────────────
+  # APCIA / NAMIC / NCOIL / III statements on regulatory and market
+  # conditions. Feeds regulatory_rate + commercial_specialty.
+
+  - name: google_news_apcia_namic
+    url: 'https://news.google.com/rss/search?q=when:14d+(%22American+Property+Casualty+Insurance+Association%22+OR+%22National+Association+of+Mutual+Insurance+Companies%22+OR+%22NCOIL%22+OR+(%22APCIA%22+insurance)+OR+(%22NAMIC%22+insurer))&hl=en-US&gl=US&ceid=US:en'
+    topic_hint: regulatory_rate
+    limit: 15
+
+  - name: google_news_triple_i
+    url: 'https://news.google.com/rss/search?q=when:14d+(%22Insurance+Information+Institute%22+OR+%22Triple-I%22+OR+%22iii.org%22)&hl=en-US&gl=US&ceid=US:en'
+    topic_hint: underwriting_results
+    limit: 10
+
+  # ── Quarterly auto-insurance industry research (Phase 1: GN proxy) ─
+  # LexisNexis Risk Solutions "US Auto Insurance Trends" + JD Power
+  # auto-insurance studies + shopping-behavior reports. Phase 2 would
+  # promote these to a direct scraper if signal warrants.
+  - name: google_news_industry_research
+    url: 'https://news.google.com/rss/search?q=when:14d+((%22LexisNexis+Risk+Solutions%22+%22auto+insurance%22)+OR+(%22J.D.+Power%22+%22auto+insurance%22)+OR+(%22LexisNexis%22+%22insurance+demand%22)+OR+(%22Insurance+Demand+Meter%22))&hl=en-US&gl=US&ceid=US:en'
+    topic_hint: personal_lines
+    limit: 12
+
   # ── NOAA / catastrophe early warning ─────────────────────────
   # Direct feeds now live in src/digest/ingest/{nhc,usgs,spc,nifc}.py
   # (Wave 2). Google News NHC proxy retired.

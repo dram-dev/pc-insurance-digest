@@ -1,0 +1,39 @@
+# Direct state-DOI press release sources. Phase-1 today is the
+# Google News proxies in rss_feeds.yaml; this file backs the direct
+# scrapers added in Wave 3 as we go state-by-state.
+#
+# `selector` is a CSS selector for the news-list container; tune per
+# state as the scraper is implemented. `url_template` supports a {year}
+# token which the ingestor populates with the current year (handles
+# states that paginate by year, like CA CDI).
+
+states:
+  - state: CA
+    agency: California Department of Insurance
+    url_template: "https://www.insurance.ca.gov/0400-news/0100-press-releases/{year}/"
+    selector: ".releases-list .release-item"   # TODO: confirm
+    enabled: false   # flip to true once scraper is validated
+
+  - state: FL
+    agency: Florida Office of Insurance Regulation
+    url_template: "https://floir.com/News"
+    selector: ".news-item"   # TODO: confirm
+    enabled: false
+
+  - state: TX
+    agency: Texas Department of Insurance
+    url_template: "https://www.tdi.texas.gov/news/"
+    selector: ".news-listing li"   # TODO: confirm
+    enabled: false
+
+  - state: NY
+    agency: New York Department of Financial Services
+    url_template: "https://www.dfs.ny.gov/reports_and_publications/press_releases"
+    selector: ".pr-listing-item"   # TODO: confirm
+    enabled: false
+
+  - state: LA
+    agency: Louisiana Department of Insurance
+    url_template: "https://www.ldi.la.gov/news"
+    selector: ".views-row"   # TODO: confirm
+    enabled: false

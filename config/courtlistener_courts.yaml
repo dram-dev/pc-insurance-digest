@@ -1,0 +1,57 @@
+# CourtListener court IDs for P&C-relevant federal jurisdictions.
+# Tiered per CLAUDE.md Wave 3 plan:
+#   - Tier 1: highest verdict / MDL volume (FL, CA, NY, IL, PA, NJ)
+#   - Emerging: rapidly growing nuclear-verdict states (GA, TX, LA)
+#   - Tier 3: long-tail (OK, MO, NV, MI, OH)
+# Plus all federal circuits for MDL transfer rulings.
+
+# When implementing fetch(), query:
+#   https://www.courtlistener.com/api/rest/v4/dockets/?court=<id>&filed_after=<ISO>
+# rate-limit-aware (5/min, 50/hour, 125/day).
+
+tier1:
+  - flsd        # Southern District of Florida
+  - flnd        # Northern District of Florida
+  - flmd        # Middle District of Florida
+  - cacd        # Central District of California (LA-based)
+  - cand        # Northern District of California
+  - nysd        # Southern District of New York
+  - ilnd        # Northern District of Illinois (Chicago / class actions)
+  - paed        # Eastern District of Pennsylvania
+  - njd         # District of New Jersey (pharma + product liability MDLs)
+
+emerging:
+  - gand        # Northern District of Georgia (Atlanta plaintiff bar)
+  - gasd        # Southern District of Georgia
+  - txsd        # Southern District of Texas (energy + admiralty)
+  - txnd        # Northern District of Texas
+  - laed        # Eastern District of Louisiana (mass-tort hub)
+
+tier3:
+  - okwd        # Western District of Oklahoma
+  - mowd        # Western District of Missouri
+  - mor         # missouri (verify)
+  - nvd         # District of Nevada
+  - mied        # Eastern District of Michigan
+  - ohnd        # Northern District of Ohio (PFAS, opioid MDLs)
+
+federal_circuits:
+  # All 13 federal circuits — for MDL transfer / panel rulings
+  - ca1
+  - ca2
+  - ca3
+  - ca4
+  - ca5
+  - ca6
+  - ca7
+  - ca8
+  - ca9
+  - ca10
+  - ca11
+  - cadc
+  - cafc
+
+# Optional: ticker/MDL mapping — populate when wiring up real fetch.
+# Useful for routing dockets to specific insurer-relevant cases
+# (asbestos, PFAS, talc, opioid, paraquat, hair-relaxer, Roundup, etc.).
+mdl_keywords: []

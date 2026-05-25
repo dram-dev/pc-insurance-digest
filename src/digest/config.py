@@ -63,6 +63,16 @@ class Settings(BaseSettings):
     # HN threshold
     hn_min_points: int = Field(default=100, alias="HN_MIN_POINTS")
 
+    # FRED — P&C loss-cost driver CPI/PPI series. Same key as macro-ai-digest;
+    # free tier is generous (120 req/min default).
+    fred_api_key: str = Field(default="", alias="FRED_API_KEY")
+    # z-score threshold over trailing 12 months — emit only anomalous prints
+    fred_zscore_threshold: float = Field(default=1.5, alias="FRED_ZSCORE_THRESHOLD")
+
+    # CourtListener — free PACER mirror. Get a token at https://www.courtlistener.com/help/api/
+    # Free tier limits: 5 req/min, 50 req/hour, 125 req/day.
+    courtlistener_token: str = Field(default="", alias="COURTLISTENER_TOKEN")
+
     # ── Validators ────────────────────────────────────────────────────────
 
     @field_validator("summarizer_model", mode="before")
