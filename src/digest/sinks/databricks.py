@@ -36,6 +36,26 @@ from digest.config import Settings
 logger = logging.getLogger(__name__)
 
 
+# Primary-key columns per medallion table. Drives _insert()'s MERGE INTO ... ON
+# construction so re-ingests don't double-write — Delta doesn't enforce PK
+# constraints, the DDL hint is informational only.
+_PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
+    "bronze.ingested_items":     ("item_hash",),
+    "bronze.fred_observations":  ("series_id", "observation_date"),
+    "bronze.regime_signals":     ("as_of", "source"),
+    "bronze.pipeline_telemetry": ("run_id", "stage", "source"),
+    "silver.triage_verdicts":    ("item_hash", "triaged_at"),
+    "silver.signal_scores":      ("item_hash", "computed_at"),
+    "silver.summaries":          ("item_hash", "summarized_at"),
+    "silver.manual_ratings":     ("item_hash", "rated_at"),
+}
+
+# Max rows per MERGE statement. 50 keeps total parameter count well under
+# warehouse limits (50 × ~15 cols ≈ 750 params) and bounds the size of any
+# single failed round-trip. Tune up if profiling shows we're round-trip bound.
+_BATCH_SIZE = 50
+
+
 def item_hash(source: str, source_id: str) -> str:
     """Stable medallion join key derived from the SQLite natural key."""
     raw = f"{source}::{source_id}".encode("utf-8")
@@ -207,22 +227,70 @@ class DatabricksSink:
     # ── Internals ─────────────────────────────────────────────────────────
 
     def _insert(self, table: str, rows: list[dict[str, Any]]) -> None:
+        """Idempotent batched write via MERGE INTO.
+
+        Behavior change vs Wave 3 Phase 1 INSERT path:
+          - dedups on table's primary key (_PRIMARY_KEYS) so re-ingesting an
+            item doesn't double-write into bronze
+          - batches up to _BATCH_SIZE rows per MERGE statement → ~50× fewer
+            warehouse round-trips, addresses the ~226s HN ingest regression
+            observed during initial sink wire-up
+        """
         if not rows:
             return
+        pk_cols = _PRIMARY_KEYS.get(table)
+        if pk_cols is None:
+            logger.warning(
+                "databricks sink: no primary key registered for %s — skipping write",
+                table,
+            )
+            return
+        cols = list(rows[0].keys())
         try:
             conn = self._connection()
             cur = conn.cursor()
             try:
-                cols = list(rows[0].keys())
-                col_str = ", ".join(f"`{c}`" for c in cols)
-                placeholders = ", ".join("?" for _ in cols)
-                stmt = f"INSERT INTO {table} ({col_str}) VALUES ({placeholders})"
-                values = [tuple(r.get(c) for c in cols) for r in rows]
-                cur.executemany(stmt, values)
+                for start in range(0, len(rows), _BATCH_SIZE):
+                    batch = rows[start:start + _BATCH_SIZE]
+                    self._merge_batch(cur, table, cols, pk_cols, batch)
             finally:
                 cur.close()
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "databricks sink %s INSERT failed (%d rows): %s — swallowed",
+                "databricks sink %s MERGE failed (%d rows): %s — swallowed",
                 table, len(rows), exc,
             )
+
+    @staticmethod
+    def _merge_batch(
+        cur: Any,
+        table: str,
+        cols: list[str],
+        pk_cols: tuple[str, ...],
+        rows: list[dict[str, Any]],
+    ) -> None:
+        # Databricks SQL rejects `USING (VALUES ...) AS s(col1, ...)` in MERGE
+        # — column aliases on a VALUES table aren't allowed. Wrap rows in a
+        # UNION ALL of SELECTs instead: the first SELECT names columns via
+        # `AS c`, subsequent SELECTs are positional matches.
+        first_cols = ", ".join(f"? AS `{c}`" for c in cols)
+        first_select = f"SELECT {first_cols}"
+        more_selects = " UNION ALL ".join(
+            f"SELECT {', '.join('?' for _ in cols)}"
+            for _ in rows[1:]
+        )
+        inner = first_select + (" UNION ALL " + more_selects if more_selects else "")
+
+        col_list    = ", ".join(f"`{c}`" for c in cols)
+        on_clause   = " AND ".join(f"t.`{c}` = s.`{c}`" for c in pk_cols)
+        insert_vals = ", ".join(f"s.`{c}`" for c in cols)
+        stmt = (
+            f"MERGE INTO {table} t "
+            f"USING ({inner}) s "
+            f"ON {on_clause} "
+            f"WHEN NOT MATCHED THEN INSERT ({col_list}) VALUES ({insert_vals})"
+        )
+        # Flatten all row values into one positional list,
+        # ordered (row0.col0, row0.col1, ..., row1.col0, ...).
+        params = [r.get(c) for r in rows for c in cols]
+        cur.execute(stmt, params)
