@@ -60,6 +60,7 @@ Each is committed on `master` and pushed to
 | FRED ingestor — 7 P&C loss-cost CPI/PPI series with ±1.5σ anomaly gate; auto-keep via `auto_keep_quantitative()`; topic locked to `supply_chain` | ✅ |
 | Industry-research Google News proxy (LexisNexis Risk Solutions + JD Power) | ✅ |
 | Scaffolded ingestors registered + no-op safe: `courtlistener`, `collision`, `state_doi` | ✅ |
+| Industry-research direct scraper (`industry_research.py`) — Phase 2 LexisNexis + JD Power; config-driven with per-source enabled flag; topic=`personal_lines` | ✅ |
 
 **Wave 3:**
 
@@ -67,10 +68,10 @@ Each is committed on `master` and pushed to
 
 | Item | Detail |
 |---|---|
-| **Verdict / docket tracker** | Scaffold in `src/digest/ingest/courtlistener.py` — fetches federal docket entries from selected MDL courts when COURTLISTENER_TOKEN is set. CourtListener/RECAP API (free, 125 req/day). 3-tier jurisdiction lists in `config/courtlistener_courts.yaml`. Add auto-keep Python hook → `social_inflation` when wiring the real fetch. |
+| **Verdict / docket tracker** | ✅ `src/digest/ingest/courtlistener.py` — real fetch loop (tier1 + emerging + tier3); P&C NOS filter (365/360/385/480/870); 12s sleep, 100-req daily cap; auto-keep hook → `social_inflation` (score=0.85). Needs COURTLISTENER_TOKEN env var. Federal circuits tier skipped (appeals dockets). TODO: add MDL keyword filter to reduce noise. |
 | **TPLF dedicated ingestor** | Sources: PACER court RSS (via CourtListener), ILR/ATRA advocacy publications, Law360/Bloomberg Law RSS, LegiScan state disclosure bills (shared LegiScan client with Regulatory Sonar). Promote `litigation_tplf` sub_tag to a first-class leaderboard boost factor. |
-| **Claims / actuarial dataset** | (a) NAIC Schedule P triangles — reserve development by line of business, annual cadence, parsed for adverse-dev signals. (b) Insurer investor supplement PDFs — quarterly frequency, paid severity, and pending-count tables for the 14-insurer universe. Both feed `reserving` and `social_inflation` signals. (c) CCC/Mitchell quarterly collision reports — scaffold in `src/digest/ingest/collision_data.py`. |
-| **State DOI direct scrapers** | Scaffold in `src/digest/ingest/state_doi.py` + `config/state_doi_sources.yaml`. Per-state enabled flag; build CA first (highest volume), then FL/TX/NY/LA. Complements the Google News proxies (faster bulletin pickup, no Google indexing lag). |
+| **Claims / actuarial dataset** | (c) ✅ CCC/Mitchell quarterly collision reports — `src/digest/ingest/collision_data.py`; BeautifulSoup multi-selector scraper; `supply_chain` topic; TODO: validate CSS selectors against live pages on Mac mini (curl blocked in cloud). (a) NAIC Schedule P triangles — pending. (b) Insurer investor supplement PDFs — pending. |
+| **State DOI direct scrapers** | ✅ `src/digest/ingest/state_doi.py` — full BeautifulSoup `_scrape_state()` implementation; config in `config/state_doi_sources.yaml`; all 5 states (CA/FL/TX/NY/LA) remain `enabled:false` pending CSS selector validation on Mac mini. auto-keep hook → `regulatory_rate` (score=0.9). TODO: curl each state URL to confirm selector, flip `enabled:true` CA first. |
 
 *Source expansion (carried over):*
 
@@ -390,10 +391,11 @@ src/digest/
     ├── usgs.py        # Wave 2 — USGS M ≥ 5.0 earthquake GeoJSON
     ├── spc.py         # Wave 2 — SPC convective outlook RSS
     ├── nifc.py        # Wave 2 — NIFC WFIGS active wildfire ArcGIS REST
-    ├── fred.py        # Wave 2.x — FRED CPI/PPI cost-driver anomalies (live)
-    ├── courtlistener.py  # Wave 3 — federal MDL docket tracker (scaffold)
-    ├── collision_data.py # Wave 3 — CCC + Mitchell quarterly reports (scaffold)
-    └── state_doi.py      # Wave 3 — direct state DOI press scrapers (scaffold)
+    ├── fred.py               # Wave 2.x — FRED CPI/PPI cost-driver anomalies (live)
+    ├── courtlistener.py      # Wave 3 — federal MDL docket tracker; tier1+emerging+tier3 courts; NOS filter; needs COURTLISTENER_TOKEN
+    ├── collision_data.py     # Wave 3 — CCC + Mitchell quarterly reports; TODO validate CSS selectors on Mac mini
+    ├── state_doi.py          # Wave 3 — direct state DOI press scrapers; all states enabled:false; TODO validate selectors + enable CA first
+    └── industry_research.py  # Wave 3 — LexisNexis Risk + JD Power direct scraper; config/industry_research_sources.yaml; all disabled pending selector validation
 ```
 
 ## Sample next-feature prompts
