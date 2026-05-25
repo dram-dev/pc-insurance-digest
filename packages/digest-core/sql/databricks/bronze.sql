@@ -47,7 +47,10 @@ USING DELTA
 PARTITIONED BY (series_id);
 
 -- Regime detector outputs over time. PC Digest is two-axis: market_cycle ×
--- cat_load. Mirrors the SQLite regime_signals table.
+-- cat_load. Mirrors the SQLite regime_signals table. `source` defaults to
+-- 'detector' in the application layer (db.upsert_regime_signal), not via
+-- column DEFAULT — Databricks Free Edition doesn't auto-enable the Delta
+-- allowColumnDefaults feature.
 CREATE TABLE IF NOT EXISTS bronze.regime_signals (
     as_of              TIMESTAMP NOT NULL,
     market_cycle       STRING    NOT NULL,
@@ -56,13 +59,14 @@ CREATE TABLE IF NOT EXISTS bronze.regime_signals (
     cat_load_mult      DOUBLE    NOT NULL,
     multiplier         DOUBLE    NOT NULL,
     evidence_json      STRING,
-    source             STRING    NOT NULL DEFAULT 'detector',
+    source             STRING    NOT NULL,
     CONSTRAINT bronze_regime_pk PRIMARY KEY (as_of, source)
 )
 USING DELTA;
 
 -- Operational telemetry per pipeline stage. Spots pipeline degradation,
 -- enables source-level SLO dashboards. Subsumes SQLite run_log + summarizer_log.
+-- `errors` defaulting to 0 is handled in the sink wiring, not via column DEFAULT.
 CREATE TABLE IF NOT EXISTS bronze.pipeline_telemetry (
     run_id        STRING NOT NULL,    -- UUID per pipeline invocation
     stage         STRING NOT NULL,    -- ingest|triage|summarize|publish|signals
@@ -72,7 +76,7 @@ CREATE TABLE IF NOT EXISTS bronze.pipeline_telemetry (
     duration_ms   BIGINT NOT NULL,
     items_in      INT,
     items_out     INT,
-    errors        INT NOT NULL DEFAULT 0,
+    errors        INT NOT NULL,
     error_detail  STRING,
     model_id      STRING,             -- for triage/summarize stages
     CONSTRAINT bronze_telemetry_pk PRIMARY KEY (run_id, stage, source)
