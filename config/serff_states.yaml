@@ -1,0 +1,106 @@
+# SERFF rate filings sources. Heterogeneous portal landscape:
+#   - ~30 states use standard SERFF Filing Access at
+#     https://filingaccess.serff.com/sfa/home/<STATE> (TX, NY, LA fit this pattern)
+#   - CA runs its own Prior Approval system via interactive.web.insurance.ca.gov
+#   - FL runs its own iRFA at apps.fldfs.com/iportal
+#
+# Build order matches the user's top-5 state priorities (highest volume first):
+# CA → FL → TX → NY → LA.
+#
+# Each state has `enabled: false` until selectors are validated against the live
+# page. The standard SERFF Filing Access portal typically requires a POST with
+# search criteria (closure_status, filed_after, filing_type=Rate); naive GET
+# returns the landing page. Wire that up per-portal in serff.py's _scrape_state.
+#
+# Validation recipe (Mac mini):
+#   curl -sL -A 'Mozilla/5.0' '<url_template>' | grep -iE 'company|filing|rate'
+# then update the relevant selector and flip enabled:true.
+
+defaults:
+  min_rate_change_pct: 5.0           # only emit filings with >= this requested change
+  lookback_days: 30
+  # Lines of business we care about. SERFF returns many; we filter post-fetch.
+  lines_of_business:
+    - personal auto
+    - homeowners
+    - commercial auto
+    - dwelling
+    - umbrella
+  user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+  request_timeout: 25                # SERFF is slower than state press pages
+
+states:
+  # ── CA — CDI Prior Approval (custom front-end, not SERFF Filing Access) ──
+  - state: CA
+    agency: California Department of Insurance
+    portal: cdi_prior_approval
+    url_template: "https://interactive.web.insurance.ca.gov/apex_extprd/f?p=400"
+    selectors:
+      row:         ".filing-row"               # TODO: validate
+      company:     ".company-name"
+      rate_change: ".requested-change"
+      lob:         ".line-of-business"
+      filing_id:   ".filing-number"
+      status:      ".status"
+      filed_at:    ".filed-date"
+    enabled: false
+
+  # ── FL — FLOIR iRFA (Internet Rate File Access; custom) ──
+  - state: FL
+    agency: Florida Office of Insurance Regulation
+    portal: floir_irfa
+    url_template: "https://apps.fldfs.com/iportal/Filing/SearchEvent.aspx"
+    selectors:
+      row:         "table.results-table tr.filing"   # TODO: validate
+      company:     "td.company"
+      rate_change: "td.rate-impact"
+      lob:         "td.line-of-business"
+      filing_id:   "td.filing-number"
+      status:      "td.status"
+      filed_at:    "td.filed-date"
+    enabled: false
+
+  # ── TX — Standard SERFF Filing Access ──
+  - state: TX
+    agency: Texas Department of Insurance
+    portal: serff_standard
+    url_template: "https://filingaccess.serff.com/sfa/home/TX"
+    selectors:
+      row:         "table.filing-results tr.filing-row"   # TODO: validate
+      company:     "td.company-name"
+      rate_change: "td.requested-rate-change"
+      lob:         "td.line-of-business"
+      filing_id:   "td.serff-tracking-number"
+      status:      "td.filing-status"
+      filed_at:    "td.filed-date"
+    enabled: false
+
+  # ── NY — Standard SERFF Filing Access (via DFS) ──
+  - state: NY
+    agency: New York Department of Financial Services
+    portal: serff_standard
+    url_template: "https://filingaccess.serff.com/sfa/home/NY"
+    selectors:
+      row:         "table.filing-results tr.filing-row"   # TODO: validate
+      company:     "td.company-name"
+      rate_change: "td.requested-rate-change"
+      lob:         "td.line-of-business"
+      filing_id:   "td.serff-tracking-number"
+      status:      "td.filing-status"
+      filed_at:    "td.filed-date"
+    enabled: false
+
+  # ── LA — Standard SERFF Filing Access ──
+  - state: LA
+    agency: Louisiana Department of Insurance
+    portal: serff_standard
+    url_template: "https://filingaccess.serff.com/sfa/home/LA"
+    selectors:
+      row:         "table.filing-results tr.filing-row"   # TODO: validate
+      company:     "td.company-name"
+      rate_change: "td.requested-rate-change"
+      lob:         "td.line-of-business"
+      filing_id:   "td.serff-tracking-number"
+      status:      "td.filing-status"
+      filed_at:    "td.filed-date"
+    enabled: false

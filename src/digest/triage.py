@@ -349,7 +349,11 @@ def run_triage(limit: int = 200) -> dict[str, int]:
     if doi_kept:
         logger.info("triage: auto-kept %d state DOI press releases", doi_kept)
 
-    auto_kept += nhc_kept + usgs_kept + quant_kept + court_kept + doi_kept
+    serff_kept = db.auto_keep_serff()
+    if serff_kept:
+        logger.info("triage: auto-kept %d SERFF rate filings ≥5%%", serff_kept)
+
+    auto_kept += nhc_kept + usgs_kept + quant_kept + court_kept + doi_kept + serff_kept
 
     items = db.items_needing_triage(limit=limit)
     if not items:

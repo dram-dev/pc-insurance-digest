@@ -37,11 +37,12 @@ INGESTORS = {
     "nifc":     "digest.ingest.nifc:NIFCIngestor",
     # Wave 2.x — quantitative cost-driver series (live)
     "fred":     "digest.ingest.fred:FredIngestor",
-    # Wave 3 — implemented (courtlistener needs token; collision/state_doi need selector validation)
+    # Wave 3 — implemented (courtlistener needs token; collision/state_doi/serff need selector validation)
     "courtlistener":     "digest.ingest.courtlistener:CourtListenerIngestor",
     "collision":         "digest.ingest.collision_data:CollisionDataIngestor",
     "state_doi":         "digest.ingest.state_doi:StateDOIIngestor",
     "industry_research": "digest.ingest.industry_research:IndustryResearchIngestor",
+    "serff":             "digest.ingest.serff:SerffIngestor",
 }
 
 

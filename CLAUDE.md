@@ -89,7 +89,7 @@ Each is committed on `master` and pushed to
 | Item | Detail |
 |---|---|
 | **AM Best rating actions** | Currently `site:ambest.com` Google News proxy. Try direct RSS with a real browser `User-Agent`; Radware-blocked on default UA. |
-| **NAIC + state DOI / SERFF** | Rate filings with ≥5% requested change. Hardest item — state-by-state, inconsistent schemas. |
+| **NAIC + state DOI / SERFF** | ✅ Wave 3 Phase 2 — `src/digest/ingest/serff.py` + `config/serff_states.yaml` scaffold; 5 states (CA/FL/TX/NY/LA) with per-state `enabled:false` flags. Portal dispatch (serff_standard vs cdi_prior_approval vs floir_irfa). ≥5% requested-change filter + LOB whitelist (personal auto / homeowners / commercial auto / dwelling / umbrella). Auto-keep hook → `regulatory_rate` (0.9 base, 0.95 when \|Δ\|≥10%). TODO: validate selectors on Mac mini and implement POST + search params per portal — naive GET currently returns the landing page for SERFF standard. |
 | **Lloyd's / Bermuda** | Artemis ILS data + syndicate results. Feeds `reinsurance_cycle` and `rates_cost_of_capital`. |
 
 *Pipeline quality (carried over):*
@@ -408,10 +408,11 @@ src/digest/
     ├── spc.py         # Wave 2 — SPC convective outlook RSS
     ├── nifc.py        # Wave 2 — NIFC WFIGS active wildfire ArcGIS REST
     ├── fred.py               # Wave 2.x — FRED CPI/PPI cost-driver anomalies (live)
-    ├── courtlistener.py      # Wave 3 — federal MDL docket tracker; tier1+emerging+tier3 courts; NOS filter; needs COURTLISTENER_TOKEN
+    ├── courtlistener.py      # Wave 3 — federal MDL docket tracker; 11 NOS codes + 29 MDL keywords; needs COURTLISTENER_TOKEN
     ├── collision_data.py     # Wave 3 — CCC + Mitchell quarterly reports; TODO validate CSS selectors on Mac mini
     ├── state_doi.py          # Wave 3 — direct state DOI press scrapers; all states enabled:false; TODO validate selectors + enable CA first
-    └── industry_research.py  # Wave 3 — LexisNexis Risk + JD Power direct scraper; config/industry_research_sources.yaml; all disabled pending selector validation
+    ├── industry_research.py  # Wave 3 — LexisNexis Risk + JD Power direct scraper; config/industry_research_sources.yaml; all disabled pending selector validation
+    └── serff.py              # Wave 3 Phase 2 — state SERFF rate filings ≥5%; portal dispatch (serff_standard / cdi_prior_approval / floir_irfa); all states enabled:false pending selector + POST validation
 
 src/digest/sinks/      # Wave 3 Phase 1 — secondary write destinations
 ├── __init__.py        # exports module-level `sink` singleton

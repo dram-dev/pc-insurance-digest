@@ -734,6 +734,34 @@ def auto_keep_state_doi() -> int:
         return cur.rowcount or 0
 
 
+def auto_keep_serff() -> int:
+    """Auto-keep untriaged SERFF rate filings, topic=regulatory_rate.
+
+    Score depends on the requested rate-change magnitude stored in
+    metadata.rate_change_pct (absolute value):
+      - 0.95 when |Δ| >= 10%   (top-tier — sweeping price actions)
+      - 0.9  otherwise (>= 5%, the ingestor's emit threshold)
+
+    SERFF filings only reach the DB after passing the ingestor's >=5% filter
+    and LOB whitelist, so they're worth keeping without Ollama re-gating.
+    """
+    sql = """
+        UPDATE items
+        SET triage_decision = 'keep',
+            triage_score    = CASE
+                                WHEN ABS(COALESCE(CAST(json_extract(metadata_json, '$.rate_change_pct') AS REAL), 0)) >= 10 THEN 0.95
+                                ELSE 0.9
+                              END,
+            topic           = 'regulatory_rate',
+            triaged_at      = datetime('now')
+        WHERE source = 'serff'
+          AND triage_decision IS NULL
+    """
+    with get_conn() as conn:
+        cur = conn.execute(sql)
+        return cur.rowcount or 0
+
+
 def update_triage(
     item_id: int,
     decision: str,        # 'keep' or 'drop'
