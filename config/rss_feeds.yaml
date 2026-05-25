@@ -222,6 +222,27 @@ feeds:
     topic_hint: macro_linkage
     limit: 12
 
+  # ── Lloyd's / Bermuda — global reinsurance market depth ──────
+  # Wave 3 Phase 2 item 3. artemis_bm covers ILS only; reinsurance_news
+  # is global but broad. These three feeds fill the Lloyd's syndicate
+  # + Bermuda-carrier gap. All topic_hint=reinsurance_cycle; triage will
+  # reclassify per-article (ma_capital for deals, ratings actions, etc.).
+
+  - name: google_news_lloyds_market
+    url: 'https://news.google.com/rss/search?q=when:14d+((%22Lloyd%27s+of+London%22+OR+%22Lloyd%27s+syndicate%22+OR+%22Lloyd%27s+market%22)+(insurance+OR+reinsurance+OR+capacity+OR+results+OR+renewal))&hl=en-US&gl=US&ceid=US:en'
+    topic_hint: reinsurance_cycle
+    limit: 12
+
+  - name: google_news_lloyds_site
+    url: 'https://news.google.com/rss/search?q=when:14d+site:lloyds.com&hl=en-US&gl=US&ceid=US:en'
+    topic_hint: reinsurance_cycle
+    limit: 10
+
+  - name: google_news_bermuda_reinsurance
+    url: 'https://news.google.com/rss/search?q=when:14d+(Bermuda+(reinsurance+OR+reinsurer+OR+%22Class+4%22)+OR+%22RenaissanceRe%22+OR+%22AXIS+Capital%22+OR+%22Arch+Capital%22+OR+%22Everest+Re%22+OR+%22Hiscox+Bermuda%22+OR+%22Fidelis+Insurance%22)&hl=en-US&gl=US&ceid=US:en'
+    topic_hint: reinsurance_cycle
+    limit: 12
+
   # ── NOAA / catastrophe early warning ─────────────────────────
   # Direct feeds now live in src/digest/ingest/{nhc,usgs,spc,nifc}.py
   # (Wave 2). Google News NHC proxy retired.
