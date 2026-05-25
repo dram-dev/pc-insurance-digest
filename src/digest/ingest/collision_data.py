@@ -130,8 +130,8 @@ def _scrape(vendor: str, url: str, selectors: list[str], filters: tuple[str, ...
         # Log a warning so the operator knows to update selectors.
         logger.warning(
             "collision: %s — no nodes matched any selector; page structure may have changed. "
-            "TODO: curl %s and update _%.upper()_SELECTORS in collision_data.py",
-            vendor, url, vendor,
+            "TODO: curl %s and update _%s_SELECTORS in collision_data.py",
+            vendor, url, vendor.upper(),
         )
         return []
 
