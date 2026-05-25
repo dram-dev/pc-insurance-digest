@@ -734,6 +734,49 @@ def auto_keep_state_doi() -> int:
         return cur.rowcount or 0
 
 
+def auto_keep_investor_supp() -> int:
+    """Auto-keep untriaged investor-supplement table items, topic=reserving.
+
+    The investor_supp ingestor only emits rows from publicly-posted quarterly
+    supplemental data; every item that reaches the DB is a parsed table from
+    a known IR PDF and warrants reserving classification without re-gating.
+    Score 0.85 (quarterly disclosure tier).
+    """
+    sql = """
+        UPDATE items
+        SET triage_decision = 'keep',
+            triage_score    = 0.85,
+            topic           = 'reserving',
+            triaged_at      = datetime('now')
+        WHERE source = 'investor_supp'
+          AND triage_decision IS NULL
+    """
+    with get_conn() as conn:
+        cur = conn.execute(sql)
+        return cur.rowcount or 0
+
+
+def auto_keep_naic_schedp() -> int:
+    """Auto-keep untriaged NAIC Schedule P items, topic=reserving.
+
+    Score 0.95 — Schedule P triangles are uniquely valuable annual adverse-
+    development data; only emitted when a real data source is wired in
+    (the ingestor no-ops while config/naic_schedp_sources.yaml is empty).
+    """
+    sql = """
+        UPDATE items
+        SET triage_decision = 'keep',
+            triage_score    = 0.95,
+            topic           = 'reserving',
+            triaged_at      = datetime('now')
+        WHERE source = 'naic_schedp'
+          AND triage_decision IS NULL
+    """
+    with get_conn() as conn:
+        cur = conn.execute(sql)
+        return cur.rowcount or 0
+
+
 def auto_keep_serff() -> int:
     """Auto-keep untriaged SERFF rate filings, topic=regulatory_rate.
 

@@ -43,6 +43,9 @@ INGESTORS = {
     "state_doi":         "digest.ingest.state_doi:StateDOIIngestor",
     "industry_research": "digest.ingest.industry_research:IndustryResearchIngestor",
     "serff":             "digest.ingest.serff:SerffIngestor",
+    # Wave 3 Phase 3 — actuarial datasets (PDF parsing)
+    "investor_supp":     "digest.ingest.investor_supp:InvestorSuppIngestor",
+    "naic_schedp":       "digest.ingest.naic_schedp:NAICSchedulePIngestor",
 }
 
 

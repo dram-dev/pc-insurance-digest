@@ -1,0 +1,43 @@
+# NAIC Schedule P sources — annual statutory loss-reserve triangles.
+#
+# Schedule P data is not freely available in bulk. Real sources:
+#   - NAIC InsData (paid subscription)
+#   - State DOI annual-statement filings (per-state, inconsistent formats)
+#   - Carrier 10-K statutory exhibits (rare for public companies)
+#   - AM Best statutory database (paid)
+#
+# This file scaffolds the schema for once a data source is secured. Until
+# then the naic_schedp ingestor no-ops.
+#
+# Schema sketch (TODO when data access is sorted):
+#   defaults:
+#     user_agent: "Mozilla/5.0 ..."
+#     request_timeout: 60
+#     lines_of_business:
+#       - "Private Passenger Auto Liability"
+#       - "Commercial Auto Liability"
+#       - "Workers Compensation"
+#       - "Other Liability — Occurrence"
+#       - "Other Liability — Claims-Made"
+#       - "Products Liability — Occurrence"
+#       - "Products Liability — Claims-Made"
+#       - "Medical Professional Liability — Occurrence"
+#       - "Medical Professional Liability — Claims-Made"
+#       - "Homeowners / Farmowners"
+#       - "Commercial Multiple Peril"
+#
+#   sources:
+#     - kind: insdata_api
+#       endpoint: "https://api.insdata.naic.org/..."
+#       auth: ...
+#       enabled: false
+#     - kind: state_doi_annual
+#       state: CA
+#       url_template: "..."
+#       enabled: false
+
+defaults:
+  user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+  request_timeout: 60
+
+sources: []   # populate once a data source is secured

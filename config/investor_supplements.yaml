@@ -1,0 +1,111 @@
+# Insurer investor-supplement PDF sources. Quarterly cadence.
+#
+# Most public insurers post a "Financial Supplement" or "Earnings Supplement"
+# PDF on their IR site after each earnings release. URL formats vary by
+# insurer; the {year} and {quarter} (Q1|Q2|Q3|Q4) tokens get substituted by
+# the ingestor. Each entry stays `enabled: false` until the URL is confirmed
+# against a live quarterly file on the Mac mini.
+#
+# Validation recipe:
+#   curl -sIL -A 'Mozilla/5.0' '<url_template with current year/quarter>'
+# A 200 with Content-Type: application/pdf → set enabled: true.
+
+defaults:
+  user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+  request_timeout: 30
+  # Tables we extract from each PDF. Patterns are regexes matched against
+  # the joined header row text (lowercased). Tune per insurer if needed.
+  paid_severity_header_patterns:
+    - "paid (?:loss|severity)"
+    - "average paid"
+    - "claim payments"
+    - "paid claim"
+    - "loss ratio"
+  pending_count_header_patterns:
+    - "pending (?:counts?|claims)"
+    - "claims outstanding"
+    - "open claims"
+    - "case (?:counts?|reserves)"
+    - "incurred but not reported"
+    - "ibnr"
+
+insurers:
+  # ── Personal-auto + homeowners big three ──
+  - ticker: PGR
+    name: Progressive
+    url_template: "https://investors.progressive.com/financial-info/financial-results/{year}/Q{q}-Supplement.pdf"
+    enabled: false
+
+  - ticker: ALL
+    name: Allstate
+    url_template: "https://www.allstateinvestors.com/financials/quarterly-results/{year}/Q{q}-Supplement.pdf"
+    enabled: false
+
+  - ticker: BRK
+    name: Berkshire Hathaway
+    url_template: "https://www.berkshirehathaway.com/qtrly/{year}q{q}.pdf"
+    enabled: false
+
+  # ── Commercial + specialty primary ──
+  - ticker: TRV
+    name: Travelers
+    url_template: "https://investor.travelers.com/financial-information/quarterly-results/{year}/Q{q}-Supplement.pdf"
+    enabled: false
+
+  - ticker: CB
+    name: Chubb
+    url_template: "https://investors.chubb.com/financials/quarterly-results/{year}/Q{q}-Supplement.pdf"
+    enabled: false
+
+  - ticker: HIG
+    name: The Hartford
+    url_template: "https://ir.thehartford.com/financial-information/quarterly-results/{year}/Q{q}-Supplement.pdf"
+    enabled: false
+
+  - ticker: AIG
+    name: AIG
+    url_template: "https://www.aig.com/content/dam/aig/america-canada/us/documents/investor-relations/{year}-Q{q}-financial-supplement.pdf"
+    enabled: false
+
+  # ── Life-anchored holdings with P&C exposure (lower priority) ──
+  - ticker: MET
+    name: MetLife
+    url_template: "https://investor.metlife.com/financials/quarterly-results/{year}/Q{q}-Supplement.pdf"
+    enabled: false
+
+  - ticker: PRU
+    name: Prudential
+    url_template: "https://investor.prudential.com/financials/quarterly-results/{year}/Q{q}-Supplement.pdf"
+    enabled: false
+
+  # ── Bermuda reinsurers (P&C-relevant) ──
+  - ticker: RNR
+    name: RenaissanceRe
+    url_template: "https://www.renre.com/sites/default/files/{year}-Q{q}-Financial-Supplement.pdf"
+    enabled: false
+
+  - ticker: EG
+    name: Everest Group
+    url_template: "https://www.everestre.com/Investors-Section/financials/{year}-Q{q}-supplement.pdf"
+    enabled: false
+
+  - ticker: AXS
+    name: AXIS Capital
+    url_template: "https://www.axiscapital.com/investors/financial-information/{year}-Q{q}-Supplement.pdf"
+    enabled: false
+
+  # ── Broker holdings (limited reserving content but track) ──
+  - ticker: MMC
+    name: Marsh McLennan
+    url_template: "https://www.marshmclennan.com/content/dam/mmc-web/insights/{year}-Q{q}-Financial-Supplement.pdf"
+    enabled: false
+
+  - ticker: AON
+    name: Aon
+    url_template: "https://ir.aon.com/financial-information/quarterly-results/{year}-Q{q}-Supplement.pdf"
+    enabled: false
+
+  - ticker: WTW
+    name: WTW
+    url_template: "https://investors.wtwco.com/financial-information/quarterly-results/{year}-Q{q}-Supplement.pdf"
+    enabled: false

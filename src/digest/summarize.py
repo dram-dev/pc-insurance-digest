@@ -481,6 +481,88 @@ def _maybe_stub_insurer_filing(item: dict[str, Any]) -> SummaryOutput | None:
     )
 
 
+def _maybe_stub_investor_supp(item: dict[str, Any]) -> SummaryOutput | None:
+    """Bypass LLM for investor-supplement table items — content is the parsed
+    table text from a known quarterly disclosure PDF. MLX would mangle the
+    numeric structure; promote content directly as summary."""
+    if item.get("source") != "investor_supp":
+        return None
+    content = (item.get("content") or "").strip()
+    if not content:
+        return None
+    try:
+        meta = json.loads(item.get("metadata_json") or "{}")
+    except (TypeError, ValueError):
+        meta = {}
+    ticker     = meta.get("ticker") or "?"
+    name       = meta.get("name") or ticker
+    year       = meta.get("year")
+    quarter    = meta.get("quarter")
+    table_type = (meta.get("table_type") or "table").replace("_", " ")
+
+    summary = (
+        f"{name} ({ticker}) Q{quarter} {year} {table_type} table from investor "
+        f"supplement:\n\n{content}"
+    )
+    why = (
+        f"{ticker} quarterly reserving disclosure ({table_type}). Adverse-development "
+        "or pending-count growth here is the early-warning surface for severity "
+        "inflation and loss-cost trends."
+    )
+    return SummaryOutput(
+        topic="reserving",
+        summary=summary,
+        why_it_matters=why,
+        confidence="high",
+        see_also=[],
+        materiality=0.9,
+    )
+
+
+def _maybe_stub_naic_schedp(item: dict[str, Any]) -> SummaryOutput | None:
+    """Bypass LLM for NAIC Schedule P triangle items — content will be the
+    line-of-business triangle as deterministic text once a data source is
+    wired. Until then this never fires (ingestor no-ops)."""
+    if item.get("source") != "naic_schedp":
+        return None
+    content = (item.get("content") or "").strip()
+    if not content:
+        return None
+    try:
+        meta = json.loads(item.get("metadata_json") or "{}")
+    except (TypeError, ValueError):
+        meta = {}
+    insurer = meta.get("insurer") or meta.get("name") or "?"
+    lob     = meta.get("line_of_business") or "P&C line"
+    year    = meta.get("statement_year") or meta.get("year") or "?"
+    adverse = meta.get("adverse_dev_pct")
+
+    summary = (
+        f"{insurer} {year} Schedule P — {lob} loss-development triangle:\n\n{content}"
+    )
+    if adverse is not None:
+        why = (
+            f"{insurer} {lob} {adverse:+.1f}% reserve development on {year} statutory "
+            "Schedule P. Adverse development on long-tail lines is the social-inflation "
+            "tell; favorable development is balance-sheet ballast."
+        )
+        materiality = 1.2 if abs(float(adverse)) >= 5.0 else 1.0
+    else:
+        why = (
+            f"{insurer} {year} Schedule P {lob} triangle on record. Inspect for "
+            "adverse-development pattern across calendar years."
+        )
+        materiality = 1.0
+    return SummaryOutput(
+        topic="reserving",
+        summary=summary,
+        why_it_matters=why,
+        confidence="high",
+        see_also=[],
+        materiality=materiality,
+    )
+
+
 def summarize_item(item: dict[str, Any], regime_framing: str = "") -> SummaryOutput:
     """Summarize one item using the configured backend. Raises BackendError on failure."""
     # Short-circuits: deterministic stubs for structured-data sources that
@@ -489,6 +571,12 @@ def summarize_item(item: dict[str, Any], regime_framing: str = "") -> SummaryOut
     if stub is not None:
         return stub
     stub = _maybe_stub_insurer_filing(item)
+    if stub is not None:
+        return stub
+    stub = _maybe_stub_investor_supp(item)
+    if stub is not None:
+        return stub
+    stub = _maybe_stub_naic_schedp(item)
     if stub is not None:
         return stub
 

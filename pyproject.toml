@@ -17,6 +17,7 @@ dependencies = [
     "click>=8.1",
     "beautifulsoup4>=4.14.3",
     "databricks-sql-connector>=4.2.6",
+    "pdfplumber>=0.11.9",
 ]
 
 [project.scripts]
