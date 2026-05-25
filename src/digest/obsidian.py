@@ -920,13 +920,41 @@ def render_weekly_note(
         lines.append(f"> {contrarian}")
         lines.append("")
 
-    # ── Macro-AI intersection ────────────────────────────────────────
-    macro_ai = (synthesis.get("macro_ai_intersection") or "").strip()
-    if macro_ai:
-        lines.append("## 🔗 Macro-AI Intersection")
+    # ── Carrier of the Week (P&C synthesis) ──────────────────────────
+    carrier = synthesis.get("carrier_of_the_week") or {}
+    ticker = (carrier.get("ticker") or "").strip()
+    rationale = (carrier.get("rationale") or "").strip()
+    if ticker and rationale:
+        lines.append("## 🏢 Carrier of the Week")
         lines.append("")
-        lines.append("> [!abstract] 🔗 Macro-AI Intersection")
-        lines.append(f"> {macro_ai}")
+        lines.append(f"> [!example]+ 🏢 {ticker}")
+        lines.append(f"> {rationale}")
+        lines.append("")
+
+    # ── Burden-trend states (Regulatory Sonar lite synthesis) ────────
+    burden_states = synthesis.get("burden_trend_states") or []
+    if burden_states:
+        lines.append("## 🏛️ Regulatory Burden Trends")
+        lines.append("")
+        for bt in burden_states:
+            state = (bt.get("state") or "").strip()
+            direction = (bt.get("direction") or "").strip()
+            note = (bt.get("note") or "").strip()
+            if not (state and note):
+                continue
+            arrow = {"increasing": "↑", "decreasing": "↓", "neutral": "→"}.get(direction, "•")
+            cl = "warning" if direction == "increasing" else ("success" if direction == "decreasing" else "info")
+            lines.append(f"> [!{cl}]+ 🏛️ {state} burden {arrow} {direction or '—'}")
+            lines.append(f"> {note}")
+            lines.append("")
+
+    # ── Inflation pulse (loss-cost driver synthesis) ─────────────────
+    inflation_pulse = (synthesis.get("inflation_pulse") or "").strip()
+    if inflation_pulse:
+        lines.append("## 📈 Inflation Pulse")
+        lines.append("")
+        lines.append("> [!abstract] 📈 Inflation Pulse")
+        lines.append(f"> {inflation_pulse}")
         lines.append("")
 
     # ── All items grouped by topic ───────────────────────────────────
@@ -998,8 +1026,22 @@ def publish_weekly(date_iso: str | None = None) -> dict:
         logger.warning("weekly: source-quality fetch failed (%s)", exc)
         source_quality = []
 
+    # Wave 3 Phase 2 item 5: weekly synthesis port. Calls Claude with a P&C
+    # reader persona to produce themes, must-reads, contrarian, carrier-of-the-
+    # week, burden-trend states, and inflation pulse. Returns {} on failure;
+    # render_weekly_note treats missing keys as omitted sections.
+    synthesis: dict = {}
+    try:
+        from digest.weekly import synthesize_week
+        week_label = f"{week_iso} ({monday.isoformat()} – {sunday.isoformat()})"
+        regime_framing = regime_md.strip() if regime_md else ""
+        synthesis = synthesize_week(rows, week_label, regime_framing=regime_framing) or {}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("weekly: synthesis failed (%s) — rendering without it", exc)
+        synthesis = {}
+
     text = render_weekly_note(
-        week_iso, monday, sunday, {}, rows,
+        week_iso, monday, sunday, synthesis, rows,
         regime_md=regime_md,
         top_signals=top_signals,
         source_quality=source_quality,
@@ -1014,5 +1056,5 @@ def publish_weekly(date_iso: str | None = None) -> dict:
         "week": week_iso,
         "path": str(target),
         "item_count": len(rows),
-        "theme_count": 0,
+        "theme_count": len(synthesis.get("themes") or []),
     }
