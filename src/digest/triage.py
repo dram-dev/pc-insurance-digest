@@ -97,6 +97,15 @@ AUTO-DISCARD (set decision=drop, score=0.0)
   office relocation) without operational or financial substance
 - Press releases about earnings dates, conference attendance, or routine personnel
   moves below C-suite or chief actuary
+- Non-U.S./Caribbean tropical-cyclone reporting (e.g. the Chinese "National
+  Hurricane Center" / NHC China) without explicit U.S. landfall risk or
+  Caribbean threat — this digest tracks U.S. insurance exposure only
+- Generic travel-volume reporting (TSA throughput, AAA holiday-travel forecasts,
+  airline passenger counts) without an insurance loss or claims angle
+- Road / highway / general infrastructure funding policy without an auto,
+  commercial-auto, or workers-comp linkage
+- General AI / LLM model releases, capability benchmarks, or AI-vendor PR with
+  no clear insurance underwriting, claims, distribution, or pricing use case
 
 SCORING (for non-auto items)
 ============================

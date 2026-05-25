@@ -86,7 +86,10 @@ feeds:
     limit: 20
 
   - name: google_news_insurtech
-    url: 'https://news.google.com/rss/search?q=when:48h+(insurtech+OR+%22insurance+AI%22+OR+%22underwriting+AI%22+OR+%22claims+automation%22)&hl=en-US&gl=US&ceid=US:en'
+    # Narrowed 2026-05-25 — require insurance-domain qualifier alongside the AI
+    # term to stop general AI/LLM news from drowning the feed (already capped at
+    # 35% in summarize.py, but the cap should bite less often after this).
+    url: 'https://news.google.com/rss/search?q=when:48h+(insurtech+OR+%22insurance+AI%22+OR+%22underwriting+AI%22+OR+%22claims+automation%22+OR+%22AI+claims%22+OR+%22AI+underwriter%22)+(insurance+OR+insurer+OR+carrier+OR+underwriter+OR+MGA+OR+broker)&hl=en-US&gl=US&ceid=US:en'
     topic_hint: ai_insurtech
     limit: 15
 
