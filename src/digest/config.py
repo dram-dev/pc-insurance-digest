@@ -73,6 +73,15 @@ class Settings(BaseSettings):
     # Free tier limits: 5 req/min, 50 req/hour, 125 req/day.
     courtlistener_token: str = Field(default="", alias="COURTLISTENER_TOKEN")
 
+    # Databricks medallion sink (Wave 3 Phase 1 scaffold). All writes no-op when
+    # databricks_enabled=False; workspace provisioning is deferred to Wave 4.
+    # See packages/digest-core/sql/databricks/{bronze,silver,gold}.sql for DDL.
+    databricks_enabled: bool = Field(default=False, alias="DATABRICKS_ENABLED")
+    databricks_host: str = Field(default="", alias="DATABRICKS_HOST")          # workspace URL, no scheme
+    databricks_http_path: str = Field(default="", alias="DATABRICKS_HTTP_PATH") # SQL warehouse HTTP path
+    databricks_token: str = Field(default="", alias="DATABRICKS_TOKEN")        # personal access token
+    databricks_catalog: str = Field(default="pc_digest", alias="DATABRICKS_CATALOG")
+
     # ── Validators ────────────────────────────────────────────────────────
 
     @field_validator("summarizer_model", mode="before")
