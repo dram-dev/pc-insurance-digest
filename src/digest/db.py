@@ -2,14 +2,18 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Iterator
 
 from digest.config import settings
+from digest.sinks import sink
+
+logger = logging.getLogger(__name__)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS items (
@@ -214,6 +218,9 @@ def get_conn(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
 
 def upsert_items(items: Iterable["IngestedItem"]) -> int:  # noqa: F821
     """Insert new items, ignore duplicates. Returns count of new rows."""
+    items_list = list(items)
+    if not items_list:
+        return 0
     sql = """
         INSERT OR IGNORE INTO items
             (source, source_id, url, title, author, content, published_at, metadata_json)
@@ -222,7 +229,7 @@ def upsert_items(items: Iterable["IngestedItem"]) -> int:  # noqa: F821
     """
     inserted = 0
     with get_conn() as conn:
-        for item in items:
+        for item in items_list:
             d = asdict(item)
             d["metadata_json"] = json.dumps(d.pop("metadata", {}) or {})
             if isinstance(d.get("published_at"), datetime):
@@ -230,6 +237,8 @@ def upsert_items(items: Iterable["IngestedItem"]) -> int:  # noqa: F821
             cur = conn.execute(sql, d)
             if cur.rowcount:
                 inserted += 1
+    # Bronze sink: every ingested item, including soon-to-be-dropped ones.
+    sink.write_ingested(items_list)
     return inserted
 
 
@@ -251,6 +260,22 @@ def log_run(
     """
     with get_conn() as conn:
         conn.execute(sql, (run_type, source, items_fetched, items_new, duration_ms, status, error))
+    # Bronze telemetry — derive started_at from duration so the row is complete.
+    ended = datetime.now(timezone.utc)
+    started = ended - timedelta(milliseconds=duration_ms)
+    sink.write_telemetry({
+        "run_id":       f"{started.isoformat(timespec='seconds')}-{source}",
+        "stage":        "ingest",
+        "source":       source,
+        "started_at":   started.isoformat(timespec="seconds"),
+        "ended_at":     ended.isoformat(timespec="seconds"),
+        "duration_ms":  duration_ms,
+        "items_in":     items_fetched,
+        "items_out":    items_new,
+        "errors":       0 if status == "ok" else 1,
+        "error_detail": error,
+        "model_id":     None,
+    })
 
 
 def item_stats() -> dict[str, int]:
@@ -712,7 +737,13 @@ def update_triage(
     regulatory_rate items only (Regulatory Sonar lite). Pass None for all
     other topics — the columns will remain NULL.
     """
+    pair: tuple[str, str] | None = None
     with get_conn() as conn:
+        row = conn.execute(
+            "SELECT source, source_id FROM items WHERE id = ?", (item_id,)
+        ).fetchone()
+        if row:
+            pair = (row["source"], row["source_id"])
         conn.execute(
             """
             UPDATE items
@@ -726,6 +757,14 @@ def update_triage(
             """,
             (decision, score, topic, burden_direction, burden_intensity, item_id),
         )
+    if pair:
+        sink.write_triage(pair[0], pair[1], {
+            "decision":         decision,
+            "score":            score,
+            "topic":             topic,
+            "burden_direction": burden_direction,
+            "burden_intensity": burden_intensity,
+        })
 
 
 def update_summary(
@@ -738,7 +777,13 @@ def update_summary(
 ) -> None:
     """Record summarizer output on an item."""
     see_also_json = json.dumps(see_also or [])
+    pair: tuple[str, str] | None = None
     with get_conn() as conn:
+        row = conn.execute(
+            "SELECT source, source_id FROM items WHERE id = ?", (item_id,)
+        ).fetchone()
+        if row:
+            pair = (row["source"], row["source_id"])
         conn.execute(
             """
             UPDATE items
@@ -752,6 +797,15 @@ def update_summary(
             """,
             (topic, summary, why_it_matters, confidence, see_also_json, item_id),
         )
+    if pair:
+        sink.write_summary(pair[0], pair[1], {
+            "summary":        summary,
+            "why_it_matters": why_it_matters,
+            "see_also":       see_also_json,
+            "confidence":     confidence,
+            # materiality is set separately via update_materiality; the sink
+            # accepts it as nullable. model_id/duration come from log_summarizer.
+        })
 
 
 def log_summarizer(
@@ -764,7 +818,13 @@ def log_summarizer(
     error: str | None = None,
 ) -> None:
     """Append a row to summarizer_log for cost/usage tracking."""
+    pair: tuple[str, str] | None = None
     with get_conn() as conn:
+        row = conn.execute(
+            "SELECT source, source_id FROM items WHERE id = ?", (item_id,)
+        ).fetchone()
+        if row:
+            pair = (row["source"], row["source_id"])
         conn.execute(
             """
             INSERT INTO summarizer_log
@@ -774,6 +834,22 @@ def log_summarizer(
             """,
             (backend, item_id, duration_ms, input_chars, output_chars, status, error),
         )
+    # Bronze telemetry — stage='summarize'. Source comes from the item.
+    ended = datetime.now(timezone.utc)
+    started = ended - timedelta(milliseconds=duration_ms)
+    sink.write_telemetry({
+        "run_id":       f"{started.isoformat(timespec='seconds')}-summarize-{item_id}",
+        "stage":        "summarize",
+        "source":       pair[0] if pair else None,
+        "started_at":   started.isoformat(timespec="seconds"),
+        "ended_at":     ended.isoformat(timespec="seconds"),
+        "duration_ms":  duration_ms,
+        "items_in":     input_chars,
+        "items_out":    output_chars,
+        "errors":       0 if status == "ok" else 1,
+        "error_detail": error,
+        "model_id":     backend,
+    })
 
 
 def triage_stats() -> dict[str, int]:
@@ -1181,7 +1257,18 @@ def upsert_regime_signal(
              market_cycle_mult, cat_load_mult, multiplier,
              evidence_json, source),
         )
-        return cur.lastrowid or 0
+        rowid = cur.lastrowid or 0
+    sink.write_regime({
+        "as_of":             as_of,
+        "market_cycle":      market_cycle,
+        "cat_load":          cat_load,
+        "market_cycle_mult": market_cycle_mult,
+        "cat_load_mult":     cat_load_mult,
+        "multiplier":        multiplier,
+        "evidence_json":     evidence_json,
+        "source":            source,
+    })
+    return rowid
 
 
 def latest_regime_signal() -> sqlite3.Row | None:
@@ -1290,12 +1377,27 @@ def upsert_signal_scores(rows: list[dict]) -> int:
              :llm_judgment, :topic_boost, :burden_boost,
              :insurer_boost, :inflation_boost, :regulatory_boost)
     """
+    item_ids = [int(r["item_id"]) for r in rows if r.get("item_id") is not None]
+    src_map: dict[int, tuple[str, str]] = {}
     with get_conn() as conn:
+        if item_ids:
+            placeholders = ",".join("?" * len(item_ids))
+            cur = conn.execute(
+                f"SELECT id, source, source_id FROM items WHERE id IN ({placeholders})",
+                item_ids,
+            )
+            for r in cur.fetchall():
+                src_map[int(r["id"])] = (r["source"], r["source_id"])
         n = 0
         for r in rows:
             cur = conn.execute(sql, r)
             n += cur.rowcount or 0
-        return n
+    # Silver sink — one write per scored row, with all 10 boost factors.
+    for r in rows:
+        pair = src_map.get(int(r.get("item_id") or 0))
+        if pair:
+            sink.write_score(pair[0], pair[1], r)
+    return n
 
 
 def top_signal_scores(
