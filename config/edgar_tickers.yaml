@@ -46,3 +46,8 @@ companies:
   - ticker: WTW
     name: Willis Towers Watson Public Limited Company
     cik: "0001140536"
+  # Berkshire Hathaway — parent of GEICO and Berkshire Hathaway Reinsurance.
+  # Quarterly filings disclose GEICO underwriting results in the insurance segment.
+  - ticker: BRK
+    name: Berkshire Hathaway Inc.
+    cik: "0001067983"

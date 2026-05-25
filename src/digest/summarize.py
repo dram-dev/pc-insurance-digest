@@ -71,11 +71,23 @@ For each item, produce a JSON object with five fields:
    "FL hurricane CAT load", "1/1 reinsurance renewal pricing", "MMC Q3 organic growth", "TPLF disclosure rule".
    Empty list is acceptable.
 6. "materiality": a float in [0.5, 1.5] gauging how material this item is to a P&C reader who
-   prioritizes personal-lines auto and homeowners/fire signal. Anchor your score on these guides:
-     1.5  Severe near-term financial/operational impact (active landfall, major insolvency,
-          sweeping rate suppression in a top-5 state, CA/FL/LA wildfire-driven personal-lines exit).
-     1.2  Notable industry development with multi-carrier or systemic implications.
-     1.0  Standard substantive item — single-carrier action, reinsurer commentary, routine filing.
+   prioritizes personal-lines auto and homeowners/fire signal. Anchor your score on these guides
+   and ERR HIGH when in doubt — historically the summarizer has under-scored systemic moves:
+     1.5  Severe near-term financial/operational impact. Examples that REQUIRE 1.5:
+          - "biggest/largest/highest in N years" industry-wide P&L or combined-ratio data
+          - top-5-state (CA/FL/TX/NY/LA) DOI rate action ≥10%, FAIR Plan / Citizens action,
+            tort reform bill passage, statewide market exit
+          - active hurricane landfall; M≥6.0 EQ in populated area; multi-billion CAT estimate
+          - nuclear verdict ≥$50M or precedent-setting MDL ruling
+          - major reinsurer insolvency or capital raise ≥$500M
+     1.4  Industry-wide signal short of "record": multi-carrier rate actions, regional market
+          dislocation, single-state regulatory shift in a top-5 state, broker M&A
+          consolidation creating a top-10 national platform.
+     1.2  Notable industry development with multi-carrier or systemic implications
+          (single-carrier guidance, reinsurer commentary across renewals, Substack analyst
+          deep-dive on a structural trend).
+     1.0  Standard substantive item — single-carrier action, single-state routine filing,
+          analyst note covering one company.
      0.8  Marginal — adjacent news, weak primary signal, mostly context.
      0.5  Barely material — included for completeness, easily skipped.
 
@@ -373,8 +385,113 @@ BACKENDS = {
 # ── Public API ─────────────────────────────────────────────────────────
 
 
+# ── EDGAR stub-summarize (no MLX call when filing body is empty) ───────
+
+
+_EDGAR_STUB_TOPICS = {
+    "8-K":    "underwriting_results",
+    "10-Q":   "underwriting_results",
+    "10-K":   "underwriting_results",
+    "13F-HR": "ma_capital",
+}
+
+
+def _maybe_stub_fred(item: dict[str, Any]) -> SummaryOutput | None:
+    """Bypass LLM for FRED items — they're already structured prose.
+
+    FRED ingestor emits self-contained content like "Series X rose Y% m/m
+    (z=+Z.ZZσ)". The LLM has nothing to add here, so we promote content
+    directly as summary and assign materiality from the z-score magnitude.
+    """
+    if item.get("source") != "fred":
+        return None
+    content = (item.get("content") or "").strip()
+    if not content:
+        return None
+    try:
+        metadata = json.loads(item.get("metadata_json") or "{}")
+    except (TypeError, ValueError):
+        metadata = {}
+    z = abs(float(metadata.get("z_score") or 0.0))
+    # 1.5σ → 1.1 (just over routine); 2σ → 1.2; 3σ → 1.4; 4σ+ → 1.5
+    if   z >= 4.0: materiality = 1.5
+    elif z >= 3.0: materiality = 1.4
+    elif z >= 2.0: materiality = 1.2
+    else:          materiality = 1.1
+    label = metadata.get("label") or "FRED series"
+    direction = "rose" if (metadata.get("mom_pct") or 0) > 0 else "fell"
+    why = (
+        f"{label} {direction} {abs(metadata.get('mom_pct', 0)):.2f}% m/m "
+        f"({z:.2f}σ vs trailing 12m). Higher cost driver typically flows "
+        f"into P&C personal-auto and homeowners severity within 1-2 quarters."
+    )
+    return SummaryOutput(
+        topic="supply_chain",
+        summary=content,
+        why_it_matters=why,
+        confidence="high",
+        see_also=[],
+        materiality=materiality,
+    )
+
+
+def _maybe_stub_insurer_filing(item: dict[str, Any]) -> SummaryOutput | None:
+    """Bypass the LLM for EDGAR filings with no fetched body content.
+
+    Without body text the summarizer hallucinates topics from the title alone
+    (e.g., "TRV 10-Q filed ..." → ai_insurtech). Emit a deterministic stub
+    keyed by form type instead. Materiality 0.9 is just below an LLM-judged
+    standard item (1.0); the per-item leaderboard's carrier-priority boost
+    will still surface big-3 carriers above generic press coverage.
+    """
+    if item.get("source") != "edgar":
+        return None
+    if (item.get("content") or "").strip():
+        return None
+    try:
+        metadata = json.loads(item.get("metadata_json") or "{}")
+    except (TypeError, ValueError):
+        return None
+    form   = metadata.get("form") or ""
+    ticker = metadata.get("ticker") or ""
+    if not ticker or form not in _EDGAR_STUB_TOPICS:
+        return None
+
+    topic = _EDGAR_STUB_TOPICS[form]
+    if form == "13F-HR":
+        summary = f"{ticker} 13F-HR holdings update filed with SEC. Body parsing not performed."
+        why = f"{ticker} institutional positions — review for sector rotation or concentrated bets."
+    else:
+        summary = (
+            f"{ticker} {form} on file with SEC; body content unavailable. "
+            "Open source link for full disclosure."
+        )
+        why = (
+            f"{ticker} disclosure — carrier-level signal on P&L, reserves, or guidance. "
+            "Body text not present; check filing index for material items."
+        )
+
+    return SummaryOutput(
+        topic=topic,
+        summary=summary,
+        why_it_matters=why,
+        confidence="low",
+        see_also=[],
+        materiality=0.9,
+    )
+
+
 def summarize_item(item: dict[str, Any], regime_framing: str = "") -> SummaryOutput:
     """Summarize one item using the configured backend. Raises BackendError on failure."""
+    # Short-circuits: deterministic stubs for structured-data sources that
+    # don't benefit from MLX rewriting.
+    stub = _maybe_stub_fred(item)
+    if stub is not None:
+        return stub
+    stub = _maybe_stub_insurer_filing(item)
+    if stub is not None:
+        return stub
+
     backend_name = settings.summarizer_backend
     backend_fn = BACKENDS.get(backend_name)
     if not backend_fn:

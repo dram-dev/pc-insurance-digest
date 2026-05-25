@@ -47,11 +47,13 @@ TOPICS = [
 ]
 SUB_TAGS = ["litigation_tplf"]  # extend as new sub-classifications arise
 
-# Wave 1 insurer ticker universe — items from EDGAR with form_type in
+# Wave 1 insurer ticker universe — items from EDGAR with form in
 # {8-K, 10-K, 10-Q} and ticker in this set bypass Ollama via Python hook.
+# BRK covers GEICO (Berkshire's auto-insurance subsidiary) via consolidated
+# filings.
 INSURER_TICKERS_WAVE1 = {
     "TRV", "ALL", "PGR", "CB", "HIG", "AIG", "MET", "PRU", "RNR",
-    "EG",  "AXS", "MMC", "AON", "WTW",
+    "EG",  "AXS", "MMC", "AON", "WTW", "BRK",
 }
 MANDATORY_FORM_TYPES = {"8-K", "10-K", "10-Q"}
 
@@ -326,7 +328,11 @@ def run_triage(limit: int = 200) -> dict[str, int]:
     if usgs_kept:
         logger.info("triage: auto-kept %d USGS M≥6.0 earthquakes", usgs_kept)
 
-    auto_kept += nhc_kept + usgs_kept
+    quant_kept = db.auto_keep_quantitative()
+    if quant_kept:
+        logger.info("triage: auto-kept %d quantitative items (FRED/etc)", quant_kept)
+
+    auto_kept += nhc_kept + usgs_kept + quant_kept
 
     items = db.items_needing_triage(limit=limit)
     if not items:

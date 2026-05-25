@@ -173,6 +173,11 @@ MIGRATIONS = [
     "ALTER TABLE items ADD COLUMN burden_direction TEXT",   # increasing|neutral|decreasing|null
     "ALTER TABLE items ADD COLUMN burden_intensity TEXT",   # high|medium|low|null
     "CREATE INDEX IF NOT EXISTS idx_items_burden ON items(burden_intensity)",
+    # Wave 2.x: insurer-priority + inflation-keyword boosts on signal_scores
+    "ALTER TABLE signal_scores ADD COLUMN insurer_boost REAL DEFAULT 1.0",
+    "ALTER TABLE signal_scores ADD COLUMN inflation_boost REAL DEFAULT 1.0",
+    # Score Higher review (2026-05-24): regulatory/state-action keyword boost
+    "ALTER TABLE signal_scores ADD COLUMN regulatory_boost REAL DEFAULT 1.0",
 ]
 
 
@@ -551,10 +556,15 @@ def auto_keep_insurer_filings(
     form_types: set[str],
 ) -> int:
     """Auto-keep untriaged EDGAR items where ticker is in `tickers` AND
-    metadata_json.form_type is in `form_types`. Returns rows updated.
+    metadata_json.form is in `form_types`. Returns rows updated.
 
     Implements the Wave 1 Python-side mandatory auto-keep: a model misread
-    of source/form_type cannot drop a material insurer disclosure.
+    of source/form cannot drop a material insurer disclosure.
+
+    Topic is locked at triage time per form (insurer filings should not be
+    re-classified by the summarizer):
+      8-K, 10-Q, 10-K → underwriting_results (carrier P&L / loss-cost signal)
+      13F-HR           → ma_capital
     """
     if not tickers or not form_types:
         return 0
@@ -564,15 +574,15 @@ def auto_keep_insurer_filings(
         UPDATE items
         SET triage_decision = 'keep',
             triage_score    = 0.95,
-            topic           = COALESCE(
-                                json_extract(metadata_json, '$.topic_hint'),
-                                'ma_capital'
-                              ),
+            topic           = CASE json_extract(metadata_json, '$.form')
+                                WHEN '13F-HR' THEN 'ma_capital'
+                                ELSE 'underwriting_results'
+                              END,
             triaged_at      = datetime('now')
         WHERE source = 'edgar'
           AND triage_decision IS NULL
-          AND json_extract(metadata_json, '$.ticker')    IN ({placeholders})
-          AND json_extract(metadata_json, '$.form_type') IN ({form_placeholders})
+          AND json_extract(metadata_json, '$.ticker') IN ({placeholders})
+          AND json_extract(metadata_json, '$.form')   IN ({form_placeholders})
     """
     with get_conn() as conn:
         cur = conn.execute(sql, tuple(tickers) + tuple(form_types))
@@ -1230,11 +1240,13 @@ def upsert_signal_scores(rows: list[dict]) -> int:
         INSERT OR REPLACE INTO signal_scores
             (item_id, computed_at, score,
              source_mult, regime_mult, topic_relevance, recency,
-             llm_judgment, topic_boost, burden_boost)
+             llm_judgment, topic_boost, burden_boost,
+             insurer_boost, inflation_boost, regulatory_boost)
         VALUES
             (:item_id, :computed_at, :score,
              :source_mult, :regime_mult, :topic_relevance, :recency,
-             :llm_judgment, :topic_boost, :burden_boost)
+             :llm_judgment, :topic_boost, :burden_boost,
+             :insurer_boost, :inflation_boost, :regulatory_boost)
     """
     with get_conn() as conn:
         n = 0

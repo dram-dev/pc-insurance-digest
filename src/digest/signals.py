@@ -4,6 +4,8 @@ Scores every kept+summarized item with a per-item leaderboard formula:
 
     score = source_mult × regime_mult × topic_relevance × recency
           × llm_judgment × topic_priority_boost × burden_intensity_boost
+          × insurer_priority_boost × inflation_keyword_boost
+          × regulatory_action_boost
 
 The output drives:
   * Top-5 callout in the daily note
@@ -11,16 +13,22 @@ The output drives:
   * Eventual `_meta/Leaderboard.md` rolling 30d view
 
 Components, in plain English:
-  source_mult           Trust the channel (EDGAR > AM Best > trade press > Reddit > HN).
-  regime_mult           Current market-cycle × cat-load multiplier from the regime detector.
-  topic_relevance       Reserved — currently 1.0 for every topic. Tune later if topic
-                        emphasis under specific regimes needs sharpening (e.g. cat_event
-                        under post_major_event, reinsurance_cycle under hard_market).
-  recency               Linear half-life over 7 days, floor 0.3.
-  llm_judgment          Materiality from summarize.py (0.5–1.5), default 1.0 if missing.
-  topic_priority_boost  Personal-lines auto + homeowners/fire = 1.3, others 1.0.
-  burden_intensity_boost  Regulatory Sonar lite — placeholder 1.0 until Wave 2.x ships
-                          burden_intensity classification on regulatory_rate items.
+  source_mult            Trust the channel (EDGAR > AM Best > trade press > Reddit > HN).
+  regime_mult            Current market-cycle × cat-load multiplier from the regime detector.
+  topic_relevance        Reserved — currently 1.0 for every topic. Tune later if topic
+                         emphasis under specific regimes needs sharpening.
+  recency                Linear half-life over 7 days, floor 0.3.
+  llm_judgment           Materiality from summarize.py (0.5–1.5), default 1.0 if missing.
+  topic_priority_boost   Personal-lines auto + liability topics (social inflation,
+                         commercial specialty, reserving, supply chain) > 1.0.
+  burden_intensity_boost Regulatory Sonar lite — burden_intensity classification on
+                         regulatory_rate items only.
+  insurer_priority_boost EDGAR items keyed on ticker: PGR/ALL/BRK = 1.5, TRV = 1.3, etc.
+                         (User priority: largest personal-auto carriers must outrank
+                          generic press.) Only fires for source=edgar.
+  inflation_keyword_boost  Title/summary keyword scan for the user's tracked inflation
+                           drivers (auto parts, construction cost, labor cost/supply,
+                           verdict/judgement, severity, loss cost). 1.2× on hit, else 1.0.
 
 Persistence:
   * Each `digest signals` run inserts one row per item into `signal_scores`
@@ -30,8 +38,10 @@ Persistence:
 """
 from __future__ import annotations
 
+import json
 import logging
 import math
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -52,6 +62,7 @@ SOURCE_MULT: dict[str, float] = {
     "nhc":     1.3,
     # Tier 1.2 — Wave 3 placeholders (NAIC / state DOI / AM Best)
     "usgs":    1.2,   # treat structured hazard data like a primary source
+    "fred":    1.2,   # quantitative cost-driver anomalies (already σ-gated)
     # Tier 1.0 — trade press (handled by RSS source rolled up via the "rss" tag)
     "rss":     1.0,
     "spc":     1.0,
@@ -70,11 +81,17 @@ SOURCE_MULT: dict[str, float] = {
 # ── Topic priority boost (locked in CLAUDE.md) ────────────────────────
 
 TOPIC_PRIORITY_BOOST: dict[str, float] = {
-    "personal_lines":     1.3,
+    "personal_lines":       1.3,
     # Liability-trend topics — user preference: outrank cat_event by default
-    "social_inflation":   1.4,
+    "social_inflation":     1.4,
     "commercial_specialty": 1.4,
-    "reserving":          1.4,
+    "reserving":            1.4,
+    # Inflationary cost-driver feeds (auto parts, construction, labor, medical/Rx)
+    "supply_chain":         1.4,
+    # Industry-financial-state topics — under-weighted before Score Higher review
+    "underwriting_results": 1.2,   # combined ratio, AY commentary, industry profitability
+    "distribution":         1.2,   # broker M&A (MMC/AON/WTW/BRO/AJG/RYAN/Patriot)
+    "regulatory_rate":      1.2,   # state DOI / SERFF / NAIC actions (stacks with burden_boost)
 }
 
 
@@ -85,6 +102,127 @@ BURDEN_INTENSITY_BOOST: dict[str, float] = {
     "medium": 1.1,
     "low":    1.0,
 }
+
+
+# ── Insurer-priority boost (carrier-level weighting on EDGAR items) ───
+#
+# User priority: largest personal-auto carriers (PGR, ALL, GEICO/BRK) must
+# outrank generic trade-press coverage. Applied only when source=='edgar'
+# and metadata.ticker matches. GEICO is a Berkshire subsidiary, so BRK is
+# the proxy ticker.
+
+PRIORITY_INSURERS_BOOST: dict[str, float] = {
+    "PGR": 1.5,   # personal auto leader
+    "ALL": 1.5,   # personal lines #2
+    "BRK": 1.5,   # GEICO parent
+    "TRV": 1.3,   # commercial + bond / specialty bellwether
+    "CB":  1.3,
+    "HIG": 1.2,
+    "AIG": 1.2,
+}
+
+
+# ── Inflation keyword boost (user-tracked cost drivers) ───────────────
+#
+# Cross-topic boost for items naming the loss-cost inflation drivers the
+# user cares about. Compiled once at module import — scans title +
+# summary + why_it_matters. 1.2× on any hit, 1.0× otherwise. Multiple
+# hits don't stack (one keyword is enough signal).
+
+_INFLATION_KEYWORDS = (
+    r"\bauto[\s-]?parts?\b",
+    r"\bconstruction (?:cost|labor|material)",
+    r"\blabor (?:cost|supply|shortage|inflation|rate)",
+    r"\bwage[s]? (?:inflation|growth|pressure)",
+    r"\bmedical (?:cost|inflation|trend)",
+    r"\bnuclear verdict",
+    r"\b(?:verdict|judgement|judgment|settlement)s?\b",
+    r"\btort reform",
+    r"\bsocial inflation",
+    r"\bloss cost",
+    r"\bseverity (?:trend|inflation|increase)",
+    r"\bpure premium",
+    r"\bclaim severity",
+    r"\bbody shop",
+    r"\brepair cost",
+    r"\bused[\s-]car",
+    r"\blitigat(?:ion|ed) financ",   # third-party litigation funding
+)
+
+_INFLATION_RE = re.compile("|".join(_INFLATION_KEYWORDS), re.IGNORECASE)
+
+
+# ── Regulatory / state-action keyword boost ───────────────────────────
+#
+# Items naming a top-5-state regulatory action, an insurer of last resort,
+# or a SERFF rate filing get 1.2× even when the assigned topic isn't
+# `regulatory_rate` (e.g., the CA FAIR Plan rate hike is classified
+# `personal_lines` per the fire-content routing rule but is structurally
+# a regulatory event). Stacks with `burden_intensity_boost` when both
+# apply.
+
+_REGULATORY_KEYWORDS = (
+    r"\bFAIR Plan\b",                          # CA insurer of last resort
+    r"\bCitizens (?:Property|Insurance)\b",    # FL / LA insurer of last resort
+    r"\binsurer of last resort\b",
+    r"\b(?:rate|premium) (?:filing|hike|increase|approval|reduction)\b",
+    r"\b(?:DOI|Department of Insurance) (?:approves|denies|orders|files)",
+    r"\bSERFF\b",
+    r"\bNAIC (?:adopts|approves|votes|releases|publishes)\b",
+    r"\b(?:CDI|California Department of Insurance)\b",
+    r"\b(?:FLOIR|Florida Office of Insurance Regulation)\b",
+    r"\b(?:TDI|Texas Department of Insurance)\b",
+    r"\b(?:LDI|Louisiana Department of Insurance)\b",
+    r"\bNYDFS\b",
+    r"\btort reform (?:bill|act|law|legislation)\b",
+    r"\b(?:Senate|House) (?:bill|insurance committee)\b",
+    r"\bmarket conduct (?:action|examination|review)\b",
+    r"\bproposed rate (?:change|increase|filing)\b",
+)
+
+_REGULATORY_RE = re.compile("|".join(_REGULATORY_KEYWORDS), re.IGNORECASE)
+
+
+def _regulatory_action_boost(row: Any) -> float:
+    """Return 1.2 if title/summary/why_it_matters names a state DOI action,
+    insurer of last resort, or SERFF rate filing. Fires across topics so
+    fire-routed personal_lines items with regulatory substance still benefit.
+    """
+    parts: list[str] = []
+    for key in ("title", "summary", "why_it_matters"):
+        if key in row.keys():
+            val = row[key]
+            if val:
+                parts.append(str(val))
+    blob = " ".join(parts)
+    return 1.2 if blob and _REGULATORY_RE.search(blob) else 1.0
+
+
+def _inflation_keyword_boost(row: Any) -> float:
+    """Return 1.2 if title/summary/why_it_matters names an inflation driver."""
+    parts: list[str] = []
+    for key in ("title", "summary", "why_it_matters"):
+        if key in row.keys():
+            val = row[key]
+            if val:
+                parts.append(str(val))
+    blob = " ".join(parts)
+    return 1.2 if blob and _INFLATION_RE.search(blob) else 1.0
+
+
+def _insurer_priority_boost(source: str, metadata_json: Any) -> float:
+    """Return per-ticker boost for EDGAR items; 1.0 otherwise."""
+    if source != "edgar" or not metadata_json:
+        return 1.0
+    try:
+        meta = json.loads(metadata_json)
+    except (TypeError, ValueError):
+        return 1.0
+    ticker = (meta.get("ticker") or "").upper().strip()
+    # Normalize BRK.A / BRK.B / BRK-B → BRK for matching
+    if ticker.startswith("BRK"):
+        ticker = "BRK"
+    return PRIORITY_INSURERS_BOOST.get(ticker, 1.0)
 
 
 # ── Recency ────────────────────────────────────────────────────────────
@@ -142,19 +280,25 @@ class Score:
     llm_judgment: float
     topic_boost: float
     burden_boost: float
+    insurer_boost: float
+    inflation_boost: float
+    regulatory_boost: float
 
     def as_row(self, computed_at: str) -> dict[str, Any]:
         return {
-            "item_id":         self.item_id,
-            "computed_at":     computed_at,
-            "score":           self.score,
-            "source_mult":     self.source_mult,
-            "regime_mult":     self.regime_mult,
-            "topic_relevance": self.topic_relevance,
-            "recency":         self.recency,
-            "llm_judgment":    self.llm_judgment,
-            "topic_boost":     self.topic_boost,
-            "burden_boost":    self.burden_boost,
+            "item_id":          self.item_id,
+            "computed_at":      computed_at,
+            "score":            self.score,
+            "source_mult":      self.source_mult,
+            "regime_mult":      self.regime_mult,
+            "topic_relevance":  self.topic_relevance,
+            "recency":          self.recency,
+            "llm_judgment":     self.llm_judgment,
+            "topic_boost":      self.topic_boost,
+            "burden_boost":     self.burden_boost,
+            "insurer_boost":    self.insurer_boost,
+            "inflation_boost":  self.inflation_boost,
+            "regulatory_boost": self.regulatory_boost,
         }
 
 
@@ -187,9 +331,15 @@ def score_item(row: Any, regime: RegimeSignal) -> Score:
         (burden_intensity or "").lower(), 1.0
     )
 
+    metadata_json = row["metadata_json"] if "metadata_json" in row.keys() else None
+    insurer_boost    = _insurer_priority_boost(source, metadata_json)
+    inflation_boost  = _inflation_keyword_boost(row)
+    regulatory_boost = _regulatory_action_boost(row)
+
     score = (
         src_mult * rg_mult * topic_rel * rec
         * llm_j * topic_boost * burden_boost
+        * insurer_boost * inflation_boost * regulatory_boost
     )
     return Score(
         item_id=int(row["id"]),
@@ -201,6 +351,9 @@ def score_item(row: Any, regime: RegimeSignal) -> Score:
         llm_judgment=round(llm_j, 3),
         topic_boost=round(topic_boost, 3),
         burden_boost=round(burden_boost, 3),
+        insurer_boost=round(insurer_boost, 3),
+        inflation_boost=round(inflation_boost, 3),
+        regulatory_boost=round(regulatory_boost, 3),
     )
 
 

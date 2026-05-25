@@ -29,13 +29,27 @@ SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 FILING_URL = "https://www.sec.gov/Archives/edgar/data/{cik_int}/{accession_no_dashes}/{primary_doc}"
 FILING_INDEX_URL = "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={cik}&type={form}&dateb=&owner=include&count=1&search_text="
 
-# Filing types we care about for capex signal
+# Filing types we care about
 RELEVANT_FORMS = {"10-K", "10-Q", "8-K", "13F-HR"}
 
-# Only fetch content for filings filed within this many days (avoid backfilling)
-_CONTENT_FETCH_MAX_AGE_DAYS = 7
+# Only fetch content for filings filed within this many days (avoid backfilling
+# entire history; 21d covers a full quarterly-filing cycle so each fresh 10-Q
+# arrives with body text the summarizer can use).
+_CONTENT_FETCH_MAX_AGE_DAYS = 21
+# Forms that get full content fetched. 13F-HR is XML holdings, parsed differently.
+_FETCH_CONTENT_FORMS = {"8-K", "10-Q", "10-K"}
 # Polite delay between EDGAR doc fetches (SEC rate limit: 10 req/s)
 _EDGAR_FETCH_DELAY = 0.15
+
+# Insurer (non-fund) filings — locked topic_hint per form so the summarizer
+# doesn't reclassify a bare 10-Q stub as ai_insurtech. Matches the SQL-level
+# topic lock in db.auto_keep_insurer_filings.
+_INSURER_TOPIC_HINT = {
+    "8-K":    "underwriting_results",
+    "10-Q":   "underwriting_results",
+    "10-K":   "underwriting_results",
+    "13F-HR": "ma_capital",
+}
 
 
 class _TextExtractor(HTMLParser):
@@ -198,15 +212,29 @@ class EdgarIngestor(IngestorBase):
                         logger.debug("edgar: unparseable date %r for %s %s", filing_date, ticker, accession)
                         published = None
 
-                    # Fetch content for recent 8-K filings only (avoid backfilling)
+                    # Fetch content for recent filings only (avoid backfilling).
+                    # 8-K → EX-99.1 press release; 10-Q/10-K → primary doc head
+                    # (financial highlights live in the first ~5K chars).
                     content: str | None = None
-                    if form == "8-K" and published and published >= self._cutoff:
-                        content = _fetch_8k_content(cik_int, accession, self.headers)
+                    if (
+                        form in _FETCH_CONTENT_FORMS
+                        and published
+                        and published >= self._cutoff
+                    ):
+                        if form == "8-K":
+                            content = _fetch_8k_content(cik_int, accession, self.headers)
+                        else:
+                            content = _fetch_html_text(url, self.headers, max_chars=5000)
                         if content:
                             logger.debug(
-                                "edgar: fetched 8-K EX-99 content for %s %s (%d chars)",
-                                ticker, accession, len(content),
+                                "edgar: fetched %s content for %s %s (%d chars)",
+                                form, ticker, accession, len(content),
                             )
+
+                    if is_fund:
+                        topic_hint = "fed_markets"
+                    else:
+                        topic_hint = _INSURER_TOPIC_HINT.get(form, "underwriting_results")
 
                     items.append(
                         IngestedItem(
@@ -223,7 +251,7 @@ class EdgarIngestor(IngestorBase):
                                 "form": form,
                                 "accession": accession,
                                 "primary_document": primary_doc,
-                                "topic_hint": "fed_markets" if is_fund else "ai_capex",
+                                "topic_hint": topic_hint,
                             },
                         )
                     )
