@@ -4,22 +4,58 @@ Daily + weekly curated digest covering US P&C insurance and financial services.
 Sibling to [macro-ai-digest](../macro-ai-digest); shares MLX/Ollama backends and
 the same Obsidian vault (lands in `81 P&C Digest` next to `80 Digest`).
 
-## Wave 1 scope
+For the full design context (locked decisions, scoring formula, regime axes,
+Regulatory Sonar, etc.), see [CLAUDE.md](CLAUDE.md).
 
-- **Ingestors:** EDGAR (named insurer universe), trade-press RSS (Insurance
-  Journal, Reinsurance News, Artemis, Carrier Management, Insurance ERM, others),
-  Reddit (r/Insurance, r/Actuary, r/CFP, weather/EQ subreddits), Substack
-  (Insurance Insider, etc.), Hacker News
-- **Topic taxonomy:** 17 P&C topics + 1 sub-tag (see `src/digest/triage.py` for
-  the canonical list and the triage prompt)
-- **Triage:** Ollama Qwen2.5:14b with a P&C-specific prompt. Python-side
-  hybrid auto-keep enforces EDGAR 8-K/10-K/10-Q from named insurers without
-  calling the model (cannot silently fail on material disclosures)
-- **Summarize:** MLX-LM local server (Qwen3.5-27B), shared with macro digest
-- **Publish:** Daily + weekly notes to Obsidian vault, grouped by topic
-- **Skipped for Wave 1:** dashboard, signals leaderboard, weekly essay,
-  bull/bear debate, backtest, velocity, calendar ingestor, sentiment,
-  entities, stock tracker, market-cycle regime detector (Wave 2 / 3)
+## Status (Waves 1–3 shipped)
+
+**Pipeline:** `ingest → triage (Ollama Qwen2.5:14b) → summarize (MLX Qwen3.5-27B
+local) → score (signals leaderboard) → publish (Obsidian)`
+
+**Ingestors (live):**
+- **EDGAR** — 15-insurer universe (TRV, ALL, PGR, CB, HIG, AIG, MET, PRU, RNR,
+  EG, AXS, MMC, AON, WTW, BRK); 8-K/10-Q/10-K body fetch; Python auto-keep
+- **Trade press** — Insurance Journal, Reinsurance News, Artemis, Carrier
+  Management + Google News `site:` proxies for FT / Economist / WSJ /
+  Bloomberg insurance desks
+- **Cat events** — NHC tropical cyclone (U.S./Caribbean threat filter), USGS
+  M≥5.0 earthquakes (M≥6.0 U.S./territory auto-keep), SPC severe-weather
+  outlooks, NIFC active wildfires ≥1000 ac
+- **FRED** — 7 P&C cost-driver CPI/PPI series with ±1.5σ anomaly gate
+- **CourtListener** — federal MDL docket tracker (tier-1 + emerging
+  jurisdictions, P&C NOS filter, MDL keyword auto-keep)
+- **Reddit / Substack / Hacker News** — r/Insurance, r/Actuary, r/CFP,
+  weather/EQ subreddits; Insurance Insider, Coverager; HN ≥100 points
+- **Scaffolded, selector-validation pending on Mac mini:** state DOI direct
+  scrapers (CA/FL/TX/NY/LA), SERFF rate filings ≥5%, CCC/Mitchell collision
+  data, LexisNexis Risk + JD Power industry research, NAIC Schedule P,
+  per-insurer investor supplements
+
+**Triage / summarize / score:**
+- 17-topic P&C taxonomy + `litigation_tplf` sub-tag (canonical list in
+  [src/digest/triage.py](src/digest/triage.py))
+- Hybrid auto-keep — Python enforces material categories (insurer 8-K/10-Q/10-K,
+  NHC advisories, U.S. M≥6.0 quakes, FRED anomalies, CourtListener MDLs, state
+  DOI bulletins, SERFF ≥5%, investor supplements, NAIC Schedule P); model
+  handles the rest
+- Two-axis regime detector — `market_cycle × cat_load`, 72h cadence with
+  override file
+- Signal leaderboard — 11-factor score `source × regime × topic_relevance ×
+  recency × llm_judgment × topic_priority × burden_intensity × insurer_priority
+  × inflation_keyword × regulatory_action × litigation_tplf`. All boost values
+  are user-editable from the Obsidian vault — see _meta/Scoring Weights.md_
+- Regulatory Sonar **lite** — `burden_direction` / `burden_intensity` on
+  `regulatory_rate` items, with leaderboard boost and a daily-note callout on
+  high-intensity items
+
+**Publish:** Daily + weekly notes + per-topic archives in
+`{vault}/81 P&C Digest/{Daily,Topics,Weekly}/`, plus a `_meta/` folder for
+operations log, scoring weights, and feedback files.
+
+**Optional Databricks medallion sink** — bronze / silver / gold DDL ships in
+`packages/digest-core/sql/databricks/`. `DatabricksSink` (in
+`src/digest/sinks/databricks.py`) is best-effort + lazy-connected and no-ops
+unless `DATABRICKS_ENABLED=true`; SQLite remains source of truth.
 
 ## Schedule
 
@@ -37,20 +73,26 @@ Staggered with macro digest to avoid MLX contention:
 - `uv` (`brew install uv`)
 - Ollama running locally with `qwen2.5:14b` pulled
 - MLX server (managed by macro digest's `com.dr.mlx.server` launchd job)
-- Reddit script-type app credentials
 - EDGAR user agent string (your email, per SEC policy)
+- Optional: Reddit script-type app credentials, COURTLISTENER_TOKEN,
+  ANTHROPIC_API_KEY / GEMINI_API_KEY for fallback summarizer backends,
+  Databricks workspace credentials if enabling the medallion sink
 
 ## Getting started
 
 ```bash
 cd ~/Projects/pc-insurance-digest
 uv sync
-cp .env.example .env       # then fill in REDDIT_*, EDGAR_USER_AGENT, OBSIDIAN_VAULT_PATH
+cp .env.example .env       # fill in EDGAR_USER_AGENT, OBSIDIAN_VAULT_PATH,
+                           # REDDIT_* and any optional keys
 uv run digest init-db
 uv run digest ingest all
 uv run digest stats
 uv run digest pipeline --run-type manual
 ```
+
+CLI commands: `ingest`, `triage`, `summarize`, `regime`, `signals`, `pipeline`,
+`publish`, `weekly`, `stats`, `recent`, `health`, `viz`, `init-db`.
 
 ## Scheduling
 
@@ -59,48 +101,82 @@ bash scripts/install_launchd.sh
 launchctl list | grep com.dr.pcdigest
 ```
 
+## User-editable feedback in `_meta/`
+
+These files in the Obsidian vault drive parts of the pipeline directly:
+
+- **`_meta/Scoring Weights.md`** — YAML frontmatter overrides every leaderboard
+  boost factor (sources, topics, insurer priority, keyword boosts, burden
+  intensity). `signals.py` re-reads on mtime change.
+- **`_meta/Score higher.md`** — items the user wants ranked higher; informs
+  prompt tuning + Wave 4 manual-ratings feedback loop.
+- **`_meta/Updates.md`** — observation log for items to downvote / drop /
+  filter. Each entry tracks `ingested` + `fix applied` checkboxes; closed
+  entries describe the code change that landed.
+
 ## Project layout
 
 ```
 pc-insurance-digest/
 ├── pyproject.toml
 ├── README.md
+├── CLAUDE.md                          # deep design context
 ├── config/
-│   ├── edgar_tickers.yaml     # Wave 1 insurer universe (must stay in sync with triage.py)
-│   ├── rss_feeds.yaml         # trade press + Google News searches
-│   ├── subreddits.yaml        # r/Insurance, r/Actuary, weather/EQ
-│   └── substack_feeds.yaml    # Insurance Insider, Coverager, etc.
-├── launchd/
-│   ├── com.dr.pcdigest.am.plist
-│   ├── com.dr.pcdigest.pm.plist
-│   └── com.dr.pcdigest.weekly.plist
-├── scripts/
-│   └── install_launchd.sh
+│   ├── edgar_tickers.yaml             # 15-insurer universe (sync with triage.py)
+│   ├── rss_feeds.yaml                 # trade press + Google News proxies
+│   ├── subreddits.yaml
+│   ├── substack_feeds.yaml
+│   ├── fred_series.yaml               # P&C cost-driver CPI/PPI series
+│   ├── courtlistener_courts.yaml      # tier-1 / emerging / tier-3 jurisdictions
+│   ├── state_doi_sources.yaml         # CA/FL/TX/NY/LA press scrapers
+│   ├── serff_states.yaml              # SERFF rate filings + portal dispatch
+│   ├── industry_research_sources.yaml # LexisNexis Risk, JD Power
+│   ├── investor_supplements.yaml      # per-insurer 10-Q supplement URLs
+│   └── naic_schedp_sources.yaml       # reserve-triangle data source
+├── launchd/                           # am / pm / weekly plists
+├── packages/digest-core/              # scaffold for the shared core extraction
+│   ├── EXTRACTION_PLAN.md             # what-moves-where map
+│   └── sql/databricks/{bronze,silver,gold}.sql
+├── scripts/install_launchd.sh
 └── src/digest/
-    ├── cli.py                 # entry point (ingest, triage, summarize, pipeline, publish, weekly, health)
+    ├── cli.py                         # Click entry points
     ├── config.py
-    ├── db.py
-    ├── triage.py              # P&C triage prompt + Python auto-keep hook
-    ├── summarize.py
-    ├── obsidian.py            # writes to 81 P&C Digest/{Daily,Topics,Weekly}/
+    ├── db.py                          # SQLite schema + auto-keep hooks
+    ├── triage.py                      # Ollama prompt + 17-topic taxonomy
+    ├── summarize.py                   # MLX runner + materiality prompt
+    ├── regime.py                      # market_cycle × cat_load detector
+    ├── signals.py                     # 11-factor leaderboard
+    ├── obsidian.py                    # daily / weekly / topic-archive writer
+    ├── weekly.py                      # weekly synthesis (themes / must-reads)
     ├── health.py
     ├── security.py
+    ├── viz.py
+    ├── sinks/                         # optional secondary write destinations
+    │   ├── __init__.py
+    │   └── databricks.py              # medallion sink, no-op by default
     └── ingest/
         ├── base.py
-        ├── edgar.py
-        ├── rss.py
-        ├── reddit.py
-        ├── substack.py
-        └── hackernews.py
+        ├── edgar.py, rss.py, reddit.py, substack.py, hackernews.py
+        ├── nhc.py, usgs.py, spc.py, nifc.py
+        ├── fred.py
+        ├── courtlistener.py
+        ├── state_doi.py, serff.py
+        ├── industry_research.py, collision_data.py
+        ├── investor_supp.py, naic_schedp.py
 ```
 
-## Wave 2 / 3 roadmap (deferred)
+## Wave 4 roadmap
 
-- **Wave 2:** NOAA/NHC/USGS catastrophe event ingestors; market-cycle
-  (hard/soft) + CAT-load regime detector; signals leaderboard
-- **Wave 3:** AM Best rating actions, NAIC + state DOI (SERFF) rate filings,
-  Lloyd's / Bermuda reinsurance market
+- **Regulatory Sonar full detector** — periodic per-state burden-pressure
+  index, LegiScan integration, weekly note section
+- **Score Higher / Updates feedback automation** — parse the `_meta/` notes
+  into `silver.manual_ratings`, auto-suggest boost adjustments
+- **Databricks dashboards + Genie space** — daily / weekly leaderboards,
+  source quality, boost-factor heat-map
+- **Cross-feed dedup** — title-normalize hash pass at triage entry
+- **digest-core extraction** — lift shared core out of PC + macro digest into
+  a framework package once dogfooding window closes (foundation already in
+  `packages/digest-core/`)
 
-When divergence between this project and `macro-ai-digest` settles after Wave 2,
-extract the shared core into a `digest-core` framework package and let both
-projects become thin domain plug-ins.
+See [_meta/To-Do.md](https://github.com/dram-dev/pc-insurance-digest) (in the
+Obsidian vault) for the full backlog.
