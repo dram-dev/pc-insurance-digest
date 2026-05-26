@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+
+from digest.parse.dates import parse_date
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
@@ -35,22 +37,6 @@ logger = logging.getLogger(__name__)
 _CONFIG_PATH = Path(__file__).resolve().parents[3] / "config" / "industry_research_sources.yaml"
 _REQUEST_TIMEOUT = 20
 _UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-
-
-def _parse_date(text: str) -> datetime | None:
-    clean = (text or "").strip()
-    for fmt in (
-        "%B %d, %Y",
-        "%b %d, %Y",
-        "%Y-%m-%d",
-        "%m/%d/%Y",
-        "%d %B %Y",
-    ):
-        try:
-            return datetime.strptime(clean, fmt).replace(tzinfo=timezone.utc)
-        except ValueError:
-            continue
-    return None
 
 
 def _scrape_source(entry: dict) -> list[IngestedItem]:
@@ -97,7 +83,7 @@ def _scrape_source(entry: dict) -> list[IngestedItem]:
 
         date_el   = node.select_one("time, .date, [class*='date']")
         date_text = (date_el.get("datetime") or date_el.get_text(strip=True)) if date_el else ""
-        pub       = _parse_date(date_text)
+        pub       = parse_date(date_text)
 
         source_id = f"{name}:{urlparse(href).path}"
         items.append(

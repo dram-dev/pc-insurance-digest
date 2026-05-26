@@ -329,40 +329,22 @@ def run_triage(limit: int = 200) -> dict[str, int]:
     if auto_kept:
         logger.info("triage: auto-kept %d insurer filings (bypassing Ollama)", auto_kept)
 
-    nhc_kept = db.auto_keep_nhc_advisories()
-    if nhc_kept:
-        logger.info("triage: auto-kept %d NHC storm advisories", nhc_kept)
-
-    usgs_kept = db.auto_keep_usgs_major()
-    if usgs_kept:
-        logger.info("triage: auto-kept %d USGS M≥6.0 earthquakes", usgs_kept)
-
-    quant_kept = db.auto_keep_quantitative()
-    if quant_kept:
-        logger.info("triage: auto-kept %d quantitative items (FRED/etc)", quant_kept)
-
-    court_kept = db.auto_keep_courtlistener_dockets()
-    if court_kept:
-        logger.info("triage: auto-kept %d CourtListener MDL dockets", court_kept)
-
-    doi_kept = db.auto_keep_state_doi()
-    if doi_kept:
-        logger.info("triage: auto-kept %d state DOI press releases", doi_kept)
-
-    serff_kept = db.auto_keep_serff()
-    if serff_kept:
-        logger.info("triage: auto-kept %d SERFF rate filings ≥5%%", serff_kept)
-
-    invsupp_kept = db.auto_keep_investor_supp()
-    if invsupp_kept:
-        logger.info("triage: auto-kept %d investor-supplement tables", invsupp_kept)
-
-    schedp_kept = db.auto_keep_naic_schedp()
-    if schedp_kept:
-        logger.info("triage: auto-kept %d NAIC Schedule P triangles", schedp_kept)
-
-    auto_kept += (nhc_kept + usgs_kept + quant_kept + court_kept + doi_kept
-                  + serff_kept + invsupp_kept + schedp_kept)
+    # (fn, label) pairs — keeps the ordering visible without 8 copy-paste log blocks.
+    _AUTO_KEEP_HOOKS = [
+        (db.auto_keep_nhc_advisories,       "NHC storm advisories"),
+        (db.auto_keep_usgs_major,           "USGS M≥6.0 earthquakes"),
+        (db.auto_keep_quantitative,         "quantitative items (FRED/etc)"),
+        (db.auto_keep_courtlistener_dockets, "CourtListener MDL dockets"),
+        (db.auto_keep_state_doi,            "state DOI press releases"),
+        (db.auto_keep_serff,                "SERFF rate filings ≥5%%"),
+        (db.auto_keep_investor_supp,        "investor-supplement tables"),
+        (db.auto_keep_naic_schedp,          "NAIC Schedule P triangles"),
+    ]
+    for hook, label in _AUTO_KEEP_HOOKS:
+        n = hook()
+        if n:
+            logger.info("triage: auto-kept %d %s", n, label)
+            auto_kept += n
 
     items = db.items_needing_triage(limit=limit)
     if not items:
@@ -383,6 +365,8 @@ def run_triage(limit: int = 200) -> dict[str, int]:
                     decision="drop",
                     score=0.0,
                     topic="macro_linkage",
+                    source=item_dict.get("source"),
+                    source_id=item_dict.get("source_id"),
                 )
                 counts["dropped"] += 1
                 logger.info(
@@ -402,6 +386,8 @@ def run_triage(limit: int = 200) -> dict[str, int]:
                 burden_direction=verdict.get("burden_direction"),
                 burden_intensity=verdict.get("burden_intensity"),
                 sub_tags=verdict.get("sub_tags"),
+                source=item_dict.get("source"),
+                source_id=item_dict.get("source_id"),
             )
             if verdict["decision"] == "keep":
                 counts["kept"] += 1

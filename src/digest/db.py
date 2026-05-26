@@ -813,25 +813,24 @@ def update_triage(
     burden_direction: str | None = None,
     burden_intensity: str | None = None,
     sub_tags: list[str] | None = None,
+    source: str | None = None,
+    source_id: str | None = None,
 ) -> None:
     """Record a triage outcome on an item.
 
-    burden_direction / burden_intensity are populated by the LLM for
-    regulatory_rate items only (Regulatory Sonar lite). Pass None for all
-    other topics — the columns will remain NULL.
-
-    sub_tags is the LLM's sub-classification list (currently only
-    ['litigation_tplf'] for TPLF / MDL / attorney economics). Stored as
-    JSON; consumed by signals.py for the tplf_boost factor.
+    `source` / `source_id` are passed by callers that already hold the row
+    (saves a SELECT for the sink's item_hash derivation). They fall back to
+    a lookup when omitted, keeping older callers working.
     """
     sub_tags_json = json.dumps(sub_tags or [])
-    pair: tuple[str, str] | None = None
+    pair: tuple[str, str] | None = (source, source_id) if (source and source_id) else None
     with get_conn() as conn:
-        row = conn.execute(
-            "SELECT source, source_id FROM items WHERE id = ?", (item_id,)
-        ).fetchone()
-        if row:
-            pair = (row["source"], row["source_id"])
+        if pair is None:
+            row = conn.execute(
+                "SELECT source, source_id FROM items WHERE id = ?", (item_id,)
+            ).fetchone()
+            if row:
+                pair = (row["source"], row["source_id"])
         conn.execute(
             """
             UPDATE items
@@ -865,16 +864,23 @@ def update_summary(
     why_it_matters: str,
     confidence: str,
     see_also: list[str] | None,
+    source: str | None = None,
+    source_id: str | None = None,
 ) -> None:
-    """Record summarizer output on an item."""
+    """Record summarizer output on an item.
+
+    `source` / `source_id` short-circuit the lookup the sink does for
+    item_hash derivation when the caller already has them.
+    """
     see_also_json = json.dumps(see_also or [])
-    pair: tuple[str, str] | None = None
+    pair: tuple[str, str] | None = (source, source_id) if (source and source_id) else None
     with get_conn() as conn:
-        row = conn.execute(
-            "SELECT source, source_id FROM items WHERE id = ?", (item_id,)
-        ).fetchone()
-        if row:
-            pair = (row["source"], row["source_id"])
+        if pair is None:
+            row = conn.execute(
+                "SELECT source, source_id FROM items WHERE id = ?", (item_id,)
+            ).fetchone()
+            if row:
+                pair = (row["source"], row["source_id"])
         conn.execute(
             """
             UPDATE items
@@ -907,15 +913,22 @@ def log_summarizer(
     output_chars: int,
     status: str,
     error: str | None = None,
+    source: str | None = None,
+    source_id: str | None = None,
 ) -> None:
-    """Append a row to summarizer_log for cost/usage tracking."""
-    pair: tuple[str, str] | None = None
+    """Append a row to summarizer_log for cost/usage tracking.
+
+    `source` / `source_id` short-circuit the lookup the sink does for
+    item_hash derivation when the caller already has them.
+    """
+    pair: tuple[str, str] | None = (source, source_id) if (source and source_id) else None
     with get_conn() as conn:
-        row = conn.execute(
-            "SELECT source, source_id FROM items WHERE id = ?", (item_id,)
-        ).fetchone()
-        if row:
-            pair = (row["source"], row["source_id"])
+        if pair is None:
+            row = conn.execute(
+                "SELECT source, source_id FROM items WHERE id = ?", (item_id,)
+            ).fetchone()
+            if row:
+                pair = (row["source"], row["source_id"])
         conn.execute(
             """
             INSERT INTO summarizer_log

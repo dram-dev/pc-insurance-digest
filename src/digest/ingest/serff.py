@@ -41,6 +41,7 @@ import yaml
 from bs4 import BeautifulSoup
 
 from digest.ingest.base import IngestedItem, IngestorBase
+from digest.parse.dates import parse_date
 
 logger = logging.getLogger(__name__)
 
@@ -70,23 +71,6 @@ def _parse_rate_change(text: str) -> float | None:
             return float(m.group(1)) / 100.0
         except ValueError:
             return None
-    return None
-
-
-def _parse_date(text: str) -> datetime | None:
-    clean = (text or "").strip()
-    for fmt in (
-        "%Y-%m-%d",
-        "%m/%d/%Y",
-        "%m/%d/%y",
-        "%B %d, %Y",
-        "%b %d, %Y",
-        "%d %B %Y",
-    ):
-        try:
-            return datetime.strptime(clean, fmt).replace(tzinfo=timezone.utc)
-        except ValueError:
-            continue
     return None
 
 
@@ -225,7 +209,7 @@ class SerffIngestor(IngestorBase):
                 continue
 
             # Filter: filing within lookback window (if parseable).
-            filed_at = _parse_date(filed_text)
+            filed_at = parse_date(filed_text)
             if filed_at and filed_at < cutoff:
                 continue
 

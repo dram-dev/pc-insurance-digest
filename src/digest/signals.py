@@ -334,9 +334,10 @@ def _text_blob(row: Any) -> str:
     return " ".join(parts)
 
 
-def _litigation_tplf_boost(row: Any, boost_value: float = 1.3) -> float:
+def _litigation_tplf_boost(row: Any, blob: str, boost_value: float = 1.3) -> float:
     """Returns `boost_value` when the LLM tagged the item with
     litigation_tplf sub_tag OR the title/summary names a TPLF / MDL signal.
+    Pass the pre-computed `blob` so score_item doesn't rebuild it per helper.
     """
     sub_tags_json = row["sub_tags"] if "sub_tags" in row.keys() else None
     if sub_tags_json:
@@ -346,22 +347,18 @@ def _litigation_tplf_boost(row: Any, boost_value: float = 1.3) -> float:
                 return boost_value
         except (TypeError, ValueError):
             pass
-    blob = _text_blob(row)
     return boost_value if blob and _TPLF_RE.search(blob) else 1.0
 
 
-def _regulatory_action_boost(row: Any, boost_value: float = 1.2) -> float:
-    """Returns `boost_value` if title/summary names a state DOI action,
-    insurer of last resort, or SERFF rate filing. Fires across topics so
-    fire-routed personal_lines items with regulatory substance still benefit.
+def _regulatory_action_boost(blob: str, boost_value: float = 1.2) -> float:
+    """Returns `boost_value` if the row blob names a state DOI action,
+    insurer of last resort, or SERFF rate filing.
     """
-    blob = _text_blob(row)
     return boost_value if blob and _REGULATORY_RE.search(blob) else 1.0
 
 
-def _inflation_keyword_boost(row: Any, boost_value: float = 1.2) -> float:
-    """Returns `boost_value` if title/summary names an inflation driver."""
-    blob = _text_blob(row)
+def _inflation_keyword_boost(blob: str, boost_value: float = 1.2) -> float:
+    """Returns `boost_value` if the row blob names an inflation driver."""
     return boost_value if blob and _INFLATION_RE.search(blob) else 1.0
 
 
@@ -514,10 +511,11 @@ def score_item(
 
     kw = weights["keyword_boosts"]
     metadata_json = row["metadata_json"] if "metadata_json" in row.keys() else None
+    blob = _text_blob(row)   # build once, reuse across the three keyword helpers
     insurer_boost    = _insurer_priority_boost(source, metadata_json, weights["insurer_priority"])
-    inflation_boost  = _inflation_keyword_boost(row,  kw.get("inflation",  1.2))
-    regulatory_boost = _regulatory_action_boost(row,  kw.get("regulatory", 1.2))
-    tplf_boost       = _litigation_tplf_boost(row,    kw.get("tplf",       1.3))
+    inflation_boost  = _inflation_keyword_boost(blob,      kw.get("inflation",  1.2))
+    regulatory_boost = _regulatory_action_boost(blob,      kw.get("regulatory", 1.2))
+    tplf_boost       = _litigation_tplf_boost(row, blob,   kw.get("tplf",       1.3))
 
     score = (
         src_mult * rg_mult * topic_rel * rec

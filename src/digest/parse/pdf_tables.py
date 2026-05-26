@@ -34,7 +34,6 @@ class Table:
     page: int                  # 1-indexed PDF page
     header: list[str]          # first row, whitespace-normalized
     rows: list[list[str]]      # remaining rows
-    page_text: str = ""        # surrounding page text — useful context
 
     def header_matches(self, patterns: Iterable[str]) -> bool:
         """True if the joined header text matches any regex in `patterns`."""
@@ -67,7 +66,6 @@ def extract_tables(pdf_bytes: bytes) -> list[Table]:
     out: list[Table] = []
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for i, page in enumerate(pdf.pages, start=1):
-            page_text = page.extract_text() or ""
             for tbl in page.extract_tables() or []:
                 if not tbl or len(tbl) < 2:
                     continue
@@ -75,7 +73,7 @@ def extract_tables(pdf_bytes: bytes) -> list[Table]:
                 rows = [[_norm(c) for c in row] for row in tbl[1:]]
                 if not any(h.strip() for h in header):
                     continue
-                out.append(Table(page=i, header=header, rows=rows, page_text=page_text))
+                out.append(Table(page=i, header=header, rows=rows))
     return out
 
 

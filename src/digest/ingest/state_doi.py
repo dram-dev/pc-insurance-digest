@@ -33,30 +33,13 @@ import yaml
 from bs4 import BeautifulSoup
 
 from digest.ingest.base import IngestedItem, IngestorBase
+from digest.parse.dates import parse_date
 
 logger = logging.getLogger(__name__)
 
 _CONFIG_PATH = Path(__file__).resolve().parents[3] / "config" / "state_doi_sources.yaml"
 _REQUEST_TIMEOUT = 20
 _UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-
-
-def _parse_date(text: str) -> datetime | None:
-    clean = (text or "").strip()
-    for fmt in (
-        "%B %d, %Y",    # January 15, 2026
-        "%b %d, %Y",    # Jan 15, 2026
-        "%Y-%m-%d",
-        "%m/%d/%Y",
-        "%m/%d/%y",
-        "%d %B %Y",
-        "%b. %d, %Y",
-    ):
-        try:
-            return datetime.strptime(clean, fmt).replace(tzinfo=timezone.utc)
-        except ValueError:
-            continue
-    return None
 
 
 class StateDOIIngestor(IngestorBase):
@@ -132,7 +115,7 @@ class StateDOIIngestor(IngestorBase):
             # Date: try common elements
             date_el = node.select_one("time, .date, .release-date, [class*='date'], span[class*='time']")
             date_text = (date_el.get("datetime") or date_el.get_text(strip=True)) if date_el else ""
-            pub = _parse_date(date_text)
+            pub = parse_date(date_text)
 
             source_id = f"{state}:{urlparse(href).path}"
             items.append(

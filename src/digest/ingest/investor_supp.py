@@ -40,13 +40,13 @@ _CONFIG_PATH = Path(__file__).resolve().parents[3] / "config" / "investor_supple
 def _current_quarter(now: datetime | None = None) -> tuple[int, int]:
     """Return (year, quarter_number) for the most recent completed quarter.
 
-    Carriers post supplements after earnings release, so we target the
-    quarter that ended ~1–2 months prior to today.
+    Backs up two calendar months from today so we're requesting a
+    supplement that's likely already posted (most carriers release Qn
+    supplements within ~6 weeks of quarter-end).
     """
     now = now or datetime.now(tz=timezone.utc)
-    # Lag by 45 days so we're requesting a supplement that's likely posted.
     target = now.replace(day=1)
-    for _ in range(2):  # back up two months
+    for _ in range(2):
         prev_month = target.month - 1 or 12
         prev_year = target.year - (1 if target.month == 1 else 0)
         target = target.replace(year=prev_year, month=prev_month)

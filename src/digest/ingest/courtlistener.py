@@ -27,6 +27,7 @@ import yaml
 
 from digest.config import settings
 from digest.ingest.base import IngestedItem, IngestorBase
+from digest.parse.dates import parse_date
 
 logger = logging.getLogger(__name__)
 
@@ -59,17 +60,6 @@ _FILED_AFTER_DAYS = 2
 
 # Module-level counter — reset between process restarts (daily launchd runs).
 _request_count = 0
-
-
-def _parse_date(date_str: str | None) -> datetime | None:
-    if not date_str:
-        return None
-    for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S"):
-        try:
-            return datetime.strptime(date_str, fmt).replace(tzinfo=timezone.utc)
-        except ValueError:
-            continue
-    return None
 
 
 def _is_pc_relevant(docket: dict) -> bool:
@@ -175,7 +165,7 @@ class CourtListenerIngestor(IngestorBase):
                             title=f"[{court_id.upper()}] {case_name}",
                             url=full_url,
                             author=court_id.upper(),
-                            published_at=_parse_date(docket.get("date_filed")),
+                            published_at=parse_date(docket.get("date_filed")),
                             metadata={
                                 "topic_hint":     "social_inflation",
                                 "court":          court_id,

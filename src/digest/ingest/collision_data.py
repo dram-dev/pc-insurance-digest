@@ -98,22 +98,7 @@ def _extract_href(node: Any, base_url: str) -> str | None:
     return urljoin(base_url, href)
 
 
-def _parse_date(text: str) -> datetime | None:
-    if not text:
-        return None
-    clean = text.strip()
-    for fmt in (
-        "%B %d, %Y",    # January 15, 2026
-        "%b %d, %Y",    # Jan 15, 2026
-        "%Y-%m-%d",
-        "%m/%d/%Y",
-        "%d %B %Y",
-    ):
-        try:
-            return datetime.strptime(clean, fmt).replace(tzinfo=timezone.utc)
-        except ValueError:
-            continue
-    return None
+from digest.parse.dates import parse_date
 
 
 def _scrape(vendor: str, url: str, selectors: list[str], filters: tuple[str, ...]) -> list[IngestedItem]:
@@ -147,7 +132,7 @@ def _scrape(vendor: str, url: str, selectors: list[str], filters: tuple[str, ...
         seen_urls.add(href)
 
         date_text = _extract_text(node, ["time", ".date", ".post-date", ".entry-date", "span[class*='date']"])
-        pub = _parse_date(date_text)
+        pub = parse_date(date_text)
 
         # Use URL path as source_id — stable across re-fetches.
         source_id = f"{vendor}:{urlparse(href).path}"

@@ -739,6 +739,8 @@ def run_summarize(
                 why_it_matters=output.why_it_matters,
                 confidence=output.confidence,
                 see_also=output.see_also,
+                source=item.get("source"),
+                source_id=item.get("source_id"),
             )
             db.update_materiality(item_id, output.materiality)
             output_chars = len(output.summary) + len(output.why_it_matters)
@@ -767,6 +769,8 @@ def run_summarize(
                 output_chars=output_chars,
                 status=status,
                 error=error_msg,
+                source=item.get("source"),
+                source_id=item.get("source_id"),
             )
 
     return counts
