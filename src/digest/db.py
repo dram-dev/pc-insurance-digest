@@ -664,25 +664,80 @@ def auto_keep_nhc_advisories() -> int:
         return cur.rowcount or 0
 
 
-def auto_keep_usgs_major() -> int:
-    """Auto-keep untriaged USGS earthquakes M≥6.0 with score=0.95, topic=cat_event.
+_US_STATE_NAMES = frozenset({
+    "Alabama", "Alaska", "Arizona", "Arkansas", "California", "Colorado",
+    "Connecticut", "Delaware", "Florida", "Georgia", "Hawaii", "Idaho",
+    "Illinois", "Indiana", "Iowa", "Kansas", "Kentucky", "Louisiana",
+    "Maine", "Maryland", "Massachusetts", "Michigan", "Minnesota",
+    "Mississippi", "Missouri", "Montana", "Nebraska", "Nevada",
+    "New Hampshire", "New Jersey", "New Mexico", "New York",
+    "North Carolina", "North Dakota", "Ohio", "Oklahoma", "Oregon",
+    "Pennsylvania", "Rhode Island", "South Carolina", "South Dakota",
+    "Tennessee", "Texas", "Utah", "Vermont", "Virginia", "Washington",
+    "West Virginia", "Wisconsin", "Wyoming",
+})
+_US_STATE_ABBREVS = frozenset({
+    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI",
+    "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI",
+    "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ", "NM", "NY", "NC",
+    "ND", "OH", "OK", "OR", "PA", "RI", "SC", "SD", "TN", "TX", "UT",
+    "VT", "VA", "WA", "WV", "WI", "WY",
+})
+_US_TERRITORY_SUBSTRINGS = (
+    "puerto rico", "virgin islands", "guam", "american samoa",
+    "mariana islands",
+)
 
-    The triage prompt already lists M≥6.0 as in-prompt auto-keep; this Python
-    hook guarantees Ollama can't silently drop a major earthquake.
+
+def _is_us_place(place: str | None) -> bool:
+    """Match USGS-format place strings naming a U.S. state or territory.
+
+    USGS uses "29 km ENE of Calama, Chile" (non-US), "10 km W of Petrolia, CA"
+    or "70 km SE of Cape Yakataga, Alaska" (US), and bare "Puerto Rico region"
+    (territory). Trailing comma-segment matches state name/abbrev; territory
+    tokens checked as case-insensitive substrings.
     """
-    sql = """
+    if not place:
+        return False
+    last = place.rsplit(",", 1)[-1].strip()
+    if last in _US_STATE_NAMES or last in _US_STATE_ABBREVS:
+        return True
+    p_lower = place.lower()
+    return any(t in p_lower for t in _US_TERRITORY_SUBSTRINGS)
+
+
+def auto_keep_usgs_major() -> int:
+    """Auto-keep untriaged USGS earthquakes M≥6.0 in U.S. places, score=0.95.
+
+    Non-U.S. quakes (Chile, Indonesia, etc.) are intentionally not auto-kept
+    so Ollama sees them and drops them per the triage prompt's U.S.-only
+    cat_event rule. Raw ingest of all M≥5.0 events remains in bronze for
+    later re-gating.
+    """
+    select_sql = """
+        SELECT id, json_extract(metadata_json, '$.place') AS place
+        FROM items
+        WHERE source = 'usgs'
+          AND triage_decision IS NULL
+          AND CAST(json_extract(metadata_json, '$.magnitude') AS REAL) >= 6.0
+    """
+    update_sql = """
         UPDATE items
         SET triage_decision = 'keep',
             triage_score    = 0.95,
             topic           = 'cat_event',
             triaged_at      = datetime('now')
-        WHERE source = 'usgs'
-          AND triage_decision IS NULL
-          AND CAST(json_extract(metadata_json, '$.magnitude') AS REAL) >= 6.0
+        WHERE id = ?
     """
+    kept = 0
     with get_conn() as conn:
-        cur = conn.execute(sql)
-        return cur.rowcount or 0
+        rows = conn.execute(select_sql).fetchall()
+        for row in rows:
+            if not _is_us_place(row["place"]):
+                continue
+            conn.execute(update_sql, (row["id"],))
+            kept += 1
+    return kept
 
 
 def auto_keep_courtlistener_dockets() -> int:

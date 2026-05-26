@@ -87,7 +87,8 @@ AUTO-KEEP IN-PROMPT (set decision=keep, confidence=high)
 - AM Best, S&P, Moody's, Fitch rating actions on an insurer/reinsurer
 - NAIC model-law adoption, market-conduct action, or capital framework change
 - State DOI / SERFF rate filings with a requested change ≥ 5%
-- USGS earthquake M ≥ 6.0 in a populated region
+- USGS earthquake M ≥ 6.0 in a U.S. state or U.S. territory (non-U.S. quakes are
+  drop — this digest tracks U.S. insurance exposure only)
 
 AUTO-DISCARD (set decision=drop, score=0.0)
 ===========================================
@@ -100,6 +101,12 @@ AUTO-DISCARD (set decision=drop, score=0.0)
 - Non-U.S./Caribbean tropical-cyclone reporting (e.g. the Chinese "National
   Hurricane Center" / NHC China) without explicit U.S. landfall risk or
   Caribbean threat — this digest tracks U.S. insurance exposure only
+- Non-U.S. earthquakes / seismic events (Chile, Indonesia, Japan, etc.) — no
+  matter the magnitude, drop unless the place names a U.S. state or U.S.
+  territory (Puerto Rico, U.S. Virgin Islands, Guam, American Samoa,
+  Northern Mariana Islands)
+- Cat events outside the United States more broadly — floods, wildfires,
+  storms, EQ in non-U.S. locales without U.S. carrier exposure
 - Generic travel-volume reporting (TSA throughput, AAA holiday-travel forecasts,
   airline passenger counts) without an insurance loss or claims angle
 - Road / highway / general infrastructure funding policy without an auto,
