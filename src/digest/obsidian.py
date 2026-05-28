@@ -29,7 +29,7 @@ from typing import Iterable
 
 import yaml
 
-from digest import db
+from digest import db, signals
 from digest.config import settings
 
 logger = logging.getLogger(__name__)
@@ -389,7 +389,12 @@ def _render_leaderboard_item(row: sqlite3.Row, rank: int) -> str:
     )
     link = f"[{title_display}]({url})" if url else title_display
     score_part = f"`⭐ {float(score):.2f}`" if score is not None else ""
-    return f"{rank}. **{link}**  ·  `{topic_label(slug)}`  ·  {score_part}  ·  {_chat_link(row)}"
+    badge = signals.tier_badge(float(score)) if score is not None else ""
+    badge_part = f"{badge}  ·  " if badge else ""
+    return (
+        f"{rank}. {badge_part}**{link}**  ·  `{topic_label(slug)}`  ·  "
+        f"{score_part}  ·  {_chat_link(row)}"
+    )
 
 
 def _render_leaderboard_section(rows: list, header: str, intro: str | None = None) -> list[str]:

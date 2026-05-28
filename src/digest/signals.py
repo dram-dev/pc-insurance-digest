@@ -40,7 +40,6 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -113,6 +112,22 @@ BURDEN_INTENSITY_BOOST: dict[str, float] = {
     "medium": 1.1,
     "low":    1.0,
 }
+
+
+# ── Conviction tier (high/medium/low) — adapted from macro-ai-digest ──
+#
+# macro-ai-digest clamps its score to [0,1] and tiers on fixed 0.72/0.40
+# cutoffs. PC's leaderboard score is an unbounded product of ~11 multipliers
+# centered on a neutral baseline of ~1.0 (average source, neutral regime, fresh,
+# materiality 1.0, no boosts ≈ 1.0). So PC tiers anchor to that baseline: an
+# item has to clear it by stacking real signal (strong source + materiality +
+# boosts) to read "high". Thresholds are user-tunable via the `signal_tiers`
+# section of _meta/Scoring Weights.md — recalibrate once live score
+# distributions are visible on the Mac mini.
+
+SIGNAL_TIER_DEFAULTS: dict[str, float] = {"high": 1.6, "medium": 0.9}
+TIER_EMOJI: dict[str, str] = {"high": "🔴", "medium": "🟡", "low": "🔵"}
+TIER_LABEL: dict[str, str] = {"high": "High", "medium": "Medium", "low": "Low"}
 
 
 # ── Insurer-priority boost (carrier-level weighting on EDGAR items) ───
@@ -211,6 +226,7 @@ _DEFAULT_WEIGHTS: dict[str, dict[str, float]] = {
     "insurer_priority": dict(PRIORITY_INSURERS_BOOST),
     "keyword_boosts":   {"inflation": 1.2, "regulatory": 1.2, "tplf": 1.3},
     "burden_intensity": dict(BURDEN_INTENSITY_BOOST),
+    "signal_tiers":     dict(SIGNAL_TIER_DEFAULTS),
 }
 
 # Cache shape: (path, mtime, weights). Re-read only when the file's
@@ -297,6 +313,33 @@ def _load_scoring_weights() -> dict[str, dict[str, float]]:
             path, mtime, sorted(overrides.keys()),
         )
     return merged
+
+
+def tier_thresholds() -> tuple[float, float]:
+    """(high, medium) score cutoffs — user-tunable via Scoring Weights.md."""
+    section = _load_scoring_weights().get("signal_tiers", SIGNAL_TIER_DEFAULTS)
+    return (
+        section.get("high",   SIGNAL_TIER_DEFAULTS["high"]),
+        section.get("medium", SIGNAL_TIER_DEFAULTS["medium"]),
+    )
+
+
+def tier_for_score(score: float | None) -> str | None:
+    """Map a leaderboard score to a conviction tier. None score → None tier."""
+    if score is None:
+        return None
+    high, medium = tier_thresholds()
+    if score >= high:
+        return "high"
+    if score >= medium:
+        return "medium"
+    return "low"
+
+
+def tier_badge(score: float | None) -> str:
+    """'🔴 High' / '🟡 Medium' / '🔵 Low' for a score; '' when score is None."""
+    tier = tier_for_score(score)
+    return f"{TIER_EMOJI[tier]} {TIER_LABEL[tier]}" if tier else ""
 
 
 # ── TPLF / litigation-financing first-class boost (Wave 3 Phase 2) ────
