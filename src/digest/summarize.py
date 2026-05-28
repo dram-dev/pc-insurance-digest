@@ -18,9 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
-import subprocess
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -29,6 +27,7 @@ import requests
 
 from digest import db
 from digest.config import settings
+from digest_core.summarize.backends import BACKENDS, BackendConfig, BackendError
 
 logger = logging.getLogger(__name__)
 
@@ -206,180 +205,22 @@ def _normalize_summary(parsed: dict[str, Any], fallback_topic: str) -> SummaryOu
 # ── Backends ──────────────────────────────────────────────────────────
 
 
-class BackendError(Exception):
-    """Raised when a backend call fails for any reason."""
+def _backend_config() -> BackendConfig:
+    """Build the shared core BackendConfig from PC settings.
 
-
-def _call_claude_cli(user_prompt: str) -> str:
-    """Headless Claude Code via `claude -p`.
-
-    Streams the system prompt + user prompt via stdin to avoid hitting
-    shell argument-length limits, and uses the `--output-format json`
-    flag so we get a stable JSON envelope back.
+    haiku/gemini model names fall through to the core defaults; the rest map
+    PC's .env-driven settings onto the transport layer.
     """
-    full_prompt = f"{SYSTEM_PROMPT}\n\n{user_prompt}"
-    cmd = [
-        "claude",
-        "-p",
-        "--model", settings.summarizer_model,
-        "--output-format", "json",
-    ]
-    try:
-        result = subprocess.run(
-            cmd,
-            input=full_prompt,
-            capture_output=True,
-            text=True,
-            timeout=settings.summarizer_timeout_sec,
-            check=False,
-        )
-    except FileNotFoundError as exc:
-        raise BackendError(
-            "`claude` CLI not on PATH. Install Claude Code or switch SUMMARIZER_BACKEND."
-        ) from exc
-    except subprocess.TimeoutExpired as exc:
-        raise BackendError(f"claude CLI timeout after {settings.summarizer_timeout_sec}s") from exc
-
-    if result.returncode != 0:
-        raise BackendError(
-            f"claude CLI exit {result.returncode}: {result.stderr.strip()[:500]}"
-        )
-
-    # `claude -p --output-format json` returns an envelope with a "result" field
-    # that contains the assistant's text. Parse defensively.
-    try:
-        envelope = json.loads(result.stdout)
-        text = envelope.get("result") or envelope.get("response") or result.stdout
-    except json.JSONDecodeError:
-        text = result.stdout
-    return text
-
-
-def _call_haiku_api(user_prompt: str) -> str:
-    """Direct Anthropic API. Uses prompt caching on the system prompt."""
-    if not settings.anthropic_api_key:
-        raise BackendError("ANTHROPIC_API_KEY not set; cannot use haiku_api backend")
-    r = requests.post(
-        "https://api.anthropic.com/v1/messages",
-        headers={
-            "x-api-key": settings.anthropic_api_key,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-        },
-        json={
-            "model": "claude-haiku-4-5-20251001",
-            "max_tokens": 800,
-            "system": [{
-                "type": "text",
-                "text": SYSTEM_PROMPT,
-                "cache_control": {"type": "ephemeral"},
-            }],
-            "messages": [{"role": "user", "content": user_prompt}],
-        },
-        timeout=settings.summarizer_timeout_sec,
+    return BackendConfig(
+        timeout_sec=settings.summarizer_timeout_sec,
+        claude_model=settings.summarizer_model,
+        anthropic_api_key=settings.anthropic_api_key,
+        gemini_api_key=settings.gemini_api_key,
+        ollama_host=settings.ollama_host,
+        ollama_model=settings.ollama_model,
+        mlx_server_url=settings.mlx_server_url,
+        mlx_model=settings.mlx_model,
     )
-    r.raise_for_status()
-    blocks = r.json().get("content", [])
-    return "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
-
-
-def _call_gemini_flash(user_prompt: str) -> str:
-    if not settings.gemini_api_key:
-        raise BackendError("GEMINI_API_KEY not set; cannot use gemini_flash_free backend")
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        "gemini-2.0-flash:generateContent"
-    )
-    r = requests.post(
-        url,
-        headers={"x-goog-api-key": settings.gemini_api_key},
-        json={
-            "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
-            "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
-            "generationConfig": {
-                "temperature": 0.2,
-                "responseMimeType": "application/json",
-            },
-        },
-        timeout=settings.summarizer_timeout_sec,
-    )
-    r.raise_for_status()
-    data = r.json()
-    parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
-    return "".join(p.get("text", "") for p in parts)
-
-
-def _call_local_qwen(user_prompt: str) -> str:
-    """Same Ollama instance as triage, just a richer prompt."""
-    url = settings.ollama_host.rstrip("/") + "/api/generate"
-    r = requests.post(
-        url,
-        json={
-            "model": settings.ollama_model,
-            "system": SYSTEM_PROMPT,
-            "prompt": user_prompt,
-            "stream": False,
-            "format": "json",
-            "options": {"temperature": 0.2, "num_predict": 800, "num_ctx": 8192},
-        },
-        timeout=settings.summarizer_timeout_sec,
-    )
-    r.raise_for_status()
-    return r.json().get("response", "")
-
-
-def _call_mlx_local(user_prompt: str) -> str:
-    """MLX-LM server (Apple Silicon). OpenAI-compatible endpoint.
-
-    Start the server before running digest:
-        /Users/dramsey/.venvs/mlx/bin/mlx_lm.server \\
-            --model mlx-community/Qwen3.5-27B-4bit --port 8080
-
-    Thinking mode is disabled via chat_template_kwargs so the model
-    returns clean JSON without <think>...</think> blocks.
-    """
-    url = settings.mlx_server_url.rstrip("/") + "/v1/chat/completions"
-    server_url = settings.mlx_server_url  # always localhost — no credentials to strip
-    try:
-        r = requests.post(
-            url,
-            json={
-                "model": settings.mlx_model,
-                "messages": [
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": user_prompt},
-                ],
-                "max_tokens": 800,
-                "temperature": 0.2,
-                "chat_template_kwargs": {"enable_thinking": False},
-            },
-            timeout=settings.summarizer_timeout_sec,
-        )
-        r.raise_for_status()
-    except requests.ConnectionError as exc:
-        raise BackendError(
-            f"MLX server not reachable at {server_url}. "
-            "Start it with: mlx_lm.server --model mlx-community/Qwen3.5-27B-4bit --port 8080"
-        ) from exc
-    except requests.Timeout as exc:
-        raise BackendError(
-            f"MLX server timed out after {settings.summarizer_timeout_sec}s at {server_url}. "
-            "Server may have crashed — check logs and restart with: "
-            "mlx_lm.server --model mlx-community/Qwen3.5-27B-4bit --port 8080"
-        ) from exc
-    choices = r.json().get("choices", [])
-    if not choices:
-        raise BackendError(f"MLX server returned no choices: {r.text[:300]}")
-    return choices[0].get("message", {}).get("content", "")
-
-
-BACKENDS = {
-    "claude_cli_pro":     _call_claude_cli,
-    "haiku_api":          _call_haiku_api,
-    "gemini_flash_free":  _call_gemini_flash,
-    "local_qwen":         _call_local_qwen,
-    "mlx_local":          _call_mlx_local,
-}
 
 
 # ── Public API ─────────────────────────────────────────────────────────
@@ -591,7 +432,7 @@ def summarize_item(item: dict[str, Any], regime_framing: str = "") -> SummaryOut
     user_prompt = _build_user_prompt(item)
     if regime_framing:
         user_prompt = f"[Macro regime: {regime_framing}]\n\n{user_prompt}"
-    raw = backend_fn(user_prompt)
+    raw = backend_fn(SYSTEM_PROMPT, user_prompt, _backend_config())
     parsed = _extract_json(raw)
     if not parsed:
         raise BackendError(
