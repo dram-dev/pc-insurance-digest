@@ -29,11 +29,16 @@ def test_base_and_migration_tables_exist(fresh_db):
         )}
     # base schema owned by digest_core
     assert {"items", "run_log", "summarizer_log"} <= tables
-    # PC-domain migrations layered on top
+    # PC-domain migrations layered on top. signal_outcomes + daily_connections
+    # are kept as substrate for the Signal / Essays features being adapted from
+    # macro-ai-digest.
     assert {
         "fred_baseline", "regime_signals", "signal_scores", "signal_outcomes",
-        "daily_connections", "macro_regime", "upcoming_events",
+        "daily_connections",
     } <= tables
+    # macro-copy leftovers pruned: one-axis macro_regime (superseded by the
+    # two-axis regime_signals) and the upcoming_events calendar.
+    assert {"macro_regime", "upcoming_events"} & tables == set()
 
 
 def test_items_migration_columns_present(fresh_db):

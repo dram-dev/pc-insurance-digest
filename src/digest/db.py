@@ -53,14 +53,6 @@ MIGRATIONS = [
         threads_json TEXT NOT NULL,
         generated_at TEXT NOT NULL DEFAULT (datetime('now'))
     )""",
-    # Phase 5: macro regime classifier
-    """CREATE TABLE IF NOT EXISTS macro_regime (
-        week         TEXT PRIMARY KEY,
-        regime       TEXT NOT NULL,
-        signals_json TEXT NOT NULL,
-        narrative    TEXT NOT NULL,
-        generated_at TEXT NOT NULL DEFAULT (datetime('now'))
-    )""",
     # Idea 3: multi-persona ensemble scores
     "ALTER TABLE items ADD COLUMN ensemble_scores TEXT",
     "ALTER TABLE items ADD COLUMN ensemble_consensus REAL",
@@ -85,18 +77,6 @@ MIGRATIONS = [
     "ALTER TABLE items ADD COLUMN sentiment_score REAL",
     # Feature 3: entity extraction
     "ALTER TABLE items ADD COLUMN entities_json TEXT",
-    # Feature 2: forward event calendar
-    """CREATE TABLE IF NOT EXISTS upcoming_events (
-        id            INTEGER PRIMARY KEY AUTOINCREMENT,
-        event_type    TEXT NOT NULL,
-        event_date    TEXT NOT NULL,
-        title         TEXT NOT NULL,
-        symbol        TEXT,
-        metadata_json TEXT,
-        created_at    TEXT NOT NULL DEFAULT (datetime('now')),
-        UNIQUE(event_type, event_date, title)
-    )""",
-    "CREATE INDEX IF NOT EXISTS idx_events_date ON upcoming_events(event_date)",
     # Wave 2: PC two-axis regime detector (market_cycle × cat_load)
     """CREATE TABLE IF NOT EXISTS regime_signals (
         id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -477,7 +457,7 @@ def auto_keep_clipped() -> int:
 # Quantitative ingestors pre-filter to anomalous readings only — every item
 # that reaches the DB has already passed a z-score or dollar threshold.
 # Letting Qwen re-gate them with prose-oriented criteria drops valid signals.
-QUANT_SOURCES = ("fred", "cboe", "cftc", "yahoo", "insider", "ftd", "collision", "industry_research")
+QUANT_SOURCES = ("fred", "collision", "industry_research")
 
 
 def auto_keep_insurer_filings(
@@ -1001,16 +981,6 @@ def topics_with_summaries() -> list[str]:
         return [row["topic"] for row in conn.execute(sql).fetchall()]
 
 
-def prune_past_events(days_grace: int = 1) -> int:
-    """Delete calendar events whose date has passed (with a grace period). Returns count."""
-    with get_conn() as conn:
-        cur = conn.execute(
-            "DELETE FROM upcoming_events WHERE event_date < date('now', ?)",
-            (f"-{days_grace} days",),
-        )
-        return cur.rowcount or 0
-
-
 def items_for_week(monday_iso: str, sunday_iso: str) -> list[sqlite3.Row]:
     """Summarized items ingested during a Mon–Sun week, sorted by triage score desc."""
     sql = """
@@ -1076,15 +1046,6 @@ def get_fred_signals_window(days: int = 45) -> list[sqlite3.Row]:
         return conn.execute(sql, (f"-{days} days",)).fetchall()
 
 
-def upsert_regime(week_iso: str, regime: str, signals_json: str, narrative: str) -> None:
-    with get_conn() as conn:
-        conn.execute(
-            """INSERT OR REPLACE INTO macro_regime (week, regime, signals_json, narrative)
-               VALUES (?, ?, ?, ?)""",
-            (week_iso, regime, signals_json, narrative),
-        )
-
-
 def items_for_essay(start_iso: str, end_iso: str, limit: int = 40) -> list[sqlite3.Row]:
     """Top-scored kept items in a date range, returning raw content for the essay agent.
 
@@ -1123,13 +1084,6 @@ def connections_for_range(start_iso: str, end_iso: str) -> list[dict]:
         except (json.JSONDecodeError, KeyError):
             pass
     return result
-
-
-def get_latest_regime() -> sqlite3.Row | None:
-    with get_conn() as conn:
-        return conn.execute(
-            "SELECT week, regime, signals_json, narrative FROM macro_regime ORDER BY week DESC LIMIT 1"
-        ).fetchone()
 
 
 # ── Feature helpers ────────────────────────────────────────────────────
@@ -1178,30 +1132,6 @@ def update_entities(item_id: int, entities_json: str) -> None:
         )
 
 
-def upsert_events(events: list[dict]) -> None:
-    sql = """
-        INSERT OR IGNORE INTO upcoming_events
-            (event_type, event_date, title, symbol, metadata_json)
-        VALUES
-            (:event_type, :event_date, :title, :symbol, :metadata_json)
-    """
-    with get_conn() as conn:
-        for ev in events:
-            conn.execute(sql, ev)
-
-
-def get_upcoming_events(days_ahead: int = 90) -> list[sqlite3.Row]:
-    sql = """
-        SELECT event_type, event_date, title, symbol, metadata_json
-        FROM upcoming_events
-        WHERE event_date >= date('now')
-          AND event_date <= date('now', ?)
-        ORDER BY event_date ASC
-    """
-    with get_conn() as conn:
-        return conn.execute(sql, (f"+{days_ahead} days",)).fetchall()
-
-
 def top_items_for_cluster(
     cluster_id: str, start_iso: str, end_iso: str, limit: int = 3
 ) -> list[sqlite3.Row]:
@@ -1245,29 +1175,6 @@ def get_fred_values_window(days: int = 90) -> list[sqlite3.Row]:
           AND ingested_at >= datetime('now', ?)
           AND json_extract(metadata_json, '$.z_score') IS NOT NULL
         ORDER BY day ASC
-    """
-    with get_conn() as conn:
-        return conn.execute(sql, (f"-{days} days",)).fetchall()
-
-
-def get_yahoo_pct_window(days: int = 90) -> list[sqlite3.Row]:
-    """Yahoo daily pct_change readings per ticker for correlation analysis."""
-    sql = """
-        WITH ranked AS (
-            SELECT date(ingested_at) AS day,
-                   json_extract(metadata_json, '$.ticker') AS ticker,
-                   CAST(json_extract(metadata_json, '$.pct_change') AS REAL) AS pct_change,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY date(ingested_at), json_extract(metadata_json, '$.ticker')
-                       ORDER BY ingested_at DESC
-                   ) AS rn
-            FROM items
-            WHERE source = 'yahoo'
-              AND triage_decision = 'keep'
-              AND ingested_at >= datetime('now', ?)
-              AND json_extract(metadata_json, '$.pct_change') IS NOT NULL
-        )
-        SELECT day, ticker, pct_change FROM ranked WHERE rn = 1 ORDER BY day ASC
     """
     with get_conn() as conn:
         return conn.execute(sql, (f"-{days} days",)).fetchall()
