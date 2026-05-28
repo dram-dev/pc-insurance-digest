@@ -37,6 +37,13 @@ members = ["packages/digest-core"]
 [tool.uv.sources]
 digest-core = { workspace = true }
 
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"
