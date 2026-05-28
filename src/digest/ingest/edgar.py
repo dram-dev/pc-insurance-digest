@@ -1,19 +1,17 @@
-"""SEC EDGAR ingestor — pulls recent filings for hyperscaler capex tracking.
+"""SEC EDGAR ingestor — recent filings for the P&C insurer ticker universe.
 
 Uses the public EDGAR submissions API (no auth). SEC requires a user-agent with
 a real name and email; set EDGAR_USER_AGENT in .env.
 
-For 8-K filings, we attempt to fetch the EX-99.1 press release HTML (earnings
-releases, capex guidance, forward commentary) via the EDGAR filing index.
-For 13F-HR filings, holdings data is extracted from the XML InfoTable.
+For 8-K filings we fetch the EX-99.1 press release (earnings, reserve actions,
+cat-loss disclosures); for 10-Q/10-K we grab the primary-doc head. The HTML/
+exhibit-fetching mechanics live in `digest_core.ingest.edgar`; this shell owns
+the ticker/CIK universe (config/edgar_tickers.yaml) and the per-form topic lock.
 """
 from __future__ import annotations
 
 import logging
-import re
-import time
-from datetime import datetime, timezone, timedelta
-from html.parser import HTMLParser
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import requests
@@ -21,13 +19,13 @@ import yaml
 
 from digest.config import settings
 from digest.ingest.base import IngestedItem, IngestorBase
+from digest_core.ingest.edgar import fetch_8k_content, fetch_html_text
 
 logger = logging.getLogger(__name__)
 
 EDGAR_CONFIG = Path(__file__).resolve().parents[3] / "config" / "edgar_tickers.yaml"
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 FILING_URL = "https://www.sec.gov/Archives/edgar/data/{cik_int}/{accession_no_dashes}/{primary_doc}"
-FILING_INDEX_URL = "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={cik}&type={form}&dateb=&owner=include&count=1&search_text="
 
 # Filing types we care about
 RELEVANT_FORMS = {"10-K", "10-Q", "8-K", "13F-HR"}
@@ -38,8 +36,6 @@ RELEVANT_FORMS = {"10-K", "10-Q", "8-K", "13F-HR"}
 _CONTENT_FETCH_MAX_AGE_DAYS = 21
 # Forms that get full content fetched. 13F-HR is XML holdings, parsed differently.
 _FETCH_CONTENT_FORMS = {"8-K", "10-Q", "10-K"}
-# Polite delay between EDGAR doc fetches (SEC rate limit: 10 req/s)
-_EDGAR_FETCH_DELAY = 0.15
 
 # Insurer (non-fund) filings — locked topic_hint per form so the summarizer
 # doesn't reclassify a bare 10-Q stub as ai_insurtech. Matches the SQL-level
@@ -50,107 +46,6 @@ _INSURER_TOPIC_HINT = {
     "10-K":   "underwriting_results",
     "13F-HR": "ma_capital",
 }
-
-
-class _TextExtractor(HTMLParser):
-    """Strip HTML tags; collapse whitespace; skip script/style blocks."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._skip_depth = 0  # depth counter handles nested skip-tags correctly
-        self.parts: list[str] = []
-
-    def handle_starttag(self, tag: str, attrs: list) -> None:
-        if tag in ("script", "style", "noscript"):
-            self._skip_depth += 1
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag in ("script", "style", "noscript") and self._skip_depth > 0:
-            self._skip_depth -= 1
-
-    def handle_data(self, data: str) -> None:
-        if self._skip_depth == 0:
-            s = data.strip()
-            if s:
-                self.parts.append(s)
-
-    def get_text(self, max_chars: int = 5000) -> str:
-        text = re.sub(r"\s+", " ", " ".join(self.parts)).strip()
-        return text[:max_chars]
-
-
-def _fetch_html_text(url: str, headers: dict, max_chars: int = 5000) -> str | None:
-    """Fetch a URL and return stripped plain text, or None on failure."""
-    try:
-        time.sleep(_EDGAR_FETCH_DELAY)
-        r = requests.get(url, headers=headers, timeout=20)
-        r.raise_for_status()
-    except Exception as exc:
-        logger.debug("edgar: content fetch failed for %s: %s", url, exc)
-        return None
-    parser = _TextExtractor()
-    parser.feed(r.text)
-    text = parser.get_text(max_chars=max_chars)
-    return text or None
-
-
-def _find_exhibit_url(index_html: str, base_url: str, exhibit_type: str = "EX-99") -> str | None:
-    """Parse an EDGAR filing index page and return the URL of the first EX-99.x document."""
-
-    class _IndexParser(HTMLParser):
-        def __init__(self) -> None:
-            super().__init__()
-            self._last_href: str = ""
-            self.exhibit_url: str | None = None
-            self._in_row = False
-            self._row_text = ""
-
-        def handle_starttag(self, tag: str, attrs: list) -> None:
-            attr_dict = dict(attrs)
-            if tag == "tr":
-                self._in_row = True
-                self._row_text = ""
-            if tag == "a" and "href" in attr_dict:
-                self._last_href = attr_dict["href"]
-
-        def handle_endtag(self, tag: str) -> None:
-            if tag == "tr" and self._in_row:
-                # Check if this row mentions EX-99 in its text content
-                if exhibit_type.lower() in self._row_text.lower() and self._last_href:
-                    href = self._last_href
-                    if not href.startswith("http"):
-                        href = "https://www.sec.gov" + href
-                    self.exhibit_url = href
-                self._in_row = False
-
-        def handle_data(self, data: str) -> None:
-            if self._in_row:
-                self._row_text += data
-
-    parser = _IndexParser()
-    parser.feed(index_html)
-    return parser.exhibit_url
-
-
-def _fetch_8k_content(cik_int: str, accession: str, headers: dict) -> str | None:
-    """Fetch EX-99.1 press release content for an 8-K filing."""
-    accession_nodashes = accession.replace("-", "")
-    index_url = (
-        f"https://www.sec.gov/Archives/edgar/data/{cik_int}/{accession_nodashes}/"
-        f"{accession}-index.htm"
-    )
-    try:
-        time.sleep(_EDGAR_FETCH_DELAY)
-        r = requests.get(index_url, headers=headers, timeout=20)
-        r.raise_for_status()
-        exhibit_url = _find_exhibit_url(r.text, index_url, exhibit_type="EX-99")
-        if not exhibit_url:
-            # Fallback: fetch the primary document itself
-            return None
-        return _fetch_html_text(exhibit_url, headers, max_chars=5000)
-    except Exception as exc:
-        logger.debug("edgar: 8-K index fetch failed (%s): %s", accession, exc)
-        return None
 
 
 class EdgarIngestor(IngestorBase):
@@ -222,15 +117,19 @@ class EdgarIngestor(IngestorBase):
                         and published >= self._cutoff
                     ):
                         if form == "8-K":
-                            content = _fetch_8k_content(cik_int, accession, self.headers)
+                            content = fetch_8k_content(cik_int, accession, self.headers)
                         else:
-                            content = _fetch_html_text(url, self.headers, max_chars=5000)
+                            content = fetch_html_text(url, self.headers, max_chars=5000)
                         if content:
                             logger.debug(
                                 "edgar: fetched %s content for %s %s (%d chars)",
                                 form, ticker, accession, len(content),
                             )
 
+                    # NOTE: the is_fund→'fed_markets' branch is macro-ai-digest
+                    # residue — 'fed_markets' is not a PC topic and no PC ticker
+                    # is a fund (13F-HR is skipped above when not is_fund), so it
+                    # never fires. Left as-is; retune if a fund ticker is added.
                     if is_fund:
                         topic_hint = "fed_markets"
                     else:
