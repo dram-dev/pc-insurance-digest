@@ -60,3 +60,22 @@ def test_tier_thresholds_overridable_via_vault(tmp_path, monkeypatch):
 
 def test_default_weights_includes_signal_tiers():
     assert signals._DEFAULT_WEIGHTS["signal_tiers"] == {"high": 1.6, "medium": 0.9}
+
+
+def test_score_item_assigns_tier_consistent_with_score():
+    class _Row(dict):
+        def keys(self):
+            return super().keys()
+
+    regime = type("_Regime", (), {"multiplier": 1.0})()
+    row = _Row(
+        id=1, source="edgar", topic="social_inflation",
+        published_at=None, ingested_at="2026-05-28T00:00:00+00:00",
+        materiality_score=1.5, burden_intensity="high",
+        metadata_json='{"ticker": "PGR"}',
+    )
+    s = signals.score_item(row, regime)
+    # tier the scorer stamps matches what the public mapper says for that score
+    assert s.tier in ("high", "medium", "low")
+    assert s.tier == signals.tier_for_score(s.score)
+    assert s.as_row("2026-05-28T00:00:00+00:00")["tier"] == s.tier

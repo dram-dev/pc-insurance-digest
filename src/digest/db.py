@@ -121,6 +121,9 @@ MIGRATIONS = [
     # e.g. ["litigation_tplf"]) + dedicated TPLF leaderboard boost.
     "ALTER TABLE items ADD COLUMN sub_tags TEXT DEFAULT '[]'",
     "ALTER TABLE signal_scores ADD COLUMN tplf_boost REAL DEFAULT 1.0",
+    # Conviction tier (high/medium/low) derived from the leaderboard score.
+    # Persisted so it flows to Databricks silver.signal_scores for analytics.
+    "ALTER TABLE signal_scores ADD COLUMN tier TEXT",
 ]
 
 
@@ -1336,12 +1339,12 @@ def upsert_signal_scores(rows: list[dict]) -> int:
             (item_id, computed_at, score,
              source_mult, regime_mult, topic_relevance, recency,
              llm_judgment, topic_boost, burden_boost,
-             insurer_boost, inflation_boost, regulatory_boost, tplf_boost)
+             insurer_boost, inflation_boost, regulatory_boost, tplf_boost, tier)
         VALUES
             (:item_id, :computed_at, :score,
              :source_mult, :regime_mult, :topic_relevance, :recency,
              :llm_judgment, :topic_boost, :burden_boost,
-             :insurer_boost, :inflation_boost, :regulatory_boost, :tplf_boost)
+             :insurer_boost, :inflation_boost, :regulatory_boost, :tplf_boost, :tier)
     """
     item_ids = [int(r["item_id"]) for r in rows if r.get("item_id") is not None]
     src_map: dict[int, tuple[str, str]] = {}

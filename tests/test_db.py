@@ -158,6 +158,25 @@ def test_auto_keep_insurer_filings_locks_topic_by_form(fresh_db, make_item):
     assert rows["noise"]["triage_decision"] is None  # ticker not in universe → left for the LLM
 
 
+def test_upsert_signal_scores_persists_tier(fresh_db, make_item):
+    db.upsert_items([make_item(source="rss", source_id="sc1")])
+    item_id = _ids_by_source_id(db)["sc1"]
+    row = {
+        "item_id": item_id, "computed_at": "2026-05-28T00:00:00+00:00",
+        "score": 2.0, "source_mult": 1.0, "regime_mult": 1.0,
+        "topic_relevance": 1.0, "recency": 1.0, "llm_judgment": 1.0,
+        "topic_boost": 1.0, "burden_boost": 1.0, "insurer_boost": 1.0,
+        "inflation_boost": 1.0, "regulatory_boost": 1.0, "tplf_boost": 1.0,
+        "tier": "high",
+    }
+    assert db.upsert_signal_scores([row]) == 1
+    with db.get_conn() as conn:
+        got = conn.execute(
+            "SELECT tier FROM signal_scores WHERE item_id = ?", (item_id,)
+        ).fetchone()
+    assert got["tier"] == "high"
+
+
 # ── helpers ──────────────────────────────────────────────────────────────
 
 

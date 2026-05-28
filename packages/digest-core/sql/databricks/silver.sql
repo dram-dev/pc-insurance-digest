@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS silver.signal_scores (
     inflation_boost   DOUBLE,
     regulatory_boost  DOUBLE,
     tplf_boost        DOUBLE,                      -- Wave 3 Phase 2: TPLF / mass-tort sub_tag boost
+    tier              STRING,                       -- conviction tier (high/medium/low) from the score
     CONSTRAINT silver_score_pk PRIMARY KEY (item_hash, computed_at)
 )
 USING DELTA;

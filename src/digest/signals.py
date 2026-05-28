@@ -324,11 +324,23 @@ def tier_thresholds() -> tuple[float, float]:
     )
 
 
-def tier_for_score(score: float | None) -> str | None:
-    """Map a leaderboard score to a conviction tier. None score → None tier."""
+def tier_for_score(
+    score: float | None,
+    high: float | None = None,
+    medium: float | None = None,
+) -> str | None:
+    """Map a leaderboard score to a conviction tier. None score → None tier.
+
+    Thresholds default to the user-tuned `signal_tiers` weights when omitted.
+    `score_item` passes the batch thresholds in so the tier it persists matches
+    the score it was computed alongside.
+    """
     if score is None:
         return None
-    high, medium = tier_thresholds()
+    if high is None or medium is None:
+        wh, wm = tier_thresholds()
+        high = wh if high is None else high
+        medium = wm if medium is None else medium
     if score >= high:
         return "high"
     if score >= medium:
@@ -478,6 +490,7 @@ def _topic_relevance(topic: str | None, regime: RegimeSignal) -> float:
 class Score:
     item_id: int
     score: float
+    tier: str
     source_mult: float
     regime_mult: float
     topic_relevance: float
@@ -495,6 +508,7 @@ class Score:
             "item_id":          self.item_id,
             "computed_at":      computed_at,
             "score":            self.score,
+            "tier":             self.tier,
             "source_mult":      self.source_mult,
             "regime_mult":      self.regime_mult,
             "topic_relevance":  self.topic_relevance,
@@ -566,9 +580,12 @@ def score_item(
         * insurer_boost * inflation_boost * regulatory_boost
         * tplf_boost
     )
+    st = weights["signal_tiers"]
+    tier = tier_for_score(score, st.get("high"), st.get("medium"))
     return Score(
         item_id=int(row["id"]),
         score=round(score, 4),
+        tier=tier,
         source_mult=round(src_mult, 3),
         regime_mult=round(rg_mult, 3),
         topic_relevance=round(topic_rel, 3),
