@@ -1,20 +1,17 @@
-"""Hacker News ingestor — Algolia search API, AI/semi/capex keywords only.
+"""Hacker News ingestor — Algolia search over P&C-relevant keyword queries.
 
-Algolia HN API is free and requires no auth.
+Fetch mechanics live in `digest_core.ingest.hackernews.fetch_hn`; this shell
+owns the domain query list + points threshold.
+
+NOTE: QUERIES below are still the macro-ai-digest AI/semis terms carried over
+from the copy-modify origin — they should be retuned to P&C insurtech / cyber
+/ catastrophe terms. Tracked as a separate config fix.
 """
 from __future__ import annotations
 
-import logging
-from datetime import datetime, timezone
-
-import requests
-
 from digest.config import settings
 from digest.ingest.base import IngestedItem, IngestorBase
-
-logger = logging.getLogger(__name__)
-
-ALGOLIA_URL = "https://hn.algolia.com/api/v1/search_by_date"
+from digest_core.ingest.hackernews import fetch_hn
 
 QUERIES = [
     "LLM",
@@ -36,53 +33,9 @@ class HNIngestor(IngestorBase):
     name = "hn"
 
     def fetch(self) -> list[IngestedItem]:
-        items: list[IngestedItem] = []
-        seen_ids: set[str] = set()
-        for q in QUERIES:
-            try:
-                r = requests.get(
-                    ALGOLIA_URL,
-                    params={
-                        "query": q,
-                        "tags": "story",
-                        "hitsPerPage": HITS_PER_QUERY,
-                        "numericFilters": f"points>={settings.hn_min_points}",
-                    },
-                    timeout=15,
-                )
-                r.raise_for_status()
-                for hit in r.json().get("hits", []):
-                    hid = str(hit.get("objectID"))
-                    if hid in seen_ids:
-                        continue
-                    seen_ids.add(hid)
-                    created_at = hit.get("created_at")
-                    published = None
-                    if created_at:
-                        try:
-                            published = datetime.fromisoformat(
-                                created_at.replace("Z", "+00:00")
-                            )
-                        except ValueError:
-                            published = None
-                    items.append(
-                        IngestedItem(
-                            source=self.name,
-                            source_id=hid,
-                            title=hit.get("title") or "(no title)",
-                            url=hit.get("url")
-                            or f"https://news.ycombinator.com/item?id={hid}",
-                            author=hit.get("author"),
-                            content=hit.get("story_text") or "",
-                            published_at=published
-                            or datetime.now(timezone.utc),
-                            metadata={
-                                "points": hit.get("points"),
-                                "num_comments": hit.get("num_comments"),
-                                "query": q,
-                            },
-                        )
-                    )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("hn: failed query '%s': %s", q, exc)
-        return items
+        return fetch_hn(
+            QUERIES,
+            min_points=settings.hn_min_points,
+            hits_per_query=HITS_PER_QUERY,
+            source_name=self.name,
+        )

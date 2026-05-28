@@ -3,7 +3,10 @@ name = "digest-core"
 version = "0.0.0"
 description = "Shared scaffolding for digest-style projects (pc-insurance-digest, macro-ai-digest). SCAFFOLD ONLY — see EXTRACTION_PLAN.md."
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "feedparser>=6.0",
+    "requests>=2.32",
+]
 
 [build-system]
 requires = ["hatchling"]
