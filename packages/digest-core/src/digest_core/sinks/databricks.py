@@ -92,13 +92,24 @@ class DatabricksSink:
         http_path: str,
         token: str,
         catalog: str,
+        schema_prefix: str = "",
     ) -> None:
         self._enabled = enabled
         self._host = host
         self._http_path = http_path
         self._token = token
         self._catalog = catalog
+        # Prepended to the medallion schema so multiple domains can share one
+        # catalog without colliding: "" → bronze.*; "pc_" → pc_bronze.*;
+        # "macro_" → macro_bronze.*. Table names + primary-key lookups stay
+        # unprefixed internally; only the emitted SQL is qualified.
+        self._schema_prefix = schema_prefix
         self._conn: Any | None = None  # lazy databricks.sql.Connection
+
+    def _qualify(self, table: str) -> str:
+        """`bronze.ingested_items` → `{prefix}bronze.ingested_items`."""
+        schema, _, tbl = table.partition(".")
+        return f"{self._schema_prefix}{schema}.{tbl}"
 
     # ── Connection (lazy) ─────────────────────────────────────────────────
 
@@ -264,19 +275,20 @@ class DatabricksSink:
             )
             return
         cols = list(rows[0].keys())
+        qualified = self._qualify(table)
         try:
             conn = self._connection()
             cur = conn.cursor()
             try:
                 for start in range(0, len(rows), _BATCH_SIZE):
                     batch = rows[start:start + _BATCH_SIZE]
-                    self._merge_batch(cur, table, cols, pk_cols, batch)
+                    self._merge_batch(cur, qualified, cols, pk_cols, batch)
             finally:
                 cur.close()
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "databricks sink %s MERGE failed (%d rows): %s — swallowed",
-                table, len(rows), exc,
+                qualified, len(rows), exc,
             )
 
     @staticmethod
