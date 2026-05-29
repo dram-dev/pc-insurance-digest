@@ -17,11 +17,9 @@ Topic display labels (e.g. "AI & Semis") differ from internal slugs
 """
 from __future__ import annotations
 
-import json
 import logging
 import re
 import sqlite3
-import urllib.parse
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -31,6 +29,13 @@ import yaml
 
 from digest import db, signals
 from digest.config import settings
+from digest_core.obsidian.render import (
+    chat_link,
+    parse_see_also as _parse_see_also,
+    row_get as _row_get,
+    safe as _safe,
+    wikilink,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -176,105 +181,14 @@ class Paths:
 # ── Markdown rendering ─────────────────────────────────────────────────
 
 
-def _safe(text: str | None) -> str:
-    """Strip whitespace; return empty string if None."""
-    return (text or "").strip()
-
-
 def _wikilink(topic_slug: str) -> str:
-    """[[Topic Name]] for graph navigation."""
-    return f"[[{topic_label(topic_slug)}]]"
-
-
-def _confidence_badge(c: str | None, score: float | None = None) -> str:
-    """Colored badge for the summarizer's confidence label.
-
-    If a numeric `score` is provided (typically the row's `triage_score`),
-    it's appended to two decimal places — e.g. `🟢 high · 0.91`.
-    """
-    label = {"high": "🟢 high", "medium": "🟡 medium", "low": "🟠 low"}.get(
-        (c or "").lower(), "—"
-    )
-    if score is None:
-        return label
-    try:
-        return f"{label} · {float(score):.2f}"
-    except (TypeError, ValueError):
-        return label
-
-
-# Max prompt length kept comfortably under typical URL length limits.
-# claude.ai tolerates several KB in ?q=, but we cap to keep the link tidy.
-_CHAT_PROMPT_MAX_CHARS = 4000
-
-
-def _row_get(row: sqlite3.Row, key: str) -> str | None:
-    """Safe sqlite3.Row accessor — returns None if column isn't present."""
-    try:
-        return row[key]
-    except (IndexError, KeyError):
-        return None
+    """[[Topic Label]] — resolve the PC display label, then format via core."""
+    return wikilink(topic_label(topic_slug))
 
 
 def _chat_link(row: sqlite3.Row) -> str:
-    """Build `[#id](https://claude.ai/new?q=…)` — clicking opens a new
-    Claude chat seeded with this item's title, source, URL, and summary
-    so you can immediately ask follow-up questions about it.
-    """
-    item_id = row["id"]
-    title = _safe(_row_get(row, "title")) or "(untitled)"
-    url = _safe(_row_get(row, "url"))
-    source = _safe(_row_get(row, "source"))
-    author = _safe(_row_get(row, "author"))
-    published = _safe(_row_get(row, "published_at"))[:10]
-    summary = _safe(_row_get(row, "summary"))
-    why = _safe(_row_get(row, "why_it_matters"))
-
-    lines = [
-        "I'd like to dig deeper into this item from my macro/AI digest "
-        f"(digest item #{item_id}).",
-        "",
-        f"Title: {title}",
-    ]
-    if source:
-        lines.append(f"Source: {source}")
-    if author:
-        lines.append(f"Author: {author}")
-    if published:
-        lines.append(f"Published: {published}")
-    if url:
-        lines.append(f"URL: {url}")
-    if summary:
-        lines.append("")
-        lines.append(f"Summary: {summary}")
-    if why:
-        lines.append("")
-        lines.append(f"Why it matters: {why}")
-    lines.append("")
-    lines.append(
-        "Please help me explore this further — context, second-order "
-        "implications, related reading, or anything else worth knowing. "
-        "Start by asking me what angle I want to focus on."
-    )
-
-    prompt = "\n".join(lines)
-    if len(prompt) > _CHAT_PROMPT_MAX_CHARS:
-        prompt = prompt[: _CHAT_PROMPT_MAX_CHARS - 1] + "…"
-
-    encoded = urllib.parse.quote(prompt, safe="")
-    return f"[#{item_id}](https://claude.ai/new?q={encoded})"
-
-
-def _parse_see_also(raw: str | None) -> list[str]:
-    if not raw:
-        return []
-    try:
-        val = json.loads(raw)
-        if isinstance(val, list):
-            return [str(v) for v in val]
-    except (json.JSONDecodeError, TypeError):
-        pass
-    return []
+    """PC chat deep-link — core builder with the P&C digest framing."""
+    return chat_link(row, digest_name="P&C digest")
 
 
 def _render_summary_item(row: sqlite3.Row) -> str:
