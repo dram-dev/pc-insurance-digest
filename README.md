@@ -66,15 +66,24 @@ SQLite remains source of truth.
 
 The pipeline's domain-agnostic mechanics live in a uv-workspace package,
 `packages/digest-core/` (`digest_core`), with PC Digest as a thin domain layer
-on top. Lifted so far: the SQLite base schema + CRUD, `IngestorBase` (+ the
-RSS/Substack/HN/Reddit/EDGAR fetch logic), the summarizer backends +
-JSON-repair / share-cap runner, the Obsidian render primitives / `Paths` /
-topic-index block, and the CLI ingest mechanics. PC keeps the P&C-specific
-config, taxonomy, prompts, scoring weights, and auto-keep rules. A hermetic
-`pytest` suite (`tests/`) covers the lifted surface.
+on top. **The sibling [macro-ai-digest](https://github.com/dram-dev/macro-ai-digest)
+now runs on the same core** (consumed via a path dep) — the second concrete
+domain that validates the seams. Lifted so far: the SQLite base schema + CRUD,
+`IngestorBase` (+ the RSS/Substack/HN/Reddit/EDGAR fetch logic), the summarizer
+backends + JSON-repair / share-cap runner, the Obsidian render primitives /
+`Paths` / topic-index block, and the CLI ingest mechanics. PC keeps the
+P&C-specific config, taxonomy, prompts, scoring weights, and auto-keep rules. A
+hermetic `pytest` suite (`tests/`) covers the lifted surface.
 
-The remaining design seams (regime axes, score-factor composition, triage
-engine, daily-note hooks) and the macro-ai-digest port are planned in
+**Sources grow organically.** Every `IngestorBase` subclass self-registers (via
+`__init_subclass__`) — adding a source is *drop a file in `digest/ingest/`,
+subclass `IngestorBase`, give it a `name`*. No central list to edit; it appears
+in `digest sources` and joins the pipeline automatically. `digest sources` is a
+live catalog of every registered ingestor with a status pulse + 7-day ingest
+sparkline + lifetime count. A new LLM backend plugs in with `register_backend`.
+
+The remaining design seams (score-factor composition, triage engine, daily-note
+hooks; regime deferred) are planned in
 [packages/digest-core/SEAMS_PLAN.md](packages/digest-core/SEAMS_PLAN.md).
 
 ## Schedule
@@ -107,12 +116,13 @@ cp .env.example .env       # fill in EDGAR_USER_AGENT, OBSIDIAN_VAULT_PATH,
                            # REDDIT_* and any optional keys
 uv run digest init-db
 uv run digest ingest all
+uv run digest sources     # live catalog: every source + 7-day ingest pulse
 uv run digest stats
 uv run digest pipeline --run-type manual
 ```
 
-CLI commands: `ingest`, `triage`, `summarize`, `regime`, `signals`, `pipeline`,
-`publish`, `weekly`, `stats`, `recent`, `health`, `viz`, `init-db`.
+CLI commands: `ingest`, `sources`, `triage`, `summarize`, `regime`, `signals`,
+`pipeline`, `publish`, `weekly`, `stats`, `recent`, `health`, `viz`, `init-db`.
 
 ## Tests
 
