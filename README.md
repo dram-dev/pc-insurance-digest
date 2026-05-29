@@ -123,15 +123,20 @@ uv run digest pipeline --run-type manual
 ```
 
 CLI commands: `ingest`, `sources`, `brief`, `rate`, `calibration`, `embed`,
-`related`, `ask`, `outcomes`, `triage`, `summarize`, `regime`, `signals`,
-`pipeline`, `publish`, `weekly`, `stats`, `recent`, `health`, `viz`, `init-db`.
+`related`, `ask`, `outcomes`, `learn`, `triage`, `summarize`, `regime`,
+`signals`, `pipeline`, `publish`, `weekly`, `stats`, `recent`, `health`, `viz`,
+`init-db`.
 
 **Scoring feedback loop.** `digest rate <id> <1-5>` records what you thought an
 item was worth; `digest calibration` shows system-vs-you deltas; `digest
 outcomes` backtests whether ranked items actually mattered (follow-on coverage,
 same-insurer EDGAR filing, regime shift, your rating, or a ≥1σ insurer stock
-move at 7d/30d). These populate `gold.score_calibration` / `gold.outcome_hit_rate`
-and become the training labels for a future learned scorer.
+move at 7d/30d). These populate `gold.score_calibration` / `gold.outcome_hit_rate`,
+and `digest learn` trains a learned relevance scorer on those labels — reporting
+a holdout A/B (top-N precision: heuristic vs learned) and writing a
+`learned_score` alongside the heuristic (which stays authoritative). The learned
+model is a lean numpy logistic regression (no sklearn/MLflow required on Free
+Edition; MLflow logging is used if installed).
 
 **Semantic layer (optional, local).** `digest embed` builds per-item embeddings
 via the local Ollama server (`ollama pull nomic-embed-text`); then `digest
