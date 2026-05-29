@@ -277,6 +277,28 @@ def ask(question: str, k: int) -> None:
 
 
 @main.command()
+@click.option("--horizons", default="7,30", help="Comma-separated horizon days")
+@click.option("--limit", default=500, help="Max matured items per horizon")
+def outcomes(horizons: str, limit: int) -> None:
+    """Backtest: did ranked items actually matter? (Option 1b)
+
+    For each scored item whose horizon (default 7d + 30d) has elapsed, checks 5
+    corroboration signals — follow-on coverage, same-insurer EDGAR filing, regime
+    shift, your rating ≥4, and a ≥1σ insurer stock move — and records whether it
+    corroborated. Feeds gold.outcome_hit_rate + the learned scorer's labels.
+    Weekly cadence is plenty (outcomes need the window to mature).
+    """
+    from digest.outcomes import run_outcomes
+
+    db.init_db()
+    hs = tuple(int(h) for h in horizons.split(",") if h.strip())
+    console.rule("[bold cyan]outcomes backtest")
+    counts = run_outcomes(horizons=hs, limit=limit)
+    for h, n in counts.items():
+        console.print(f"  [green]✓[/green] horizon={h}d: checked={n}")
+
+
+@main.command()
 def stats() -> None:
     """Item counts by source plus triage + summarizer status."""
     db.init_db()

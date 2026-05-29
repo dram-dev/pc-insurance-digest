@@ -13,6 +13,7 @@ Architecture (originated in pc-insurance-digest; lifted to core 2026-05-25):
   silver.signal_scores    ← write_score()           all boost factors
   silver.summaries        ← write_summary()         materiality + summary text
   silver.manual_ratings   ← write_rating()          user calibration ratings
+  silver.outcome_backtest ← write_outcome()         did a ranked item corroborate?
 
 Join key: `item_hash = sha256(source || '::' || source_id)`, derived here at
 write time. SQLite stays untouched.
@@ -53,6 +54,7 @@ _PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
     "silver.signal_scores":      ("item_hash", "computed_at"),
     "silver.summaries":          ("item_hash", "summarized_at"),
     "silver.manual_ratings":     ("item_hash", "rated_at"),
+    "silver.outcome_backtest":   ("item_hash", "horizon_days"),
 }
 
 # Max rows per MERGE statement. 50 keeps total parameter count well under
@@ -277,6 +279,27 @@ class DatabricksSink:
             "note":        rating.get("note"),
         }
         self._insert("silver.manual_ratings", [row])
+
+    def write_outcome(self, source: str, source_id: str, outcome: dict[str, Any]) -> None:
+        """Backtest outcome for an item at one horizon — did it corroborate?
+        Feeds gold.outcome_hit_rate + the learned scorer's labels."""
+        if not self._enabled:
+            return
+        signals = outcome.get("signals") or []
+        row = {
+            "item_hash":       item_hash(source, source_id),
+            "horizon_days":    outcome.get("horizon_days"),
+            "checked_at":      _iso(outcome.get("checked_at")) or _iso(datetime.utcnow()),
+            "corroborated":    bool(outcome.get("corroborated")),
+            "signals":         signals if isinstance(signals, list) else [signals],
+            "followon_count":  outcome.get("followon_count"),
+            "edgar_filed":     bool(outcome.get("edgar_filed")),
+            "regime_shifted":  bool(outcome.get("regime_shifted")),
+            "manual_rating":   outcome.get("manual_rating"),
+            "stock_move_z":    outcome.get("stock_move_z"),
+            "stock_move_band": outcome.get("stock_move_band"),
+        }
+        self._insert("silver.outcome_backtest", [row])
 
     # ── Internals ─────────────────────────────────────────────────────────
 

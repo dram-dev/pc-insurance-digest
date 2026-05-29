@@ -163,3 +163,41 @@ WHERE t.decision = 'keep'
   AND t.topic = 'regulatory_rate'
   AND t.burden_intensity IS NOT NULL
 GROUP BY DATE(t.triaged_at), t.burden_intensity, t.burden_direction;
+
+-- ── Option 1b: outcome calibration ───────────────────────────────────────
+
+-- Top-N precision — of items ranked in the daily top-N, what fraction
+-- corroborated at each horizon? The headline "is the leaderboard right?" metric.
+CREATE OR REPLACE VIEW pc_gold.outcome_hit_rate AS
+WITH ranked AS (
+    SELECT DATE(s.computed_at) AS day, s.item_hash,
+           ROW_NUMBER() OVER (PARTITION BY DATE(s.computed_at)
+                              ORDER BY s.score DESC) AS rnk
+    FROM pc_gold.latest_scores s
+    JOIN pc_silver.triage_verdicts t USING (item_hash)
+    WHERE t.decision = 'keep'
+)
+SELECT r.day, o.horizon_days, COUNT(*) AS ranked_items,
+       SUM(CASE WHEN o.corroborated THEN 1 ELSE 0 END) AS corroborated,
+       ROUND(AVG(CASE WHEN o.corroborated THEN 1.0 ELSE 0.0 END), 3) AS hit_rate
+FROM ranked r
+JOIN pc_silver.outcome_backtest o USING (item_hash)
+WHERE r.rnk <= 5
+GROUP BY r.day, o.horizon_days;
+
+-- Corroboration rate by topic / source / tier — which slices the leaderboard
+-- gets right vs. wrong. Directly drives scoring-weight tuning + is the Option-4
+-- training signal. (Tier from latest_scores.)
+CREATE OR REPLACE VIEW pc_gold.outcome_by_factor AS
+SELECT
+    o.horizon_days,
+    t.topic,
+    b.source,
+    s.tier,
+    COUNT(*)                                                       AS n,
+    ROUND(AVG(CASE WHEN o.corroborated THEN 1.0 ELSE 0.0 END), 3)  AS corroboration_rate
+FROM pc_silver.outcome_backtest o
+JOIN pc_silver.triage_verdicts t  USING (item_hash)
+JOIN pc_bronze.ingested_items b   USING (item_hash)
+LEFT JOIN pc_gold.latest_scores s USING (item_hash)
+GROUP BY o.horizon_days, t.topic, b.source, s.tier;

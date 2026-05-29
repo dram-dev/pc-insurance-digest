@@ -77,3 +77,22 @@ CREATE TABLE IF NOT EXISTS pc_silver.manual_ratings (
     CONSTRAINT pc_silver_manual_pk PRIMARY KEY (item_hash, rated_at)
 )
 USING DELTA;
+
+-- Outcome backtest (Option 1b): did a ranked item actually matter, N days on?
+-- One row per (item, horizon ∈ {7,30}); corroborated = any of 5 signals fired.
+-- Feeds gold.outcome_hit_rate + the Option-4 learned scorer's training labels.
+CREATE TABLE IF NOT EXISTS pc_silver.outcome_backtest (
+    item_hash       STRING    NOT NULL,
+    horizon_days    INT       NOT NULL,
+    checked_at      TIMESTAMP NOT NULL,
+    corroborated    BOOLEAN   NOT NULL,
+    signals         ARRAY<STRING>,               -- which fired: followon/edgar/regime/manual/stock_move
+    followon_count  INT,
+    edgar_filed     BOOLEAN,
+    regime_shifted  BOOLEAN,
+    manual_rating   DOUBLE,
+    stock_move_z    DOUBLE,                       -- signed σ of the insurer's return
+    stock_move_band STRING,                       -- 0.5/0.75/1.0/1.25/1.5/1.75/2.0/2+
+    CONSTRAINT pc_silver_backtest_pk PRIMARY KEY (item_hash, horizon_days)
+)
+USING DELTA;

@@ -145,6 +145,26 @@ MIGRATIONS = [
         vector_json TEXT NOT NULL,
         computed_at TEXT NOT NULL DEFAULT (datetime('now'))
     )""",
+    # Outcome backtest (Databricks Option 1b): did a top-ranked item actually
+    # matter? One row per (item, horizon) — binary `corroborated` + which signals
+    # fired (followon / edgar / regime / manual / stock_move). Distinct table from
+    # the dead macro `signal_outcomes` substrate (z-score shape) kept for the
+    # future "Signal" feature. Feeds gold.outcome_hit_rate + the Option-4 labels.
+    """CREATE TABLE IF NOT EXISTS outcome_backtest (
+        item_id         INTEGER NOT NULL,
+        horizon_days    INTEGER NOT NULL,
+        checked_at      TEXT NOT NULL DEFAULT (datetime('now')),
+        corroborated    INTEGER NOT NULL,
+        signals_json    TEXT NOT NULL DEFAULT '[]',
+        followon_count  INTEGER DEFAULT 0,
+        edgar_filed     INTEGER DEFAULT 0,
+        regime_shifted  INTEGER DEFAULT 0,
+        manual_rating   REAL,
+        stock_move_z    REAL,
+        stock_move_band TEXT,
+        PRIMARY KEY (item_id, horizon_days)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_backtest_horizon ON outcome_backtest(horizon_days)",
 ]
 
 
@@ -1606,6 +1626,137 @@ def get_items_text(ids: list[int]) -> dict[int, sqlite3.Row]:
             ids,
         ).fetchall()
     return {r["id"]: r for r in rows}
+
+
+# ── Outcome backtest helpers (Option 1b) ─────────────────────────────────
+
+
+def items_for_backtest(horizon_days: int, limit: int = 500) -> list[sqlite3.Row]:
+    """Scored, kept items whose `horizon_days` window has fully elapsed and that
+    have no outcome_backtest row yet at that horizon."""
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT i.id, i.source, i.source_id, i.title, i.summary, i.topic,
+                   i.ingested_at
+            FROM items i
+            JOIN signal_scores s     ON s.item_id = i.id
+            LEFT JOIN outcome_backtest o ON o.item_id = i.id AND o.horizon_days = ?
+            WHERE i.triage_decision = 'keep'
+              AND i.ingested_at <= datetime('now', ?)
+              AND o.item_id IS NULL
+            GROUP BY i.id
+            ORDER BY i.ingested_at DESC
+            LIMIT ?
+            """,
+            (horizon_days, f"-{horizon_days} days", limit),
+        ).fetchall()
+
+
+def embeddings_with_time() -> list[sqlite3.Row]:
+    """Embeddings + ingested_at + topic — fuel for forward-window similarity."""
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT e.item_id, e.vector_json, i.ingested_at, i.topic
+               FROM item_embeddings e JOIN items i ON i.id = e.item_id"""
+        ).fetchall()
+
+
+def forward_topic_count(topic: str | None, start_iso: str, end_iso: str,
+                        exclude_id: int) -> int:
+    """Kept items with the same topic ingested in (start, end] — followon fallback
+    when embeddings are unavailable."""
+    if not topic:
+        return 0
+    with get_conn() as conn:
+        (n,) = conn.execute(
+            """SELECT COUNT(*) FROM items
+               WHERE triage_decision = 'keep' AND topic = ?
+                 AND datetime(ingested_at) > datetime(?)
+                 AND datetime(ingested_at) <= datetime(?) AND id <> ?""",
+            (topic, start_iso, end_iso, exclude_id),
+        ).fetchone()
+    return n
+
+
+def edgar_filings_in_window(ticker: str, start_iso: str, end_iso: str) -> int:
+    """Count EDGAR filings for `ticker` ingested in (start, end] (source_id = TICKER:accession)."""
+    with get_conn() as conn:
+        (n,) = conn.execute(
+            """SELECT COUNT(*) FROM items
+               WHERE source = 'edgar' AND source_id LIKE ?
+                 AND datetime(ingested_at) > datetime(?)
+                 AND datetime(ingested_at) <= datetime(?)""",
+            (f"{ticker}:%", start_iso, end_iso),
+        ).fetchone()
+    return n
+
+
+def regime_rows_in_window(start_iso: str, end_iso: str) -> list[sqlite3.Row]:
+    """regime_signals rows with as_of in (start, end]."""
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT as_of, market_cycle, cat_load FROM regime_signals
+               WHERE datetime(as_of) > datetime(?) AND datetime(as_of) <= datetime(?)
+               ORDER BY as_of""",
+            (start_iso, end_iso),
+        ).fetchall()
+
+
+def regime_state_at(iso: str) -> sqlite3.Row | None:
+    """Prevailing regime state at `iso` (latest row at/before it)."""
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT market_cycle, cat_load FROM regime_signals
+               WHERE datetime(as_of) <= datetime(?) ORDER BY as_of DESC LIMIT 1""",
+            (iso,),
+        ).fetchone()
+
+
+def manual_rating_for(item_id: int) -> float | None:
+    """Highest manual rating recorded for an item, or None."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT MAX(user_rating) AS r FROM manual_ratings WHERE item_id = ?",
+            (item_id,),
+        ).fetchone()
+    return row["r"] if row and row["r"] is not None else None
+
+
+def upsert_backtest_outcome(item_id: int, horizon_days: int, outcome: dict) -> None:
+    """Persist one (item, horizon) backtest outcome; mirror to silver.outcome_backtest."""
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO outcome_backtest
+                 (item_id, horizon_days, checked_at, corroborated, signals_json,
+                  followon_count, edgar_filed, regime_shifted, manual_rating,
+                  stock_move_z, stock_move_band)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (item_id, horizon_days, utcnow_iso(),
+             1 if outcome["corroborated"] else 0,
+             json.dumps(outcome.get("signals", [])),
+             outcome.get("followon_count", 0),
+             1 if outcome.get("edgar_filed") else 0,
+             1 if outcome.get("regime_shifted") else 0,
+             outcome.get("manual_rating"),
+             outcome.get("stock_move_z"),
+             outcome.get("stock_move_band")),
+        )
+        row = conn.execute(
+            "SELECT source, source_id FROM items WHERE id = ?", (item_id,)
+        ).fetchone()
+    if row:
+        sink.write_outcome(row["source"], row["source_id"], {
+            "horizon_days":    horizon_days,
+            "corroborated":    bool(outcome["corroborated"]),
+            "signals":         outcome.get("signals", []),
+            "followon_count":  outcome.get("followon_count", 0),
+            "edgar_filed":     bool(outcome.get("edgar_filed")),
+            "regime_shifted":  bool(outcome.get("regime_shifted")),
+            "manual_rating":   outcome.get("manual_rating"),
+            "stock_move_z":    outcome.get("stock_move_z"),
+            "stock_move_band": outcome.get("stock_move_band"),
+        })
 
 
 def signal_quality_by_source(since_iso: str | None = None) -> list[sqlite3.Row]:
