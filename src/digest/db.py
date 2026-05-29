@@ -1421,6 +1421,38 @@ def recent_manual_ratings(limit: int = 50) -> list[sqlite3.Row]:
         ).fetchall()
 
 
+def calibration_rows(limit: int = 50) -> list[sqlite3.Row]:
+    """Latest manual rating per item joined to its latest computed score — the
+    local mirror of gold.score_calibration (system score vs. what the user
+    valued). system_score is NULL for items that were rated but never scored.
+    """
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            WITH latest_rating AS (
+                SELECT item_id, user_rating, note, rated_at,
+                       ROW_NUMBER() OVER (PARTITION BY item_id ORDER BY rated_at DESC) rn
+                FROM manual_ratings
+            ),
+            latest_score AS (
+                SELECT item_id, score,
+                       ROW_NUMBER() OVER (PARTITION BY item_id ORDER BY computed_at DESC) rn
+                FROM signal_scores
+            )
+            SELECT r.item_id, i.title, i.topic, i.source,
+                   r.user_rating, r.rated_at, r.note,
+                   s.score AS system_score
+            FROM latest_rating r
+            JOIN items i ON i.id = r.item_id
+            LEFT JOIN latest_score s ON s.item_id = r.item_id AND s.rn = 1
+            WHERE r.rn = 1
+            ORDER BY r.rated_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+
 def top_signal_scores(
     limit: int = 5,
     since_iso: str | None = None,

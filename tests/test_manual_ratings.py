@@ -55,6 +55,30 @@ def test_upsert_manual_rating_unknown_item_is_safe(fresh_db):
     assert rows == []                           # join to items finds nothing
 
 
+def test_calibration_rows_joins_latest_score(fresh_db, make_item):
+    db.upsert_items([make_item(source="rss", source_id="scored", title="Scored item"),
+                     make_item(source="rss", source_id="unscored", title="Unscored item")])
+    with db.get_conn() as conn:
+        ids = {r["source_id"]: r["id"] for r in
+               conn.execute("SELECT id, source_id FROM items").fetchall()}
+
+    # Give one item a leaderboard score; rate both.
+    db.upsert_signal_scores([{
+        "item_id": ids["scored"], "computed_at": "2026-05-29T09:00:00", "score": 2.4,
+        "source_mult": 1.0, "regime_mult": 1.0, "topic_relevance": 1.0, "recency": 1.0,
+        "llm_judgment": 1.0, "topic_boost": 1.0, "burden_boost": 1.0,
+        "insurer_boost": 1.0, "inflation_boost": 1.0, "regulatory_boost": 1.0,
+        "tplf_boost": 1.0, "tier": "high",
+    }])
+    db.upsert_manual_rating(ids["scored"], 5.0)
+    db.upsert_manual_rating(ids["unscored"], 3.0)
+
+    by_item = {r["item_id"]: r for r in db.calibration_rows()}
+    assert by_item[ids["scored"]]["system_score"] == 2.4
+    assert by_item[ids["scored"]]["user_rating"] == 5.0
+    assert by_item[ids["unscored"]]["system_score"] is None   # rated, never scored
+
+
 # ── core sink row shaping (no live connection) ───────────────────────────
 
 

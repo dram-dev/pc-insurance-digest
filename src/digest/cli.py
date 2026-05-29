@@ -93,6 +93,52 @@ def rate(item_id: int, rating: float, note: str | None) -> None:
 
 
 @main.command()
+@click.option("--limit", default=30, help="Max rated items to show")
+def calibration(limit: int) -> None:
+    """How your manual ratings line up with the system's computed scores.
+
+    The local mirror of gold.score_calibration: rate items with `digest rate`,
+    then run this to see where the leaderboard over- or under-valued an item vs.
+    your judgement (Δ = system − user). Drives scoring-weight tuning.
+    """
+    db.init_db()
+    rows = db.calibration_rows(limit=limit)
+    if not rows:
+        console.print("[yellow]No rated items yet.[/yellow] Rate one: digest rate <id> <1-5>")
+        return
+    table = Table(title="Score calibration (system vs. your rating)")
+    table.add_column("#", justify="right", style="dim")
+    table.add_column("Topic", no_wrap=True)
+    table.add_column("You", justify="right")
+    table.add_column("System", justify="right")
+    table.add_column("Δ", justify="right")
+    table.add_column("Title", no_wrap=True, overflow="ellipsis", max_width=52)
+    deltas: list[float] = []
+    for r in rows:
+        sys_score = r["system_score"]
+        if sys_score is None:
+            sys_cell, delta_cell = "[dim]—[/dim]", "[dim]—[/dim]"
+        else:
+            delta = sys_score - r["user_rating"]
+            deltas.append(delta)
+            colour = "yellow" if abs(delta) >= 1.0 else "green"
+            sys_cell = f"{sys_score:.2f}"
+            delta_cell = f"[{colour}]{delta:+.2f}[/{colour}]"
+        table.add_row(
+            str(r["item_id"]), r["topic"] or "?", f"{r['user_rating']:.1f}",
+            sys_cell, delta_cell, r["title"] or "(untitled)",
+        )
+    console.print(table)
+    scored = len(deltas)
+    if scored:
+        mean_abs = sum(abs(d) for d in deltas) / scored
+        console.print(
+            f"[dim]{scored}/{len(rows)} rated items scored · "
+            f"mean |Δ| = {mean_abs:.2f}[/dim]"
+        )
+
+
+@main.command()
 def stats() -> None:
     """Item counts by source plus triage + summarizer status."""
     db.init_db()
