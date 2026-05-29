@@ -7,7 +7,7 @@ the same Obsidian vault (lands in `81 P&C Digest` next to `80 Digest`).
 For the full design context (locked decisions, scoring formula, regime axes,
 Regulatory Sonar, etc.), see [CLAUDE.md](CLAUDE.md).
 
-## Status (Waves 1–3 shipped)
+## Status (Waves 1–3 shipped · digest-core extraction underway)
 
 **Pipeline:** `ingest → triage (Ollama Qwen2.5:14b) → summarize (MLX Qwen3.5-27B
 local) → score (signals leaderboard) → publish (Obsidian)`
@@ -44,6 +44,10 @@ local) → score (signals leaderboard) → publish (Obsidian)`
   recency × llm_judgment × topic_priority × burden_intensity × insurer_priority
   × inflation_keyword × regulatory_action × litigation_tplf`. All boost values
   are user-editable from the Obsidian vault — see _meta/Scoring Weights.md_
+- Conviction tier — each scored item is tagged 🔴 high / 🟡 medium / 🔵 low by
+  leaderboard score (thresholds in _meta/Scoring Weights.md → `signal_tiers`)
+  and shown as a badge on the daily + weekly leaderboards; persisted to
+  `signal_scores.tier` (and the Databricks silver layer)
 - Regulatory Sonar **lite** — `burden_direction` / `burden_intensity` on
   `regulatory_rate` items, with leaderboard boost and a daily-note callout on
   high-intensity items
@@ -53,9 +57,25 @@ local) → score (signals leaderboard) → publish (Obsidian)`
 operations log, scoring weights, and feedback files.
 
 **Optional Databricks medallion sink** — bronze / silver / gold DDL ships in
-`packages/digest-core/sql/databricks/`. `DatabricksSink` (in
-`src/digest/sinks/databricks.py`) is best-effort + lazy-connected and no-ops
-unless `DATABRICKS_ENABLED=true`; SQLite remains source of truth.
+`packages/digest-core/sql/databricks/`. `DatabricksSink` (implemented in
+`digest_core.sinks.databricks`, wired through `src/digest/sinks/`) is
+best-effort + lazy-connected and no-ops unless `DATABRICKS_ENABLED=true`;
+SQLite remains source of truth.
+
+## Shared core (`digest-core`)
+
+The pipeline's domain-agnostic mechanics live in a uv-workspace package,
+`packages/digest-core/` (`digest_core`), with PC Digest as a thin domain layer
+on top. Lifted so far: the SQLite base schema + CRUD, `IngestorBase` (+ the
+RSS/Substack/HN/Reddit/EDGAR fetch logic), the summarizer backends +
+JSON-repair / share-cap runner, the Obsidian render primitives / `Paths` /
+topic-index block, and the CLI ingest mechanics. PC keeps the P&C-specific
+config, taxonomy, prompts, scoring weights, and auto-keep rules. A hermetic
+`pytest` suite (`tests/`) covers the lifted surface.
+
+The remaining design seams (regime axes, score-factor composition, triage
+engine, daily-note hooks) and the macro-ai-digest port are planned in
+[packages/digest-core/SEAMS_PLAN.md](packages/digest-core/SEAMS_PLAN.md).
 
 ## Schedule
 
@@ -93,6 +113,12 @@ uv run digest pipeline --run-type manual
 
 CLI commands: `ingest`, `triage`, `summarize`, `regime`, `signals`, `pipeline`,
 `publish`, `weekly`, `stats`, `recent`, `health`, `viz`, `init-db`.
+
+## Tests
+
+```bash
+uv run pytest        # hermetic — no MLX / Ollama / network / vault required
+```
 
 ## Scheduling
 
@@ -134,28 +160,31 @@ pc-insurance-digest/
 │   ├── investor_supplements.yaml      # per-insurer 10-Q supplement URLs
 │   └── naic_schedp_sources.yaml       # reserve-triangle data source
 ├── launchd/                           # am / pm / weekly plists
-├── packages/digest-core/              # scaffold for the shared core extraction
+├── packages/digest-core/              # shared framework core (PC + macro plug in)
 │   ├── EXTRACTION_PLAN.md             # what-moves-where map
-│   └── sql/databricks/{bronze,silver,gold}.sql
+│   ├── SEAMS_PLAN.md                  # Phase 2: design seams + macro port
+│   ├── sql/databricks/{bronze,silver,gold}.sql
+│   └── src/digest_core/               # types · db · ingest · summarize · obsidian · cli · sinks
+├── tests/                             # hermetic pytest suite
 ├── scripts/install_launchd.sh
 └── src/digest/
     ├── cli.py                         # Click entry points
     ├── config.py
     ├── db.py                          # SQLite schema + auto-keep hooks
     ├── triage.py                      # Ollama prompt + 17-topic taxonomy
-    ├── summarize.py                   # MLX runner + materiality prompt
+    ├── summarize.py                   # P&C prompt + caps (backends/runner in digest_core)
     ├── regime.py                      # market_cycle × cat_load detector
-    ├── signals.py                     # 11-factor leaderboard
-    ├── obsidian.py                    # daily / weekly / topic-archive writer
+    ├── signals.py                     # 11-factor leaderboard + conviction tier
+    ├── obsidian.py                    # daily / weekly / topic-archive writer (primitives in digest_core)
     ├── weekly.py                      # weekly synthesis (themes / must-reads)
     ├── health.py
     ├── security.py
     ├── viz.py
-    ├── sinks/                         # optional secondary write destinations
+    ├── sinks/                         # shim → digest_core.sinks.databricks
     │   ├── __init__.py
     │   └── databricks.py              # medallion sink, no-op by default
-    └── ingest/
-        ├── base.py
+    └── ingest/                        # rss/substack/hn/reddit/edgar delegate to digest_core
+        ├── base.py                    # binds digest_core IngestorBase → db (store)
         ├── edgar.py, rss.py, reddit.py, substack.py, hackernews.py
         ├── nhc.py, usgs.py, spc.py, nifc.py
         ├── fred.py
@@ -174,9 +203,10 @@ pc-insurance-digest/
 - **Databricks dashboards + Genie space** — daily / weekly leaderboards,
   source quality, boost-factor heat-map
 - **Cross-feed dedup** — title-normalize hash pass at triage entry
-- **digest-core extraction** — lift shared core out of PC + macro digest into
-  a framework package once dogfooding window closes (foundation already in
-  `packages/digest-core/`)
+- **digest-core Phase 2** — the code-moving extraction is done (shared mechanics
+  now live in `digest_core`); next is the design seams (regime axes, score-factor
+  composition, triage engine) + porting macro-ai-digest onto the core. See
+  [SEAMS_PLAN.md](packages/digest-core/SEAMS_PLAN.md)
 
 See [_meta/To-Do.md](https://github.com/dram-dev/pc-insurance-digest) (in the
 Obsidian vault) for the full backlog.
