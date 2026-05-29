@@ -117,12 +117,22 @@ cp .env.example .env       # fill in EDGAR_USER_AGENT, OBSIDIAN_VAULT_PATH,
 uv run digest init-db
 uv run digest ingest all
 uv run digest sources     # live catalog: every source + 7-day ingest pulse
+uv run digest brief       # regime + top signals + alert watchlist (offline)
 uv run digest stats
 uv run digest pipeline --run-type manual
 ```
 
-CLI commands: `ingest`, `sources`, `triage`, `summarize`, `regime`, `signals`,
-`pipeline`, `publish`, `weekly`, `stats`, `recent`, `health`, `viz`, `init-db`.
+CLI commands: `ingest`, `sources`, `brief`, `rate`, `calibration`, `triage`,
+`summarize`, `regime`, `signals`, `pipeline`, `publish`, `weekly`, `stats`,
+`recent`, `health`, `viz`, `init-db`.
+
+**Lakehouse (Databricks, optional).** With `DATABRICKS_ENABLED=true`, the
+pipeline best-effort-mirrors into a shared `digest` catalog (`pc_*` schemas;
+macro-ai-digest uses `macro_*`) — DDL in
+[packages/digest-core/sql/databricks/](packages/digest-core/sql/databricks/)
+(`{bronze,silver,gold}.sql`, `xdomain.sql`, `alerts.sql`). `digest brief` and
+`digest calibration` are the offline local equivalents of the gold leaderboard /
+calibration views, so analytics work with no warehouse.
 
 ## Tests
 
