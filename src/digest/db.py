@@ -1496,6 +1496,46 @@ def top_signal_scores(
         return conn.execute(sql, params).fetchall()
 
 
+def brief_alerts(hours: int = 48) -> dict[str, list[sqlite3.Row]]:
+    """Watch-worthy conditions for the daily brief, in one pass over SQLite —
+    the local analog of the Databricks Alerts (Option 2):
+
+    - high_burden: kept regulatory items flagged burden_intensity='high'
+    - tplf:        kept items tagged litigation_tplf (nuclear-verdict / mass-tort)
+    - fred:        recent FRED items (the ingestor only keeps ±σ anomalies)
+    - degraded:    sources whose most-recent run errored
+    """
+    cutoff = f"-{hours} hours"
+    with get_conn() as conn:
+        high_burden = conn.execute(
+            """SELECT id, title, source, burden_direction FROM items
+               WHERE triage_decision = 'keep' AND burden_intensity = 'high'
+                 AND triaged_at >= datetime('now', ?)
+               ORDER BY triaged_at DESC LIMIT 10""",
+            (cutoff,),
+        ).fetchall()
+        tplf = conn.execute(
+            """SELECT id, title, source FROM items
+               WHERE triage_decision = 'keep' AND sub_tags LIKE '%litigation_tplf%'
+                 AND triaged_at >= datetime('now', ?)
+               ORDER BY triaged_at DESC LIMIT 10""",
+            (cutoff,),
+        ).fetchall()
+        fred = conn.execute(
+            """SELECT id, title FROM items
+               WHERE source = 'fred' AND ingested_at >= datetime('now', ?)
+               ORDER BY ingested_at DESC LIMIT 10""",
+            (cutoff,),
+        ).fetchall()
+        degraded = conn.execute(
+            """SELECT source, status, error, run_at FROM run_log
+               WHERE id IN (SELECT MAX(id) FROM run_log GROUP BY source)
+                 AND status = 'error'
+               ORDER BY run_at DESC""",
+        ).fetchall()
+    return {"high_burden": high_burden, "tplf": tplf, "fred": fred, "degraded": degraded}
+
+
 def signal_quality_by_source(since_iso: str | None = None) -> list[sqlite3.Row]:
     """Per-source aggregate: avg score, item count, since `since_iso` (or all-time).
 

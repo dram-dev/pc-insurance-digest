@@ -130,3 +130,36 @@ SELECT
     SUM(errors)                                                     AS total_errors
 FROM pc_bronze.pipeline_telemetry
 GROUP BY stage, source, DATE(started_at);
+
+-- ── Option 2 analytics views (Genie-friendly) ───────────────────────────
+
+-- Topic volume over time — kept items per topic per day. Powers "which topics
+-- are heating up?" in Genie + a topic-trend dashboard tile.
+CREATE OR REPLACE VIEW pc_gold.topic_trend AS
+SELECT
+    DATE(t.triaged_at)                                             AS day,
+    t.topic,
+    COUNT(*)                                                        AS items_kept,
+    AVG(sm.materiality)                                            AS avg_materiality,
+    AVG(s.score)                                                   AS avg_score
+FROM pc_silver.triage_verdicts t
+LEFT JOIN pc_silver.summaries sm   USING (item_hash)
+LEFT JOIN pc_gold.latest_scores s  USING (item_hash)
+WHERE t.decision = 'keep'
+GROUP BY DATE(t.triaged_at), t.topic;
+
+-- Regulatory burden trend — counts by intensity/direction over time, the
+-- Regulatory Sonar surface in the lakehouse. Drives the burden Alert + a
+-- "burden pressure" dashboard tile. (Per-state breakdown awaits a state field
+-- captured at triage time; today this is intensity × direction.)
+CREATE OR REPLACE VIEW pc_gold.burden_trend AS
+SELECT
+    DATE(t.triaged_at)                                             AS day,
+    t.burden_intensity,
+    t.burden_direction,
+    COUNT(*)                                                        AS items
+FROM pc_silver.triage_verdicts t
+WHERE t.decision = 'keep'
+  AND t.topic = 'regulatory_rate'
+  AND t.burden_intensity IS NOT NULL
+GROUP BY DATE(t.triaged_at), t.burden_intensity, t.burden_direction;

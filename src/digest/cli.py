@@ -139,6 +139,78 @@ def calibration(limit: int) -> None:
 
 
 @main.command()
+@click.option("--hours", default=48, help="Lookback window for the alert watchlist")
+@click.option("--top", default=5, help="How many top signals to show")
+def brief(hours: int, top: int) -> None:
+    """Today's signal brief — regime, top signals, and the alert watchlist.
+
+    The local, offline analog of the Databricks Genie/Alerts layer (Option 2):
+    reads SQLite directly, so it works with no warehouse. Surfaces the prevailing
+    regime, the top-scored items, and watch conditions (high-burden regulatory
+    items, nuclear-verdict/TPLF signals, FRED anomalies, degraded sources).
+    """
+    from digest import signals
+
+    db.init_db()
+
+    # Regime banner
+    reg = db.latest_regime_signal()
+    if reg:
+        console.rule(
+            f"[bold]P&C brief[/bold] · regime: "
+            f"[cyan]{reg['market_cycle']}[/cyan] × [cyan]{reg['cat_load']}[/cyan] "
+            f"= [bold]{reg['multiplier']:.2f}×[/bold]  [dim]({str(reg['as_of'])[:10]})[/dim]"
+        )
+    else:
+        console.rule("[bold]P&C brief[/bold] [dim](no regime computed yet)[/dim]")
+
+    # Top signals
+    rows = db.top_signal_scores(limit=top)
+    if rows:
+        table = Table(title=f"Top {len(rows)} signals")
+        table.add_column("Tier", no_wrap=True)
+        table.add_column("Score", justify="right")
+        table.add_column("Topic", no_wrap=True)
+        table.add_column("Source", no_wrap=True, style="dim")
+        table.add_column("Title", no_wrap=True, overflow="ellipsis", max_width=58)
+        for r in rows:
+            table.add_row(
+                signals.tier_badge(r["score"]), f"{r['score']:.2f}",
+                r["topic"] or "?", r["source"], r["title"] or "(untitled)",
+            )
+        console.print(table)
+    else:
+        console.print("[dim]No scored items yet — run `digest signals`.[/dim]")
+
+    # Alert watchlist
+    alerts = db.brief_alerts(hours=hours)
+    fired = False
+    if alerts["high_burden"]:
+        fired = True
+        console.print(f"\n[bold red]⚠ High regulatory burden[/bold red] ({len(alerts['high_burden'])}):")
+        for r in alerts["high_burden"]:
+            arrow = {"increasing": "↑", "decreasing": "↓"}.get(r["burden_direction"], "·")
+            console.print(f"  [red]{arrow}[/red] [{r['source']}] {r['title'][:80]}")
+    if alerts["tplf"]:
+        fired = True
+        console.print(f"\n[bold magenta]⚖ Litigation / TPLF[/bold magenta] ({len(alerts['tplf'])}):")
+        for r in alerts["tplf"]:
+            console.print(f"  [magenta]•[/magenta] [{r['source']}] {r['title'][:80]}")
+    if alerts["fred"]:
+        fired = True
+        console.print(f"\n[bold yellow]📈 FRED cost-driver anomalies[/bold yellow] ({len(alerts['fred'])}):")
+        for r in alerts["fred"]:
+            console.print(f"  [yellow]•[/yellow] {r['title'][:90]}")
+    if alerts["degraded"]:
+        fired = True
+        console.print(f"\n[bold red]✗ Degraded sources[/bold red] ({len(alerts['degraded'])}):")
+        for r in alerts["degraded"]:
+            console.print(f"  [red]✗[/red] {r['source']}: {(r['error'] or 'error')[:70]}")
+    if not fired:
+        console.print(f"\n[green]✓ No alerts in the last {hours}h.[/green]")
+
+
+@main.command()
 def stats() -> None:
     """Item counts by source plus triage + summarizer status."""
     db.init_db()
