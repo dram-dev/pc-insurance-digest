@@ -24,6 +24,16 @@ def test_extract_json_unparseable_returns_none():
     assert runner.extract_json("no json here at all") is None
 
 
+def test_extract_json_first_balanced_object_ignores_trailing_brace():
+    # greedy first-to-last-brace would over-capture the trailing "}" and fail;
+    # the brace-depth scan returns the first balanced object.
+    assert runner.extract_json('{"decision": "keep"} then noise }') == {"decision": "keep"}
+
+
+def test_extract_json_handles_nested_objects():
+    assert runner.extract_json('prose {"a": {"b": 2}} tail') == {"a": {"b": 2}}
+
+
 # ── enforce_topic_caps ──────────────────────────────────────────────────
 
 

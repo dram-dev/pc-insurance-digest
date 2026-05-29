@@ -15,8 +15,11 @@ from typing import Any
 def extract_json(raw: str) -> dict[str, Any] | None:
     """Best-effort JSON-object extraction from model output.
 
-    Tries, in order: the whole string, a ```json fenced block, then a greedy
-    first-brace-to-last-brace span. Returns None if nothing parses.
+    Tries, in order: the whole string, a ```json fenced block, then a
+    brace-depth scan for the first balanced {...} object. The brace-depth
+    pass is robust to nested braces and trailing prose (where a greedy
+    first-to-last-brace span over-captures and fails to parse). Returns None
+    if nothing parses.
     """
     raw = raw.strip()
     try:
@@ -29,13 +32,20 @@ def extract_json(raw: str) -> dict[str, Any] | None:
             return json.loads(m.group(1))
         except json.JSONDecodeError:
             pass
-    # Greedy capture across whole string in case of multi-line JSON
-    m = re.search(r"(\{.*\})", raw, re.DOTALL)
-    if m:
-        try:
-            return json.loads(m.group(1))
-        except json.JSONDecodeError:
-            pass
+    # Scan from the first '{' to its matching '}' (first balanced object).
+    start = raw.find("{")
+    if start != -1:
+        depth = 0
+        for i, ch in enumerate(raw[start:], start):
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(raw[start : i + 1])
+                    except json.JSONDecodeError:
+                        break
     return None
 
 

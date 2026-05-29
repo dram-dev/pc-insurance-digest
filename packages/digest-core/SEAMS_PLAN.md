@@ -45,6 +45,16 @@ view (notes below).
 ## Per-seam design sketches
 
 ### 1. Regime — N-axis abstraction  (EXTRACTION_PLAN §3.1)
+- **STATUS (2026-05-28): DEFERRED after recon.** Read macro's `macro_regime.py`
+  against PC's `regime.py`: they are NOT peers. macro = 1 mechanical axis,
+  ISO-week-keyed, upsert-by-week, **no** hysteresis/override/staleness/LLM. PC =
+  2 axes (1 LLM-judged + 1 mechanical), timestamp-keyed append-history, **with**
+  hysteresis + override + staleness. The only shared concept is "classification →
+  multiplier + prompt framing." A `RegimeAxis`/`RegimeDetectorBase` now would be
+  either too thin to matter or an over-parameterized mess — exactly the "simpler
+  base may be right / don't pre-design" risk this section flagged. **Revisit only
+  during/after the macro port**, and consider that regime may legitimately stay
+  domain-specific in both.
 - **Divergence:** PC = 2 axes (`market_cycle` LLM-judged × `cat_load` mechanical);
   macro = 1 axis (`macro_regime`, weekly).
 - **Proposed:** core `RegimeAxis` (name, states→multiplier, `compute()->state`) +
@@ -79,10 +89,12 @@ view (notes below).
   `auto_keep_steps: list[Callable[[], int]]` (run before LLM),
   `verdict_normalizer: Callable[[dict], dict]`. Core enforces decision/score/topic
   shape only.
-- **Note:** triage keeps its OWN `_extract_json` (brace-depth scanner) — distinct
-  from `summarize`'s greedy-regex `extract_json` now in core. Unify on the
-  brace-depth version in core during this seam (it's strictly more robust) and
-  point both at it — a deliberate, tested change.
+- **DONE (2026-05-28):** unified the JSON extractor. `digest_core.summarize.
+  runner.extract_json` now uses the brace-depth scan (first balanced object —
+  robust to nested braces + trailing prose); triage dropped its duplicate and
+  imports the core one, so triage + summarize + regime share a single, more
+  robust extractor. Tested. (The rest of the TriageEngine seam still waits for
+  the macro port.)
 
 ### 4. Obsidian — daily/weekly note extension hooks  (EXTRACTION_PLAN §3.4)
 - **Generic:** note shell, topic grouping, weekly synthesis sections, the

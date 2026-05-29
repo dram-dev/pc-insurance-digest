@@ -10,7 +10,6 @@ from __future__ import annotations
 import difflib
 import json
 import logging
-import re
 import time
 from typing import Any
 
@@ -18,6 +17,7 @@ import requests
 
 from digest import db
 from digest.config import settings
+from digest_core.summarize.runner import extract_json
 
 logger = logging.getLogger(__name__)
 
@@ -196,35 +196,6 @@ def _build_prompt(item: dict[str, Any]) -> str:
     )
 
 
-def _extract_json(raw: str) -> dict[str, Any] | None:
-    """Best-effort JSON extraction. Models sometimes wrap output or add prose."""
-    raw = raw.strip()
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        pass
-    m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, re.DOTALL)
-    if m:
-        try:
-            return json.loads(m.group(1))
-        except json.JSONDecodeError:
-            pass
-    start = raw.find("{")
-    if start != -1:
-        depth = 0
-        for i, ch in enumerate(raw[start:], start):
-            if ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    try:
-                        return json.loads(raw[start : i + 1])
-                    except json.JSONDecodeError:
-                        break
-    return None
-
-
 def _normalize_verdict(verdict: dict[str, Any]) -> dict[str, Any]:
     decision = str(verdict.get("decision", "drop")).lower().strip()
     if decision not in ("keep", "drop"):
@@ -310,7 +281,7 @@ def triage_item(item: dict[str, Any]) -> dict[str, Any]:
     """Run triage on one item. Returns the normalized verdict."""
     prompt = _build_prompt(item)
     raw = _ollama_call(prompt)
-    verdict = _extract_json(raw) or {}
+    verdict = extract_json(raw) or {}
     if not verdict:
         logger.warning("triage: failed to parse Qwen output for item %s", item.get("id"))
         return {
