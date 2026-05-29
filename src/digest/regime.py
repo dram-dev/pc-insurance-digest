@@ -196,7 +196,8 @@ def compute_market_cycle(window_days: int = 60) -> dict[str, Any]:
         }
 
     # Lazy import to keep regime usable in test/dev environments without MLX.
-    from digest.summarize import BACKENDS, BackendError, _extract_json
+    from digest.summarize import BACKENDS, BackendError, _backend_config
+    from digest_core.summarize.runner import extract_json
 
     backend_fn = BACKENDS.get(settings.summarizer_backend)
     if backend_fn is None:
@@ -213,9 +214,8 @@ def compute_market_cycle(window_days: int = 60) -> dict[str, Any]:
         }
 
     user_prompt = _build_market_cycle_user_prompt(rows)
-    full = f"{MARKET_CYCLE_SYSTEM_PROMPT}\n\n{user_prompt}"
     try:
-        raw = backend_fn(full)
+        raw = backend_fn(MARKET_CYCLE_SYSTEM_PROMPT, user_prompt, _backend_config())
     except BackendError as exc:
         logger.warning("regime: backend failed (%s); defaulting market_cycle=stable", exc)
         return {
@@ -226,7 +226,7 @@ def compute_market_cycle(window_days: int = 60) -> dict[str, Any]:
             "n_items":            len(rows),
         }
 
-    parsed = _extract_json(raw) or {}
+    parsed = extract_json(raw) or {}
     cycle = str(parsed.get("market_cycle", "stable")).lower().strip()
     if cycle not in MARKET_CYCLE_MULT:
         cycle = "stable"
