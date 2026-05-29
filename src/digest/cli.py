@@ -11,6 +11,7 @@ from rich.table import Table
 
 from digest import db
 from digest.config import settings
+from digest_core.cli.base import run_ingest
 
 console = Console()
 
@@ -49,14 +50,6 @@ INGESTORS = {
 }
 
 
-def _load(dotted: str):
-    module_path, class_name = dotted.split(":")
-    import importlib
-
-    module = importlib.import_module(module_path)
-    return getattr(module, class_name)
-
-
 @click.group()
 def main() -> None:
     """P&C Insurance & Financial Services Digest CLI."""
@@ -70,20 +63,7 @@ def ingest(source: str, run_type: str) -> None:
     """Ingest from one source or all."""
     db.init_db()
     targets = list(INGESTORS.keys()) if source == "all" else [source]
-
-    total_fetched = 0
-    total_new = 0
-    for name in targets:
-        console.rule(f"[bold cyan]{name}")
-        try:
-            cls = _load(INGESTORS[name])
-            fetched, new = cls().run(run_type=run_type)
-            total_fetched += fetched
-            total_new += new
-            console.print(f"[green]✓[/green] {name}: fetched={fetched} new={new}")
-        except Exception as exc:  # noqa: BLE001
-            console.print(f"[red]✗[/red] {name}: {exc}")
-
+    total_fetched, total_new = run_ingest(INGESTORS, targets, run_type, console)
     if source == "all":
         console.rule("[bold]summary")
         console.print(f"total fetched={total_fetched} new={total_new}")
@@ -190,13 +170,7 @@ def pipeline(run_type: str, skip_publish: bool) -> None:
     db.init_db()
 
     console.rule("[bold cyan]stage 1: ingest")
-    for name in INGESTORS:
-        try:
-            cls = _load(INGESTORS[name])
-            fetched, new = cls().run(run_type=run_type)
-            console.print(f"  [green]✓[/green] {name}: {fetched}/{new}")
-        except Exception as exc:  # noqa: BLE001
-            console.print(f"  [red]✗[/red] {name}: {exc}")
+    run_ingest(INGESTORS, list(INGESTORS), run_type, console, per_source_rule=False)
 
     console.rule("[bold cyan]stage 2: triage")
     t = run_triage()
