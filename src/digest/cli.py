@@ -211,6 +211,72 @@ def brief(hours: int, top: int) -> None:
 
 
 @main.command()
+@click.option("--limit", default=500, help="Max items to embed this run")
+def embed(limit: int) -> None:
+    """Compute embeddings for kept items that lack them (semantic layer).
+
+    Uses the local Ollama server (EMBEDDING_MODEL, default nomic-embed-text) —
+    `ollama pull nomic-embed-text` first. Powers `digest related` / `digest ask`.
+    """
+    from digest import semantic
+
+    db.init_db()
+    counts = semantic.run_embed(limit=limit)
+    console.print(
+        f"[green]✓[/green] embed: needed={counts['needed']} embedded={counts['embedded']}"
+    )
+
+
+@main.command()
+@click.argument("item_id", type=int)
+@click.option("--k", default=5, help="How many related items to show")
+def related(item_id: int, k: int) -> None:
+    """Items semantically closest to ITEM_ID (more-like-this / see-also)."""
+    from digest import semantic
+
+    db.init_db()
+    hits = semantic.related(item_id, k=k)
+    if not hits:
+        console.print("[yellow]No neighbours (item unembedded? run `digest embed`).[/yellow]")
+        return
+    table = Table(title=f"Related to #{item_id}")
+    table.add_column("Sim", justify="right")
+    table.add_column("#", justify="right", style="dim")
+    table.add_column("Topic", no_wrap=True)
+    table.add_column("Title", no_wrap=True, overflow="ellipsis", max_width=60)
+    for h in hits:
+        table.add_row(f"{h['score']:.2f}", str(h["item_id"]), h["topic"] or "?",
+                      h["title"] or "(untitled)")
+    console.print(table)
+
+
+@main.command()
+@click.argument("question")
+@click.option("--k", default=8, help="How many items to retrieve as context")
+def ask(question: str, k: int) -> None:
+    """Ask a question answered from your own digest corpus (RAG).
+
+    Embeds the question, retrieves the most relevant items, and answers with the
+    configured summarizer backend — citing the item numbers it used.
+    """
+    from digest import semantic
+
+    db.init_db()
+    result = semantic.ask(question, k=k)
+    if result.get("error"):
+        console.print(f"[yellow]{result['error']}[/yellow]")
+    if result.get("answer"):
+        console.print(f"\n{result['answer']}\n")
+    if result.get("sources"):
+        console.rule("[dim]sources")
+        for s in result["sources"]:
+            console.print(
+                f"[dim][#{s['n']}][/dim] [cyan]{s['score']:.2f}[/cyan] "
+                f"[dim]({s['source']})[/dim] {(s['title'] or '')[:80]}"
+            )
+
+
+@main.command()
 def stats() -> None:
     """Item counts by source plus triage + summarizer status."""
     db.init_db()

@@ -52,6 +52,11 @@ class Settings(BaseSettings):
     triage_min_score: float = Field(default=0.5, alias="TRIAGE_MIN_SCORE")
     triage_lookback_hours: int = Field(default=24, alias="TRIAGE_LOOKBACK_HOURS")
 
+    # Semantic layer (Option 3) — embeddings via the shared Ollama server
+    # (pull the model first: `ollama pull nomic-embed-text`). Powers `digest
+    # related`, semantic dedup, and `digest ask`.
+    embedding_model: str = Field(default="nomic-embed-text", alias="EMBEDDING_MODEL")
+
     # Obsidian — vault is shared with macro digest; we land in a sibling folder
     obsidian_vault_path: str = Field(default="", alias="OBSIDIAN_VAULT_PATH")
     obsidian_digest_dir: str = Field(default="81 P&C Digest", alias="OBSIDIAN_DIGEST_DIR")

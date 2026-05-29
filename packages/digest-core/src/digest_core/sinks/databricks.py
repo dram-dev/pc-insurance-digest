@@ -5,6 +5,7 @@ Domain-agnostic; configured via constructor args from each project's settings.
 Architecture (originated in pc-insurance-digest; lifted to core 2026-05-25):
 
   bronze.ingested_items   ← write_ingested()       every IngestedItem, incl. drops
+  bronze.item_embeddings  ← write_embedding()      semantic-layer vectors
   bronze.fred_observations ← write_fred_observations() full monthly series
   bronze.regime_signals   ← write_regime()          regime detector outputs
   bronze.pipeline_telemetry ← write_telemetry()     per-stage timing/errors
@@ -44,6 +45,7 @@ logger = logging.getLogger(__name__)
 # constraints, the DDL hint is informational only.
 _PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
     "bronze.ingested_items":     ("item_hash",),
+    "bronze.item_embeddings":    ("item_hash",),
     "bronze.fred_observations":  ("series_id", "observation_date"),
     "bronze.regime_signals":     ("as_of", "source"),
     "bronze.pipeline_telemetry": ("run_id", "stage", "source"),
@@ -247,6 +249,21 @@ class DatabricksSink:
             "duration_ms":    summary.get("duration_ms"),
         }
         self._insert("silver.summaries", [row])
+
+    def write_embedding(self, source: str, source_id: str, emb: dict[str, Any]) -> None:
+        """One embedding vector per item → bronze.item_embeddings (semantic layer).
+        vector_json is the JSON-encoded float list; promote to a real ARRAY/Vector
+        type when moving to native Databricks Vector Search."""
+        if not self._enabled:
+            return
+        row = {
+            "item_hash":   item_hash(source, source_id),
+            "model":       emb.get("model"),
+            "dim":         emb.get("dim"),
+            "vector_json": emb.get("vector_json"),
+            "computed_at": _iso(emb.get("computed_at")) or _iso(datetime.utcnow()),
+        }
+        self._insert("bronze.item_embeddings", [row])
 
     def write_rating(self, source: str, source_id: str, rating: dict[str, Any]) -> None:
         """User's manual rating of an item — the calibration input that powers

@@ -135,6 +135,16 @@ MIGRATIONS = [
         PRIMARY KEY (item_id, rated_at)
     )""",
     "CREATE INDEX IF NOT EXISTS idx_manual_ratings_item ON manual_ratings(item_id)",
+    # Semantic layer (Databricks Option 3): one embedding vector per item
+    # (title + summary), cached here + mirrored to pc_bronze.item_embeddings.
+    # Powers `digest related`, semantic dedup, and `digest ask`.
+    """CREATE TABLE IF NOT EXISTS item_embeddings (
+        item_id     INTEGER PRIMARY KEY,
+        model       TEXT NOT NULL,
+        dim         INTEGER NOT NULL,
+        vector_json TEXT NOT NULL,
+        computed_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )""",
 ]
 
 
@@ -1534,6 +1544,68 @@ def brief_alerts(hours: int = 48) -> dict[str, list[sqlite3.Row]]:
                ORDER BY run_at DESC""",
         ).fetchall()
     return {"high_burden": high_burden, "tplf": tplf, "fred": fred, "degraded": degraded}
+
+
+def items_needing_embedding(limit: int = 500) -> list[sqlite3.Row]:
+    """Kept items with no embedding yet — id + the text to embed (title + summary)."""
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT i.id, i.title, i.summary
+            FROM items i
+            LEFT JOIN item_embeddings e ON e.item_id = i.id
+            WHERE i.triage_decision = 'keep' AND e.item_id IS NULL
+            ORDER BY i.ingested_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+
+def upsert_embedding(item_id: int, model: str, vector: list[float]) -> None:
+    """Persist one item's embedding (replace on re-embed); mirror to bronze."""
+    vector_json = json.dumps([round(float(x), 6) for x in vector])
+    dim = len(vector)
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO item_embeddings (item_id, model, dim, vector_json)
+               VALUES (?, ?, ?, ?)""",
+            (item_id, model, dim, vector_json),
+        )
+        row = conn.execute(
+            "SELECT source, source_id FROM items WHERE id = ?", (item_id,)
+        ).fetchone()
+    if row:
+        sink.write_embedding(row["source"], row["source_id"], {
+            "model": model, "dim": dim, "vector_json": vector_json,
+        })
+
+
+def load_embeddings() -> list[sqlite3.Row]:
+    """All stored embeddings joined to item display fields, for local kNN."""
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT e.item_id, e.vector_json, i.title, i.topic, i.source, i.url
+            FROM item_embeddings e
+            JOIN items i ON i.id = e.item_id
+            ORDER BY e.item_id
+            """
+        ).fetchall()
+
+
+def get_items_text(ids: list[int]) -> dict[int, sqlite3.Row]:
+    """id → row (title/summary/why/topic/source/url) for the retrieved RAG set."""
+    if not ids:
+        return {}
+    placeholders = ",".join("?" * len(ids))
+    with get_conn() as conn:
+        rows = conn.execute(
+            f"""SELECT id, title, summary, why_it_matters, topic, source, url
+                FROM items WHERE id IN ({placeholders})""",
+            ids,
+        ).fetchall()
+    return {r["id"]: r for r in rows}
 
 
 def signal_quality_by_source(since_iso: str | None = None) -> list[sqlite3.Row]:

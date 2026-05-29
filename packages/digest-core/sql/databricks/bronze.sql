@@ -35,6 +35,19 @@ CREATE TABLE IF NOT EXISTS pc_bronze.ingested_items (
 USING DELTA
 PARTITIONED BY (source);
 
+-- Semantic-layer embeddings (Option 3): one vector per item (title + summary).
+-- Stored as JSON today (Free Edition); promote vector_json → ARRAY<FLOAT> + a
+-- Delta Sync Index when moving to native Databricks Vector Search.
+CREATE TABLE IF NOT EXISTS pc_bronze.item_embeddings (
+    item_hash    STRING  NOT NULL,
+    model        STRING  NOT NULL,
+    dim          INT     NOT NULL,
+    vector_json  STRING  NOT NULL,
+    computed_at  TIMESTAMP NOT NULL,
+    CONSTRAINT pc_bronze_item_embeddings_pk PRIMARY KEY (item_hash)
+)
+USING DELTA;
+
 -- Full monthly FRED observations, not just the ±1.5σ anomalies that pass the
 -- ingest gate. Storing the whole series lets us re-tune the z-score threshold
 -- against history.
