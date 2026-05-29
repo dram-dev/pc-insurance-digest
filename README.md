@@ -66,15 +66,24 @@ SQLite remains source of truth.
 
 The pipeline's domain-agnostic mechanics live in a uv-workspace package,
 `packages/digest-core/` (`digest_core`), with PC Digest as a thin domain layer
-on top. Lifted so far: the SQLite base schema + CRUD, `IngestorBase` (+ the
-RSS/Substack/HN/Reddit/EDGAR fetch logic), the summarizer backends +
-JSON-repair / share-cap runner, the Obsidian render primitives / `Paths` /
-topic-index block, and the CLI ingest mechanics. PC keeps the P&C-specific
-config, taxonomy, prompts, scoring weights, and auto-keep rules. A hermetic
-`pytest` suite (`tests/`) covers the lifted surface.
+on top. **The sibling [macro-ai-digest](https://github.com/dram-dev/macro-ai-digest)
+now runs on the same core** (consumed via a path dep) — the second concrete
+domain that validates the seams. Lifted so far: the SQLite base schema + CRUD,
+`IngestorBase` (+ the RSS/Substack/HN/Reddit/EDGAR fetch logic), the summarizer
+backends + JSON-repair / share-cap runner, the Obsidian render primitives /
+`Paths` / topic-index block, and the CLI ingest mechanics. PC keeps the
+P&C-specific config, taxonomy, prompts, scoring weights, and auto-keep rules. A
+hermetic `pytest` suite (`tests/`) covers the lifted surface.
 
-The remaining design seams (regime axes, score-factor composition, triage
-engine, daily-note hooks) and the macro-ai-digest port are planned in
+**Sources grow organically.** Every `IngestorBase` subclass self-registers (via
+`__init_subclass__`) — adding a source is *drop a file in `digest/ingest/`,
+subclass `IngestorBase`, give it a `name`*. No central list to edit; it appears
+in `digest sources` and joins the pipeline automatically. `digest sources` is a
+live catalog of every registered ingestor with a status pulse + 7-day ingest
+sparkline + lifetime count. A new LLM backend plugs in with `register_backend`.
+
+The remaining design seams (score-factor composition, triage engine, daily-note
+hooks; regime deferred) are planned in
 [packages/digest-core/SEAMS_PLAN.md](packages/digest-core/SEAMS_PLAN.md).
 
 ## Schedule
@@ -107,12 +116,41 @@ cp .env.example .env       # fill in EDGAR_USER_AGENT, OBSIDIAN_VAULT_PATH,
                            # REDDIT_* and any optional keys
 uv run digest init-db
 uv run digest ingest all
+uv run digest sources     # live catalog: every source + 7-day ingest pulse
+uv run digest brief       # regime + top signals + alert watchlist (offline)
 uv run digest stats
 uv run digest pipeline --run-type manual
 ```
 
-CLI commands: `ingest`, `triage`, `summarize`, `regime`, `signals`, `pipeline`,
-`publish`, `weekly`, `stats`, `recent`, `health`, `viz`, `init-db`.
+CLI commands: `ingest`, `sources`, `brief`, `rate`, `calibration`, `embed`,
+`related`, `ask`, `outcomes`, `learn`, `reserving`, `triage`, `summarize`,
+`regime`, `signals`, `pipeline`, `publish`, `weekly`, `stats`, `recent`,
+`health`, `viz`, `init-db`.
+
+**Scoring feedback loop.** `digest rate <id> <1-5>` records what you thought an
+item was worth; `digest calibration` shows system-vs-you deltas; `digest
+outcomes` backtests whether ranked items actually mattered (follow-on coverage,
+same-insurer EDGAR filing, regime shift, your rating, or a ≥1σ insurer stock
+move at 7d/30d). These populate `gold.score_calibration` / `gold.outcome_hit_rate`,
+and `digest learn` trains a learned relevance scorer on those labels — reporting
+a holdout A/B (top-N precision: heuristic vs learned) and writing a
+`learned_score` alongside the heuristic (which stays authoritative). The learned
+model is a lean numpy logistic regression (no sklearn/MLflow required on Free
+Edition; MLflow logging is used if installed).
+
+**Semantic layer (optional, local).** `digest embed` builds per-item embeddings
+via the local Ollama server (`ollama pull nomic-embed-text`); then `digest
+related <id>` finds more-like-this and `digest ask "<question>"` answers from
+your own corpus (RAG) with citations. Vectors cache in SQLite and mirror to
+`pc_bronze.item_embeddings`.
+
+**Lakehouse (Databricks, optional).** With `DATABRICKS_ENABLED=true`, the
+pipeline best-effort-mirrors into a shared `digest` catalog (`pc_*` schemas;
+macro-ai-digest uses `macro_*`) — DDL in
+[packages/digest-core/sql/databricks/](packages/digest-core/sql/databricks/)
+(`{bronze,silver,gold}.sql`, `xdomain.sql`, `alerts.sql`). `digest brief` and
+`digest calibration` are the offline local equivalents of the gold leaderboard /
+calibration views, so analytics work with no warehouse.
 
 ## Tests
 

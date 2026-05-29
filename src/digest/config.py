@@ -52,6 +52,11 @@ class Settings(BaseSettings):
     triage_min_score: float = Field(default=0.5, alias="TRIAGE_MIN_SCORE")
     triage_lookback_hours: int = Field(default=24, alias="TRIAGE_LOOKBACK_HOURS")
 
+    # Semantic layer (Option 3) — embeddings via the shared Ollama server
+    # (pull the model first: `ollama pull nomic-embed-text`). Powers `digest
+    # related`, semantic dedup, and `digest ask`.
+    embedding_model: str = Field(default="nomic-embed-text", alias="EMBEDDING_MODEL")
+
     # Obsidian — vault is shared with macro digest; we land in a sibling folder
     obsidian_vault_path: str = Field(default="", alias="OBSIDIAN_VAULT_PATH")
     obsidian_digest_dir: str = Field(default="81 P&C Digest", alias="OBSIDIAN_DIGEST_DIR")
@@ -76,11 +81,15 @@ class Settings(BaseSettings):
     # Databricks medallion sink (Wave 3 Phase 1 scaffold). All writes no-op when
     # databricks_enabled=False; workspace provisioning is deferred to Wave 4.
     # See packages/digest-core/sql/databricks/{bronze,silver,gold}.sql for DDL.
+    # Shared-catalog model: one catalog (`digest`), schemas prefixed per domain
+    # (pc_bronze/pc_silver/pc_gold here; macro-ai-digest uses macro_*), so both
+    # digests live in one lakehouse for cross-domain queries.
     databricks_enabled: bool = Field(default=False, alias="DATABRICKS_ENABLED")
     databricks_host: str = Field(default="", alias="DATABRICKS_HOST")          # workspace URL, no scheme
     databricks_http_path: str = Field(default="", alias="DATABRICKS_HTTP_PATH") # SQL warehouse HTTP path
     databricks_token: str = Field(default="", alias="DATABRICKS_TOKEN")        # personal access token
-    databricks_catalog: str = Field(default="pc_digest", alias="DATABRICKS_CATALOG")
+    databricks_catalog: str = Field(default="digest", alias="DATABRICKS_CATALOG")
+    databricks_schema_prefix: str = Field(default="pc_", alias="DATABRICKS_SCHEMA_PREFIX")
 
     # ── Validators ────────────────────────────────────────────────────────
 

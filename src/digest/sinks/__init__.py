@@ -14,6 +14,7 @@ sink: DatabricksSink = DatabricksSink(
     http_path=settings.databricks_http_path,
     token=settings.databricks_token,
     catalog=settings.databricks_catalog,
+    schema_prefix=settings.databricks_schema_prefix,
 )
 
 __all__ = ["DatabricksSink", "item_hash", "sink"]

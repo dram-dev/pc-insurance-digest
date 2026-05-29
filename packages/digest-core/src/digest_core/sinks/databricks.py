@@ -5,12 +5,17 @@ Domain-agnostic; configured via constructor args from each project's settings.
 Architecture (originated in pc-insurance-digest; lifted to core 2026-05-25):
 
   bronze.ingested_items   ← write_ingested()       every IngestedItem, incl. drops
+  bronze.item_embeddings  ← write_embedding()      semantic-layer vectors
   bronze.fred_observations ← write_fred_observations() full monthly series
   bronze.regime_signals   ← write_regime()          regime detector outputs
   bronze.pipeline_telemetry ← write_telemetry()     per-stage timing/errors
   silver.triage_verdicts  ← write_triage()          verdict + topic + burden
   silver.signal_scores    ← write_score()           all boost factors
   silver.summaries        ← write_summary()         materiality + summary text
+  silver.manual_ratings   ← write_rating()          user calibration ratings
+  silver.outcome_backtest ← write_outcome()         did a ranked item corroborate?
+  silver.learned_scores   ← write_learned_score()   learned relevance (Option 4)
+  silver.reserving_signals ← write_reserving()       chain-ladder IBNR (Option 5)
 
 Join key: `item_hash = sha256(source || '::' || source_id)`, derived here at
 write time. SQLite stays untouched.
@@ -43,6 +48,7 @@ logger = logging.getLogger(__name__)
 # constraints, the DDL hint is informational only.
 _PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
     "bronze.ingested_items":     ("item_hash",),
+    "bronze.item_embeddings":    ("item_hash",),
     "bronze.fred_observations":  ("series_id", "observation_date"),
     "bronze.regime_signals":     ("as_of", "source"),
     "bronze.pipeline_telemetry": ("run_id", "stage", "source"),
@@ -50,6 +56,9 @@ _PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
     "silver.signal_scores":      ("item_hash", "computed_at"),
     "silver.summaries":          ("item_hash", "summarized_at"),
     "silver.manual_ratings":     ("item_hash", "rated_at"),
+    "silver.outcome_backtest":   ("item_hash", "horizon_days"),
+    "silver.learned_scores":     ("item_hash", "model_id"),
+    "silver.reserving_signals":  ("insurer", "lob", "metric", "as_of"),
 }
 
 # Max rows per MERGE statement. 50 keeps total parameter count well under
@@ -91,13 +100,24 @@ class DatabricksSink:
         http_path: str,
         token: str,
         catalog: str,
+        schema_prefix: str = "",
     ) -> None:
         self._enabled = enabled
         self._host = host
         self._http_path = http_path
         self._token = token
         self._catalog = catalog
+        # Prepended to the medallion schema so multiple domains can share one
+        # catalog without colliding: "" → bronze.*; "pc_" → pc_bronze.*;
+        # "macro_" → macro_bronze.*. Table names + primary-key lookups stay
+        # unprefixed internally; only the emitted SQL is qualified.
+        self._schema_prefix = schema_prefix
         self._conn: Any | None = None  # lazy databricks.sql.Connection
+
+    def _qualify(self, table: str) -> str:
+        """`bronze.ingested_items` → `{prefix}bronze.ingested_items`."""
+        schema, _, tbl = table.partition(".")
+        return f"{self._schema_prefix}{schema}.{tbl}"
 
     # ── Connection (lazy) ─────────────────────────────────────────────────
 
@@ -215,6 +235,8 @@ class DatabricksSink:
             "regulatory_boost": score_row.get("regulatory_boost"),
             "tplf_boost":       score_row.get("tplf_boost"),
             "tier":             score_row.get("tier"),
+            "reserve_boost":    score_row.get("reserve_boost"),
+            "learned_score":    score_row.get("learned_score"),
         }
         self._insert("silver.signal_scores", [row])
 
@@ -236,6 +258,87 @@ class DatabricksSink:
         }
         self._insert("silver.summaries", [row])
 
+    def write_embedding(self, source: str, source_id: str, emb: dict[str, Any]) -> None:
+        """One embedding vector per item → bronze.item_embeddings (semantic layer).
+        vector_json is the JSON-encoded float list; promote to a real ARRAY/Vector
+        type when moving to native Databricks Vector Search."""
+        if not self._enabled:
+            return
+        row = {
+            "item_hash":   item_hash(source, source_id),
+            "model":       emb.get("model"),
+            "dim":         emb.get("dim"),
+            "vector_json": emb.get("vector_json"),
+            "computed_at": _iso(emb.get("computed_at")) or _iso(datetime.utcnow()),
+        }
+        self._insert("bronze.item_embeddings", [row])
+
+    def write_rating(self, source: str, source_id: str, rating: dict[str, Any]) -> None:
+        """User's manual rating of an item — the calibration input that powers
+        gold.score_calibration (system score vs. what the user thinks it's worth)."""
+        if not self._enabled:
+            return
+        row = {
+            "item_hash":   item_hash(source, source_id),
+            "rated_at":    _iso(rating.get("rated_at")) or _iso(datetime.utcnow()),
+            "user_rating": rating.get("user_rating"),
+            "note":        rating.get("note"),
+        }
+        self._insert("silver.manual_ratings", [row])
+
+    def write_reserving(self, sig: dict[str, Any]) -> None:
+        """Chain-ladder reserving estimate (Option 5) → silver.reserving_signals.
+        Insurer/LOB-keyed (not item_hash) — a derived actuarial fact, not a news item."""
+        if not self._enabled:
+            return
+        row = {
+            "insurer":           sig.get("insurer"),
+            "lob":               sig.get("lob"),
+            "metric":            sig.get("metric"),
+            "as_of":             _iso(sig.get("as_of")) or _iso(datetime.utcnow()),
+            "ultimate":          sig.get("ultimate"),
+            "latest":            sig.get("latest"),
+            "ibnr":              sig.get("ibnr"),
+            "prior_ibnr":        sig.get("prior_ibnr"),
+            "deterioration_pct": sig.get("deterioration_pct"),
+            "direction":         sig.get("direction"),
+        }
+        self._insert("silver.reserving_signals", [row])
+
+    def write_learned_score(self, source: str, source_id: str, ls: dict[str, Any]) -> None:
+        """Per-item learned relevance score (Option 4) → silver.learned_scores,
+        for A/B against the heuristic score in gold."""
+        if not self._enabled:
+            return
+        row = {
+            "item_hash":     item_hash(source, source_id),
+            "model_id":      ls.get("model_id"),
+            "learned_score": ls.get("learned_score"),
+            "scored_at":     _iso(ls.get("scored_at")) or _iso(datetime.utcnow()),
+        }
+        self._insert("silver.learned_scores", [row])
+
+    def write_outcome(self, source: str, source_id: str, outcome: dict[str, Any]) -> None:
+        """Backtest outcome for an item at one horizon — did it corroborate?
+        Feeds gold.outcome_hit_rate + the learned scorer's labels."""
+        if not self._enabled:
+            return
+        signals = outcome.get("signals") or []
+        row = {
+            "item_hash":       item_hash(source, source_id),
+            "horizon_days":    outcome.get("horizon_days"),
+            "checked_at":      _iso(outcome.get("checked_at")) or _iso(datetime.utcnow()),
+            "corroborated":    bool(outcome.get("corroborated")),
+            "signals":         signals if isinstance(signals, list) else [signals],
+            "followon_count":  outcome.get("followon_count"),
+            "edgar_filed":     bool(outcome.get("edgar_filed")),
+            "regime_shifted":  bool(outcome.get("regime_shifted")),
+            "manual_rating":   outcome.get("manual_rating"),
+            "stock_move_z":    outcome.get("stock_move_z"),
+            "stock_move_band": outcome.get("stock_move_band"),
+        }
+        self._insert("silver.outcome_backtest", [row])
+
     # ── Internals ─────────────────────────────────────────────────────────
 
     def _insert(self, table: str, rows: list[dict[str, Any]]) -> None:
@@ -250,19 +353,20 @@ class DatabricksSink:
             )
             return
         cols = list(rows[0].keys())
+        qualified = self._qualify(table)
         try:
             conn = self._connection()
             cur = conn.cursor()
             try:
                 for start in range(0, len(rows), _BATCH_SIZE):
                     batch = rows[start:start + _BATCH_SIZE]
-                    self._merge_batch(cur, table, cols, pk_cols, batch)
+                    self._merge_batch(cur, qualified, cols, pk_cols, batch)
             finally:
                 cur.close()
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "databricks sink %s MERGE failed (%d rows): %s — swallowed",
-                table, len(rows), exc,
+                qualified, len(rows), exc,
             )
 
     @staticmethod

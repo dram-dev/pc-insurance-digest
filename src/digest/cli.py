@@ -11,7 +11,7 @@ from rich.table import Table
 
 from digest import db
 from digest.config import settings
-from digest_core.cli.base import run_ingest
+from digest_core.cli.base import discover_ingestors, run_ingest
 
 console = Console()
 
@@ -25,29 +25,12 @@ def _setup_logging() -> None:
     )
 
 
-INGESTORS = {
-    "rss":      "digest.ingest.rss:RSSIngestor",
-    "edgar":    "digest.ingest.edgar:EdgarIngestor",
-    "reddit":   "digest.ingest.reddit:RedditIngestor",
-    "substack": "digest.ingest.substack:SubstackIngestor",
-    "hn":       "digest.ingest.hackernews:HNIngestor",
-    # Wave 2 — direct government hazard feeds
-    "nhc":      "digest.ingest.nhc:NHCIngestor",
-    "usgs":     "digest.ingest.usgs:USGSIngestor",
-    "spc":      "digest.ingest.spc:SPCIngestor",
-    "nifc":     "digest.ingest.nifc:NIFCIngestor",
-    # Wave 2.x — quantitative cost-driver series (live)
-    "fred":     "digest.ingest.fred:FredIngestor",
-    # Wave 3 — implemented (courtlistener needs token; collision/state_doi/serff need selector validation)
-    "courtlistener":     "digest.ingest.courtlistener:CourtListenerIngestor",
-    "collision":         "digest.ingest.collision_data:CollisionDataIngestor",
-    "state_doi":         "digest.ingest.state_doi:StateDOIIngestor",
-    "industry_research": "digest.ingest.industry_research:IndustryResearchIngestor",
-    "serff":             "digest.ingest.serff:SerffIngestor",
-    # Wave 3 Phase 3 — actuarial datasets (PDF parsing)
-    "investor_supp":     "digest.ingest.investor_supp:InvestorSuppIngestor",
-    "naic_schedp":       "digest.ingest.naic_schedp:NAICSchedulePIngestor",
-}
+# Sources are no longer hand-listed: every IngestorBase subclass under
+# digest.ingest self-registers (see digest_core.ingest.registry). Drop a new
+# ingestor file in that package and it appears here automatically — and in
+# `digest sources`. A source whose module fails to import (missing optional dep)
+# is reported by `digest sources` rather than silently vanishing.
+INGESTORS = discover_ingestors("digest.ingest")
 
 
 @click.group()
@@ -67,6 +50,325 @@ def ingest(source: str, run_type: str) -> None:
     if source == "all":
         console.rule("[bold]summary")
         console.print(f"total fetched={total_fetched} new={total_new}")
+
+
+@main.command()
+def sources() -> None:
+    """Live source catalog: every registered ingestor + its 7-day pulse.
+
+    Auto-discovered from the registry — a newly added ingestor shows up here on
+    its own (as 'never-run' until its first ingest). Sources whose module can't
+    import (missing optional dep) are flagged rather than silently dropped.
+    """
+    from digest_core import catalog
+
+    db.init_db()
+    catalog.print_sources(db.get_conn, "digest.ingest", console=console)
+
+
+@main.command()
+@click.argument("item_id", type=int)
+@click.argument("rating", type=click.FloatRange(1.0, 5.0))
+@click.option("--note", default=None, help="Optional context for the rating")
+def rate(item_id: int, rating: float, note: str | None) -> None:
+    """Rate an item 1-5 — the calibration input behind score_calibration.
+
+    Records what you think an item was worth so the lakehouse can compare it to
+    the system's computed score (gold.score_calibration). Example:
+    `digest rate 1423 5 --note "exactly the FAIR Plan signal I want surfaced"`.
+    """
+    db.init_db()
+    with db.get_conn() as conn:
+        item = conn.execute(
+            "SELECT id, title, topic FROM items WHERE id = ?", (item_id,)
+        ).fetchone()
+    if item is None:
+        console.print(f"[red]✗[/red] no item with id {item_id}")
+        raise SystemExit(1)
+    db.upsert_manual_rating(item_id, rating, note)
+    console.print(
+        f"[green]✓[/green] rated #{item_id} [bold]{rating:.1f}[/bold] "
+        f"([dim]{item['topic'] or '?'}[/dim]) — {item['title'][:70]}"
+    )
+
+
+@main.command()
+@click.option("--limit", default=30, help="Max rated items to show")
+def calibration(limit: int) -> None:
+    """How your manual ratings line up with the system's computed scores.
+
+    The local mirror of gold.score_calibration: rate items with `digest rate`,
+    then run this to see where the leaderboard over- or under-valued an item vs.
+    your judgement (Δ = system − user). Drives scoring-weight tuning.
+    """
+    db.init_db()
+    rows = db.calibration_rows(limit=limit)
+    if not rows:
+        console.print("[yellow]No rated items yet.[/yellow] Rate one: digest rate <id> <1-5>")
+        return
+    table = Table(title="Score calibration (system vs. your rating)")
+    table.add_column("#", justify="right", style="dim")
+    table.add_column("Topic", no_wrap=True)
+    table.add_column("You", justify="right")
+    table.add_column("System", justify="right")
+    table.add_column("Δ", justify="right")
+    table.add_column("Title", no_wrap=True, overflow="ellipsis", max_width=52)
+    deltas: list[float] = []
+    for r in rows:
+        sys_score = r["system_score"]
+        if sys_score is None:
+            sys_cell, delta_cell = "[dim]—[/dim]", "[dim]—[/dim]"
+        else:
+            delta = sys_score - r["user_rating"]
+            deltas.append(delta)
+            colour = "yellow" if abs(delta) >= 1.0 else "green"
+            sys_cell = f"{sys_score:.2f}"
+            delta_cell = f"[{colour}]{delta:+.2f}[/{colour}]"
+        table.add_row(
+            str(r["item_id"]), r["topic"] or "?", f"{r['user_rating']:.1f}",
+            sys_cell, delta_cell, r["title"] or "(untitled)",
+        )
+    console.print(table)
+    scored = len(deltas)
+    if scored:
+        mean_abs = sum(abs(d) for d in deltas) / scored
+        console.print(
+            f"[dim]{scored}/{len(rows)} rated items scored · "
+            f"mean |Δ| = {mean_abs:.2f}[/dim]"
+        )
+
+
+@main.command()
+@click.option("--hours", default=48, help="Lookback window for the alert watchlist")
+@click.option("--top", default=5, help="How many top signals to show")
+def brief(hours: int, top: int) -> None:
+    """Today's signal brief — regime, top signals, and the alert watchlist.
+
+    The local, offline analog of the Databricks Genie/Alerts layer (Option 2):
+    reads SQLite directly, so it works with no warehouse. Surfaces the prevailing
+    regime, the top-scored items, and watch conditions (high-burden regulatory
+    items, nuclear-verdict/TPLF signals, FRED anomalies, degraded sources).
+    """
+    from digest import signals
+
+    db.init_db()
+
+    # Regime banner
+    reg = db.latest_regime_signal()
+    if reg:
+        console.rule(
+            f"[bold]P&C brief[/bold] · regime: "
+            f"[cyan]{reg['market_cycle']}[/cyan] × [cyan]{reg['cat_load']}[/cyan] "
+            f"= [bold]{reg['multiplier']:.2f}×[/bold]  [dim]({str(reg['as_of'])[:10]})[/dim]"
+        )
+    else:
+        console.rule("[bold]P&C brief[/bold] [dim](no regime computed yet)[/dim]")
+
+    # Top signals
+    rows = db.top_signal_scores(limit=top)
+    if rows:
+        table = Table(title=f"Top {len(rows)} signals")
+        table.add_column("Tier", no_wrap=True)
+        table.add_column("Score", justify="right")
+        table.add_column("Topic", no_wrap=True)
+        table.add_column("Source", no_wrap=True, style="dim")
+        table.add_column("Title", no_wrap=True, overflow="ellipsis", max_width=58)
+        for r in rows:
+            table.add_row(
+                signals.tier_badge(r["score"]), f"{r['score']:.2f}",
+                r["topic"] or "?", r["source"], r["title"] or "(untitled)",
+            )
+        console.print(table)
+    else:
+        console.print("[dim]No scored items yet — run `digest signals`.[/dim]")
+
+    # Alert watchlist
+    alerts = db.brief_alerts(hours=hours)
+    fired = False
+    if alerts["high_burden"]:
+        fired = True
+        console.print(f"\n[bold red]⚠ High regulatory burden[/bold red] ({len(alerts['high_burden'])}):")
+        for r in alerts["high_burden"]:
+            arrow = {"increasing": "↑", "decreasing": "↓"}.get(r["burden_direction"], "·")
+            console.print(f"  [red]{arrow}[/red] [{r['source']}] {r['title'][:80]}")
+    if alerts["tplf"]:
+        fired = True
+        console.print(f"\n[bold magenta]⚖ Litigation / TPLF[/bold magenta] ({len(alerts['tplf'])}):")
+        for r in alerts["tplf"]:
+            console.print(f"  [magenta]•[/magenta] [{r['source']}] {r['title'][:80]}")
+    if alerts["fred"]:
+        fired = True
+        console.print(f"\n[bold yellow]📈 FRED cost-driver anomalies[/bold yellow] ({len(alerts['fred'])}):")
+        for r in alerts["fred"]:
+            console.print(f"  [yellow]•[/yellow] {r['title'][:90]}")
+    if alerts["degraded"]:
+        fired = True
+        console.print(f"\n[bold red]✗ Degraded sources[/bold red] ({len(alerts['degraded'])}):")
+        for r in alerts["degraded"]:
+            console.print(f"  [red]✗[/red] {r['source']}: {(r['error'] or 'error')[:70]}")
+    if not fired:
+        console.print(f"\n[green]✓ No alerts in the last {hours}h.[/green]")
+
+
+@main.command()
+@click.option("--limit", default=500, help="Max items to embed this run")
+def embed(limit: int) -> None:
+    """Compute embeddings for kept items that lack them (semantic layer).
+
+    Uses the local Ollama server (EMBEDDING_MODEL, default nomic-embed-text) —
+    `ollama pull nomic-embed-text` first. Powers `digest related` / `digest ask`.
+    """
+    from digest import semantic
+
+    db.init_db()
+    counts = semantic.run_embed(limit=limit)
+    console.print(
+        f"[green]✓[/green] embed: needed={counts['needed']} embedded={counts['embedded']}"
+    )
+
+
+@main.command()
+@click.argument("item_id", type=int)
+@click.option("--k", default=5, help="How many related items to show")
+def related(item_id: int, k: int) -> None:
+    """Items semantically closest to ITEM_ID (more-like-this / see-also)."""
+    from digest import semantic
+
+    db.init_db()
+    hits = semantic.related(item_id, k=k)
+    if not hits:
+        console.print("[yellow]No neighbours (item unembedded? run `digest embed`).[/yellow]")
+        return
+    table = Table(title=f"Related to #{item_id}")
+    table.add_column("Sim", justify="right")
+    table.add_column("#", justify="right", style="dim")
+    table.add_column("Topic", no_wrap=True)
+    table.add_column("Title", no_wrap=True, overflow="ellipsis", max_width=60)
+    for h in hits:
+        table.add_row(f"{h['score']:.2f}", str(h["item_id"]), h["topic"] or "?",
+                      h["title"] or "(untitled)")
+    console.print(table)
+
+
+@main.command()
+@click.argument("question")
+@click.option("--k", default=8, help="How many items to retrieve as context")
+def ask(question: str, k: int) -> None:
+    """Ask a question answered from your own digest corpus (RAG).
+
+    Embeds the question, retrieves the most relevant items, and answers with the
+    configured summarizer backend — citing the item numbers it used.
+    """
+    from digest import semantic
+
+    db.init_db()
+    result = semantic.ask(question, k=k)
+    if result.get("error"):
+        console.print(f"[yellow]{result['error']}[/yellow]")
+    if result.get("answer"):
+        console.print(f"\n{result['answer']}\n")
+    if result.get("sources"):
+        console.rule("[dim]sources")
+        for s in result["sources"]:
+            console.print(
+                f"[dim][#{s['n']}][/dim] [cyan]{s['score']:.2f}[/cyan] "
+                f"[dim]({s['source']})[/dim] {(s['title'] or '')[:80]}"
+            )
+
+
+@main.command()
+@click.option("--horizons", default="7,30", help="Comma-separated horizon days")
+@click.option("--limit", default=500, help="Max matured items per horizon")
+def outcomes(horizons: str, limit: int) -> None:
+    """Backtest: did ranked items actually matter? (Option 1b)
+
+    For each scored item whose horizon (default 7d + 30d) has elapsed, checks 5
+    corroboration signals — follow-on coverage, same-insurer EDGAR filing, regime
+    shift, your rating ≥4, and a ≥1σ insurer stock move — and records whether it
+    corroborated. Feeds gold.outcome_hit_rate + the learned scorer's labels.
+    Weekly cadence is plenty (outcomes need the window to mature).
+    """
+    from digest.outcomes import run_outcomes
+
+    db.init_db()
+    hs = tuple(int(h) for h in horizons.split(",") if h.strip())
+    console.rule("[bold cyan]outcomes backtest")
+    counts = run_outcomes(horizons=hs, limit=limit)
+    for h, n in counts.items():
+        console.print(f"  [green]✓[/green] horizon={h}d: checked={n}")
+
+
+@main.command()
+@click.option("--horizon", default=30, help="Outcome horizon to train against (days)")
+def learn(horizon: int) -> None:
+    """Train the learned relevance scorer + A/B it vs the heuristic (Option 4).
+
+    Fits a numpy logistic regression on the boost factors + heuristic score to
+    predict corroboration (from `digest outcomes`), reports holdout AUC and
+    top-N precision (heuristic vs learned), then writes a learned_score for every
+    scored item. The heuristic stays authoritative; this is advisory until the
+    A/B proves a lift. Needs ≥12 labeled items — run `digest outcomes` first.
+    """
+    from digest import learn as learn_mod
+
+    db.init_db()
+    console.rule("[bold cyan]learned scorer")
+    s = learn_mod.run(horizon_days=horizon)
+    if not s.get("model_id"):
+        console.print(f"[yellow]{s.get('note', 'training skipped')}[/yellow] "
+                      f"(n={s.get('n_samples', 0)})")
+        return
+
+    def _p(x):
+        return f"{x:.3f}" if isinstance(x, (int, float)) else "—"
+
+    console.print(f"[green]✓[/green] model #{s['model_id']} trained on {s['n_samples']} items")
+    console.print(f"  holdout AUC: {_p(s.get('auc'))}")
+    h, learned = s.get("heuristic_precision"), s.get("learned_precision")
+    arrow = ""
+    if isinstance(h, (int, float)) and isinstance(learned, (int, float)):
+        arrow = " [green]↑ learned wins[/green]" if learned > h else (
+            " [yellow]→ heuristic holds[/yellow]" if learned == h else " [dim]↓ heuristic better[/dim]")
+    console.print(f"  top-{s.get('k', 5)} precision — heuristic {_p(h)} vs learned {_p(learned)}{arrow}")
+    console.print(f"  [green]✓[/green] learned_score written for {s.get('scored', 0)} items")
+
+
+@main.command()
+def reserving() -> None:
+    """Chain-ladder reserving over stored loss triangles (Option 5).
+
+    Computes ultimate / IBNR per insurer/LOB from loss_triangles (populated by
+    the naic_schedp / investor_supp ingestors once validated on the Mac mini),
+    flags adverse development vs. the prior estimate, and shows the result.
+    """
+    from digest import reserving as reserving_mod
+
+    db.init_db()
+    console.rule("[bold cyan]reserving")
+    counts = reserving_mod.run_reserving()
+    if counts["triangles"] == 0:
+        console.print("[yellow]No loss triangles yet.[/yellow] "
+                      "Enable naic_schedp / investor_supp ingestors on the Mac mini.")
+        return
+    console.print(f"[green]✓[/green] computed {counts['computed']}/{counts['triangles']} estimates")
+    rows = db.latest_reserving_signals(limit=20)
+    if rows:
+        table = Table(title="Reserving — IBNR & development")
+        table.add_column("Insurer", no_wrap=True)
+        table.add_column("LOB", no_wrap=True)
+        table.add_column("Metric", no_wrap=True, style="dim")
+        table.add_column("IBNR", justify="right")
+        table.add_column("Δ vs prior", justify="right")
+        for r in rows:
+            det = r["deterioration_pct"]
+            if det is None:
+                delta = "[dim]—[/dim]"
+            else:
+                colour = "red" if r["direction"] == "adverse" else "green"
+                delta = f"[{colour}]{det:+.1%} {r['direction']}[/{colour}]"
+            table.add_row(r["insurer"], r["lob"], r["metric"],
+                          f"{r['ibnr']:,.0f}" if r["ibnr"] is not None else "—", delta)
+        console.print(table)
 
 
 @main.command()

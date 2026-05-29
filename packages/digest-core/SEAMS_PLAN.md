@@ -9,38 +9,59 @@ What remains is the genuinely *new* design work — the EXTRACTION_PLAN.md §3
 
 ## Status snapshot (what's already in core)
 
-| Module | Lifted | PC shape |
-|---|---|---|
-| `types.IngestedItem` | ✅ | re-export |
-| `db.{schema,helpers}` | ✅ | thin wrappers default db_path + sink fan-out |
-| `ingest.base` (IngestorBase + ItemStore) | ✅ | `class IngestorBase(CoreBase): store = db` |
-| `ingest.{rss,hackernews,reddit,edgar}` | ✅ | shells hold config, delegate fetch() |
-| `summarize.{backends,runner}` | ✅ | `_backend_config()`; cap values stay domain |
-| `obsidian.{paths,render,archive}` | ✅ | `Paths` subclass `resolve()`; topic maps stay |
-| `cli.base` (load_ingestor, run_ingest) | ✅ | group + commands + INGESTORS stay |
-| `sinks.databricks` | ✅ | singleton built from PC settings |
+| Module | Lifted | PC shape | macro shape |
+|---|---|---|---|
+| `types.IngestedItem` | ✅ | re-export | re-export (via `ingest.base`) |
+| `db.{schema,helpers}` | ✅ | thin wrappers + sink fan-out | thin wrappers (no sink) + macro MIGRATIONS |
+| `ingest.base` (IngestorBase + ItemStore) | ✅ | `class IngestorBase(CoreBase): store = db` | same, `register=False` base |
+| `ingest.registry` (`@__init_subclass__` auto-register + `discover`) | ✅ | `discover_ingestors("digest.ingest")` | same |
+| `ingest.{rss,hackernews,reddit,edgar}` | ✅ | shells delegate fetch() | full impls extend base (shells optional) |
+| `summarize.{backends,runner}` | ✅ | `_backend_config()` (800 tok) | `_backend_config()` (600 tok) |
+| `summarize.backends` registry (`register_backend`) | ✅ | — | — |
+| `obsidian.{paths,render,archive}` | ✅ | `Paths` subclass; topic maps stay | adopted — `Paths` subclass + aliased render/archive; topic maps + renderers stay |
+| `cli.base` (load_ingestor, run_ingest, discover_ingestors) | ✅ | group + commands stay | group + commands stay |
+| `catalog` (`digest sources`) | ✅ | `sources` command | `sources` command |
+| `sinks.databricks` | ✅ | singleton built from PC settings | n/a (macro has no sink) |
 
-Tests scaffold (EXTRACTION_PLAN.md §4 open-q #5): ✅ done — `tests/`, hermetic.
+Tests: PC `tests/` hermetic (88). macro `tests/` hermetic (12, new this round).
 
-## The guiding decision
+## Status: macro port DONE (foundation) — 2026-05-28
 
-Per EXTRACTION_PLAN.md §5 step 4 and the project rule *"don't pre-design the
-framework — wait until divergence is visible,"* the seams below should be
-**driven by porting macro-ai-digest onto core**, not designed from PC alone.
-macro is the second concrete data point that reveals each seam's real shape.
+macro-ai-digest now runs on `digest-core` (editable path dep from the sibling
+repo). The proven thin-shell pattern lifted db / ingest.base / summarize
+backends+runner / triage extract_json; macro keeps all its domain logic
+(macro_regime, essays, debate, velocity, clustering, dashboard, ~15 ingestors).
+Net ~295 fewer lines in macro.
 
-**Recommended Phase-2 order:**
-1. **Stand up the macro port skeleton** — point macro-ai-digest at `digest-core`
-   (workspace dep), lift its `IngestedItem`/`db`/`ingest.base`/backends the same
-   way PC was (these are already proven generic; should be near-mechanical).
-   This surfaces which "seams" are actually shared vs. truly divergent.
-2. **Then tackle seams in this order** (most-self-contained first):
-   regime axes → signals factors → triage engine → daily-note hooks →
-   topic-cap/materiality → CLI group-factory.
+**The "grow organically" mechanism shipped:** the ingestor registry. Adding a
+source in either domain is now *drop a file, subclass `IngestorBase`, give it a
+`name`* — it self-registers (via `__init_subclass__`), appears in `digest
+sources`, and is runnable via `digest ingest <name>` / pipeline. No central
+INGESTORS dict to edit. New LLM backends plug in via `register_backend` without
+touching core. `discover()` is import-isolated so a missing optional dep
+degrades to a reported failure, not a crash.
 
-If macro isn't ready, the most self-contained seam to prototype against PC
-alone is **regime axes** — but design it with macro's single-axis regime in
-view (notes below).
+## The guiding decision (still holds for the remaining seams)
+
+Per EXTRACTION_PLAN.md §5 step 4 and *"don't pre-design the framework — wait
+until divergence is visible,"* the **remaining** seams should be driven by the
+two now-concrete domains side by side. The foundation port proved which
+substrate is genuinely shared (it all lifted cleanly). The deeper seams below
+each need a deliberate two-domain design pass:
+
+**Recommended next order** (most-self-contained first), now that both domains
+are on core:
+1. **signals factors** — both have `source × recency × llm_judgment`; PC adds
+   6 boost factors + conviction `tier`, macro adds signal_outcomes z-score +
+   cluster size. Good first registry candidate (`ScoreFactor`).
+2. **triage engine** — flow is identical (Python preprocessor → Ollama → JSON
+   parse → DB update); prompt/topics/auto-keep are domain. extract_json already
+   shared. `TriageEngine` with hooks.
+3. **obsidian daily/weekly hooks** — both domains now share core's render/paths/
+   archive primitives; what remains is the `DailyNoteBuilder` extension-point
+   design (top-of-note callouts, domain topic maps, the leaderboard section).
+4. **regime** — still DEFERRED (see §1): the two regimes are not peers.
+5. **topic-cap/materiality**, **CLI group-factory** — last.
 
 ## Per-seam design sketches
 
@@ -126,16 +147,39 @@ view (notes below).
   `core_db.init_db_with_migrations(path, MIGRATIONS)`). Confirm macro fits.
 - pydantic-settings `BaseSettings` subclassing across packages (for the CLI/DI seam).
 
+## Adding a new source (the organic-growth workflow)
+
+This is the premise the registry exists to serve — in **either** domain:
+
+1. Add `src/digest/ingest/<source>.py`.
+2. `class <Name>Ingestor(IngestorBase): name = "<source>"; def fetch(self): ...`
+   (optionally `tags = (...)`, `order = N`, and a one-line docstring/module
+   docstring for the catalog).
+3. That's it. It self-registers → shows in `digest sources` (as `never-run`),
+   is runnable via `digest ingest <source>`, and joins the pipeline's stage 1.
+
+No central dict to touch. A new LLM backend: `register_backend("name", fn)` in
+the domain (fn takes `(system_prompt, user_prompt, BackendConfig)`). A source
+whose module fails to import (missing optional dep) is reported in `digest
+sources`, not silently dropped.
+
 ## Definition of done for Phase 2
-- macro-ai-digest runs end-to-end on `digest-core`.
+- macro-ai-digest runs end-to-end on `digest-core`. ✅ (foundation; obsidian +
+  the deeper seams remain)
 - Each seam has a core abstraction + both domains as plug-ins, with tests.
-- No domain still duplicates code that another domain also has.
+  (ingest/db/backends/runner/catalog ✅; signals/triage/obsidian-hooks pending)
+- No domain still duplicates code that another domain also has. (foundation
+  de-duped; signals/triage/obsidian still parallel)
 
 ## Loose ends carried (not blockers)
+- **macro `gmail`** last-run errors (surfaced by `digest sources` — `✗ error`).
+  Likely OAuth token refresh; check `secrets/` + scopes on the Mac mini.
 - **Mac mini, one-time:** `ALTER TABLE silver.signal_scores ADD COLUMN tier STRING;`
   (conviction tier sink write is best-effort until then).
-- **Config bug:** `hackernews.QUERIES` are still macro AI/semis terms — retune to
-  P&C insurtech/cyber/cat.
-- **Dead branch:** edgar `is_fund → 'fed_markets'` (macro residue; never fires).
-- **Pre-existing lint:** ~23 ruff style nits in viz/summarize-stubs/collision/
-  health/serff (not bugs/security) — sweep opportunistically.
+- **Config bug (PC):** `hackernews.QUERIES` are still macro AI/semis terms —
+  retune to P&C insurtech/cyber/cat. (macro's HN queries are correct.)
+- **Dead branch (PC):** edgar `is_fund → 'fed_markets'` (macro residue; never fires).
+- **Pre-existing lint:** ~23 ruff nits in PC viz/collision/health/serff and ~8 in
+  macro (unused vars, f-strings) — not bugs/security; sweep opportunistically.
+- **Branches:** PC `digest-core-macro-port`, macro `digest-core-port` — review +
+  merge to each `master`.

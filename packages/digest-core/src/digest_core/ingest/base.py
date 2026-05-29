@@ -57,6 +57,20 @@ class IngestorBase(ABC):
     name: str = "base"
     store: ClassVar[ItemStore | None] = None
 
+    def __init_subclass__(cls, register: bool = True, **kwargs: object) -> None:
+        """Auto-register concrete ingestors so the catalog grows by itself.
+
+        Defining `class FooIngestor(IngestorBase): name = "foo"` is enough to
+        make `foo` a known source — no central dict to edit. The un-named
+        framework/domain base classes and abstract subclasses are skipped (see
+        `registry.register`). Pass `register=False` for a base you don't want
+        catalogued (e.g. a shared mixin).
+        """
+        super().__init_subclass__(**kwargs)
+        if register:
+            from digest_core.ingest.registry import register as _register
+            _register(cls)
+
     @abstractmethod
     def fetch(self) -> list[IngestedItem]:
         """Pull fresh items from this source. Do not write to the store."""

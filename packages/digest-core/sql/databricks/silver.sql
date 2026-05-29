@@ -2,13 +2,14 @@
 -- separate tables for triage / score / summary so producers stay decoupled
 -- (a re-score doesn't bump triage history, etc.).
 --
--- Apply after bronze.sql.
+-- PC Digest's silver (`pc_silver`) in the shared `digest` catalog. Apply after
+-- bronze (pc_bronze) DDL.
 
-CREATE SCHEMA IF NOT EXISTS silver;
+CREATE SCHEMA IF NOT EXISTS pc_silver;
 
 -- Triage verdict per item per triage run. Drop_reason is the model's reason
 -- string when decision='drop'; for keep items, `reason` holds the keep rationale.
-CREATE TABLE IF NOT EXISTS silver.triage_verdicts (
+CREATE TABLE IF NOT EXISTS pc_silver.triage_verdicts (
     item_hash         STRING    NOT NULL,
     triaged_at        TIMESTAMP NOT NULL,
     decision          STRING    NOT NULL,        -- 'keep'|'drop'
@@ -20,14 +21,14 @@ CREATE TABLE IF NOT EXISTS silver.triage_verdicts (
     burden_direction  STRING,                    -- 'increasing'|'neutral'|'decreasing' or null
     burden_intensity  STRING,                    -- 'high'|'medium'|'low' or null
     model_id          STRING,                    -- triage model identifier
-    CONSTRAINT silver_triage_pk PRIMARY KEY (item_hash, triaged_at)
+    CONSTRAINT pc_silver_triage_pk PRIMARY KEY (item_hash, triaged_at)
 )
 USING DELTA;
 
 -- Per-item leaderboard score with all 11 multiplicative factors broken out.
 -- Enables back-testing: "if I bump PGR insurer_boost to 1.7×, what would last
 -- week's top-5 have looked like?" Columns mirror SQLite signal_scores exactly.
-CREATE TABLE IF NOT EXISTS silver.signal_scores (
+CREATE TABLE IF NOT EXISTS pc_silver.signal_scores (
     item_hash         STRING    NOT NULL,
     computed_at       TIMESTAMP NOT NULL,
     score             DOUBLE    NOT NULL,
@@ -43,13 +44,15 @@ CREATE TABLE IF NOT EXISTS silver.signal_scores (
     regulatory_boost  DOUBLE,
     tplf_boost        DOUBLE,                      -- Wave 3 Phase 2: TPLF / mass-tort sub_tag boost
     tier              STRING,                       -- conviction tier (high/medium/low) from the score
-    CONSTRAINT silver_score_pk PRIMARY KEY (item_hash, computed_at)
+    reserve_boost     DOUBLE,                       -- Option 5: adverse reserve development on a named insurer
+    learned_score     DOUBLE,                       -- Option 4: learned relevance, alongside the heuristic
+    CONSTRAINT pc_silver_score_pk PRIMARY KEY (item_hash, computed_at)
 )
 USING DELTA;
 
 -- Summarizer output + materiality. Stub-summarized items (EDGAR / FRED short-
 -- circuits in summarize.py) also land here, with model_id set to 'stub'.
-CREATE TABLE IF NOT EXISTS silver.summaries (
+CREATE TABLE IF NOT EXISTS pc_silver.summaries (
     item_hash       STRING    NOT NULL,
     summarized_at   TIMESTAMP NOT NULL,
     summary         STRING    NOT NULL,
@@ -61,18 +64,67 @@ CREATE TABLE IF NOT EXISTS silver.summaries (
     output_chars    INT,
     model_id        STRING,                      -- 'mlx:Qwen3.5-27B' or 'stub'
     duration_ms     BIGINT,
-    CONSTRAINT silver_summaries_pk PRIMARY KEY (item_hash, summarized_at)
+    CONSTRAINT pc_silver_summaries_pk PRIMARY KEY (item_hash, summarized_at)
 )
 USING DELTA;
 
--- Manual ratings from Obsidian _meta/Score Higher.md (Wave 4 — will be
--- populated by a future scanning job). Empty until then; gold.score_calibration
--- left-joins this table so it gracefully degrades to no-output.
-CREATE TABLE IF NOT EXISTS silver.manual_ratings (
+-- Manual ratings from `digest rate` / Obsidian _meta/Score Higher.md. Populated
+-- by the calibration loop (Databricks Option 1a); gold.score_calibration
+-- left-joins this so it gracefully degrades to no-output when empty.
+CREATE TABLE IF NOT EXISTS pc_silver.manual_ratings (
     item_hash   STRING    NOT NULL,
     rated_at    TIMESTAMP NOT NULL,
     user_rating DOUBLE,                          -- 1.0-5.0, user's target score
     note        STRING,                          -- freeform context from the user
-    CONSTRAINT silver_manual_pk PRIMARY KEY (item_hash, rated_at)
+    CONSTRAINT pc_silver_manual_pk PRIMARY KEY (item_hash, rated_at)
+)
+USING DELTA;
+
+-- Outcome backtest (Option 1b): did a ranked item actually matter, N days on?
+-- One row per (item, horizon ∈ {7,30}); corroborated = any of 5 signals fired.
+-- Feeds gold.outcome_hit_rate + the Option-4 learned scorer's training labels.
+CREATE TABLE IF NOT EXISTS pc_silver.outcome_backtest (
+    item_hash       STRING    NOT NULL,
+    horizon_days    INT       NOT NULL,
+    checked_at      TIMESTAMP NOT NULL,
+    corroborated    BOOLEAN   NOT NULL,
+    signals         ARRAY<STRING>,               -- which fired: followon/edgar/regime/manual/stock_move
+    followon_count  INT,
+    edgar_filed     BOOLEAN,
+    regime_shifted  BOOLEAN,
+    manual_rating   DOUBLE,
+    stock_move_z    DOUBLE,                       -- signed σ of the insurer's return
+    stock_move_band STRING,                       -- 0.5/0.75/1.0/1.25/1.5/1.75/2.0/2+
+    CONSTRAINT pc_silver_backtest_pk PRIMARY KEY (item_hash, horizon_days)
+)
+USING DELTA;
+
+-- Learned relevance score (Option 4): the numpy logistic-regression model's
+-- predicted P(corroborated), written alongside the heuristic so gold can A/B
+-- them. model_id references the SQLite learned_models registry.
+CREATE TABLE IF NOT EXISTS pc_silver.learned_scores (
+    item_hash     STRING    NOT NULL,
+    model_id      INT       NOT NULL,
+    learned_score DOUBLE    NOT NULL,
+    scored_at     TIMESTAMP NOT NULL,
+    CONSTRAINT pc_silver_learned_pk PRIMARY KEY (item_hash, model_id)
+)
+USING DELTA;
+
+-- Reserving estimates (Option 5): chain-ladder ultimate / IBNR per insurer /
+-- LOB / metric, with deterioration vs. the prior estimate. Insurer-keyed (a
+-- derived actuarial fact, not a news item).
+CREATE TABLE IF NOT EXISTS pc_silver.reserving_signals (
+    insurer           STRING    NOT NULL,
+    lob               STRING    NOT NULL,
+    metric            STRING    NOT NULL,
+    as_of             TIMESTAMP NOT NULL,
+    ultimate          DOUBLE,
+    latest            DOUBLE,
+    ibnr              DOUBLE,
+    prior_ibnr        DOUBLE,
+    deterioration_pct DOUBLE,                    -- (ibnr - prior_ibnr) / prior_ibnr
+    direction         STRING,                    -- 'adverse' | 'favorable' | 'flat'
+    CONSTRAINT pc_silver_reserving_pk PRIMARY KEY (insurer, lob, metric, as_of)
 )
 USING DELTA;

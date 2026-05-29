@@ -124,6 +124,103 @@ MIGRATIONS = [
     # Conviction tier (high/medium/low) derived from the leaderboard score.
     # Persisted so it flows to Databricks silver.signal_scores for analytics.
     "ALTER TABLE signal_scores ADD COLUMN tier TEXT",
+    # Option 5: reserve-deterioration boost (1.0 neutral until reserving data).
+    "ALTER TABLE signal_scores ADD COLUMN reserve_boost REAL DEFAULT 1.0",
+    # Option 4: learned relevance score persisted alongside the heuristic
+    # (NULL until a model is trained; ranking stays on the heuristic `score`).
+    "ALTER TABLE signal_scores ADD COLUMN learned_score REAL",
+    # Calibration loop (Databricks Option 1): the user's manual rating of an item,
+    # the input to gold.score_calibration (system score vs. what the user values).
+    # Keyed by (item_id, rated_at) to keep a history of re-ratings.
+    """CREATE TABLE IF NOT EXISTS manual_ratings (
+        item_id     INTEGER NOT NULL,
+        rated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+        user_rating REAL NOT NULL,
+        note        TEXT,
+        PRIMARY KEY (item_id, rated_at)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_manual_ratings_item ON manual_ratings(item_id)",
+    # Semantic layer (Databricks Option 3): one embedding vector per item
+    # (title + summary), cached here + mirrored to pc_bronze.item_embeddings.
+    # Powers `digest related`, semantic dedup, and `digest ask`.
+    """CREATE TABLE IF NOT EXISTS item_embeddings (
+        item_id     INTEGER PRIMARY KEY,
+        model       TEXT NOT NULL,
+        dim         INTEGER NOT NULL,
+        vector_json TEXT NOT NULL,
+        computed_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )""",
+    # Outcome backtest (Databricks Option 1b): did a top-ranked item actually
+    # matter? One row per (item, horizon) — binary `corroborated` + which signals
+    # fired (followon / edgar / regime / manual / stock_move). Distinct table from
+    # the dead macro `signal_outcomes` substrate (z-score shape) kept for the
+    # future "Signal" feature. Feeds gold.outcome_hit_rate + the Option-4 labels.
+    """CREATE TABLE IF NOT EXISTS outcome_backtest (
+        item_id         INTEGER NOT NULL,
+        horizon_days    INTEGER NOT NULL,
+        checked_at      TEXT NOT NULL DEFAULT (datetime('now')),
+        corroborated    INTEGER NOT NULL,
+        signals_json    TEXT NOT NULL DEFAULT '[]',
+        followon_count  INTEGER DEFAULT 0,
+        edgar_filed     INTEGER DEFAULT 0,
+        regime_shifted  INTEGER DEFAULT 0,
+        manual_rating   REAL,
+        stock_move_z    REAL,
+        stock_move_band TEXT,
+        PRIMARY KEY (item_id, horizon_days)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_backtest_horizon ON outcome_backtest(horizon_days)",
+    # Learned scorer (Databricks Option 4): a numpy logistic-regression relevance
+    # model trained on the boost factors + heuristic score to predict
+    # corroboration (the Option 1b labels). The model registry + per-item learned
+    # scores; runs ALONGSIDE the heuristic (which stays authoritative).
+    """CREATE TABLE IF NOT EXISTS learned_models (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        target              TEXT NOT NULL,
+        horizon_days        INTEGER,
+        trained_at          TEXT NOT NULL DEFAULT (datetime('now')),
+        n_samples           INTEGER,
+        auc                 REAL,
+        heuristic_precision REAL,
+        learned_precision   REAL,
+        features_json       TEXT NOT NULL,
+        model_json          TEXT NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS learned_scores (
+        item_id       INTEGER NOT NULL,
+        model_id      INTEGER NOT NULL,
+        learned_score REAL NOT NULL,
+        scored_at     TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (item_id, model_id)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_learned_scores_item ON learned_scores(item_id)",
+    # Reserving quant (Databricks Option 5): loss triangles (cumulative paid/
+    # incurred by accident year × development period) from naic_schedp /
+    # investor_supp, + the chain-ladder estimates derived from them.
+    """CREATE TABLE IF NOT EXISTS loss_triangles (
+        insurer          TEXT NOT NULL,
+        lob              TEXT NOT NULL,
+        metric           TEXT NOT NULL,           -- 'paid' | 'incurred'
+        accident_year    INTEGER NOT NULL,
+        dev_period       INTEGER NOT NULL,        -- development lag, years
+        cumulative_value REAL NOT NULL,
+        as_of            TEXT NOT NULL,
+        PRIMARY KEY (insurer, lob, metric, accident_year, dev_period, as_of)
+    )""",
+    """CREATE TABLE IF NOT EXISTS reserving_signals (
+        insurer          TEXT NOT NULL,
+        lob              TEXT NOT NULL,
+        metric           TEXT NOT NULL,
+        as_of            TEXT NOT NULL,
+        ultimate         REAL,
+        latest           REAL,
+        ibnr             REAL,
+        prior_ibnr       REAL,
+        deterioration_pct REAL,                   -- (ibnr - prior_ibnr)/prior_ibnr
+        direction        TEXT,                    -- 'adverse' | 'favorable' | 'flat'
+        PRIMARY KEY (insurer, lob, metric, as_of)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_reserving_insurer ON reserving_signals(insurer)",
 ]
 
 
@@ -1339,12 +1436,14 @@ def upsert_signal_scores(rows: list[dict]) -> int:
             (item_id, computed_at, score,
              source_mult, regime_mult, topic_relevance, recency,
              llm_judgment, topic_boost, burden_boost,
-             insurer_boost, inflation_boost, regulatory_boost, tplf_boost, tier)
+             insurer_boost, inflation_boost, regulatory_boost, tplf_boost, tier,
+             reserve_boost, learned_score)
         VALUES
             (:item_id, :computed_at, :score,
              :source_mult, :regime_mult, :topic_relevance, :recency,
              :llm_judgment, :topic_boost, :burden_boost,
-             :insurer_boost, :inflation_boost, :regulatory_boost, :tplf_boost, :tier)
+             :insurer_boost, :inflation_boost, :regulatory_boost, :tplf_boost, :tier,
+             :reserve_boost, :learned_score)
     """
     item_ids = [int(r["item_id"]) for r in rows if r.get("item_id") is not None]
     src_map: dict[int, tuple[str, str]] = {}
@@ -1359,6 +1458,10 @@ def upsert_signal_scores(rows: list[dict]) -> int:
                 src_map[int(r["id"])] = (r["source"], r["source_id"])
         n = 0
         for r in rows:
+            # Default the newer optional columns so callers (older scripts/tests)
+            # that omit them still bind cleanly.
+            r.setdefault("reserve_boost", 1.0)
+            r.setdefault("learned_score", None)
             cur = conn.execute(sql, r)
             n += cur.rowcount or 0
     # Silver sink — one write per scored row, with all 10 boost factors.
@@ -1367,6 +1470,79 @@ def upsert_signal_scores(rows: list[dict]) -> int:
         if pair:
             sink.write_score(pair[0], pair[1], r)
     return n
+
+
+def upsert_manual_rating(
+    item_id: int,
+    user_rating: float,
+    note: str | None = None,
+    rated_at: str | None = None,
+) -> None:
+    """Record the user's manual rating (1.0-5.0) of an item — the calibration
+    input behind gold.score_calibration. Keyed by (item_id, rated_at) so
+    re-rating keeps history. Fans out to silver.manual_ratings.
+    """
+    rated_at = rated_at or utcnow_iso()
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO manual_ratings (item_id, rated_at, user_rating, note)
+               VALUES (?, ?, ?, ?)""",
+            (item_id, rated_at, user_rating, note),
+        )
+        row = conn.execute(
+            "SELECT source, source_id FROM items WHERE id = ?", (item_id,)
+        ).fetchone()
+    if row:
+        sink.write_rating(
+            row["source"], row["source_id"],
+            {"user_rating": user_rating, "note": note, "rated_at": rated_at},
+        )
+
+
+def recent_manual_ratings(limit: int = 50) -> list[sqlite3.Row]:
+    """Most recent manual ratings joined to their item title — for review/calibration."""
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT r.item_id, r.user_rating, r.note, r.rated_at,
+                      i.title, i.topic, i.source
+               FROM manual_ratings r
+               JOIN items i ON i.id = r.item_id
+               ORDER BY r.rated_at DESC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+
+
+def calibration_rows(limit: int = 50) -> list[sqlite3.Row]:
+    """Latest manual rating per item joined to its latest computed score — the
+    local mirror of gold.score_calibration (system score vs. what the user
+    valued). system_score is NULL for items that were rated but never scored.
+    """
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            WITH latest_rating AS (
+                SELECT item_id, user_rating, note, rated_at,
+                       ROW_NUMBER() OVER (PARTITION BY item_id ORDER BY rated_at DESC) rn
+                FROM manual_ratings
+            ),
+            latest_score AS (
+                SELECT item_id, score,
+                       ROW_NUMBER() OVER (PARTITION BY item_id ORDER BY computed_at DESC) rn
+                FROM signal_scores
+            )
+            SELECT r.item_id, i.title, i.topic, i.source,
+                   r.user_rating, r.rated_at, r.note,
+                   s.score AS system_score
+            FROM latest_rating r
+            JOIN items i ON i.id = r.item_id
+            LEFT JOIN latest_score s ON s.item_id = r.item_id AND s.rn = 1
+            WHERE r.rn = 1
+            ORDER BY r.rated_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
 
 
 def top_signal_scores(
@@ -1410,6 +1586,447 @@ def top_signal_scores(
     params.append(limit)
     with get_conn() as conn:
         return conn.execute(sql, params).fetchall()
+
+
+def brief_alerts(hours: int = 48) -> dict[str, list[sqlite3.Row]]:
+    """Watch-worthy conditions for the daily brief, in one pass over SQLite —
+    the local analog of the Databricks Alerts (Option 2):
+
+    - high_burden: kept regulatory items flagged burden_intensity='high'
+    - tplf:        kept items tagged litigation_tplf (nuclear-verdict / mass-tort)
+    - fred:        recent FRED items (the ingestor only keeps ±σ anomalies)
+    - degraded:    sources whose most-recent run errored
+    """
+    cutoff = f"-{hours} hours"
+    with get_conn() as conn:
+        high_burden = conn.execute(
+            """SELECT id, title, source, burden_direction FROM items
+               WHERE triage_decision = 'keep' AND burden_intensity = 'high'
+                 AND triaged_at >= datetime('now', ?)
+               ORDER BY triaged_at DESC LIMIT 10""",
+            (cutoff,),
+        ).fetchall()
+        tplf = conn.execute(
+            """SELECT id, title, source FROM items
+               WHERE triage_decision = 'keep' AND sub_tags LIKE '%litigation_tplf%'
+                 AND triaged_at >= datetime('now', ?)
+               ORDER BY triaged_at DESC LIMIT 10""",
+            (cutoff,),
+        ).fetchall()
+        fred = conn.execute(
+            """SELECT id, title FROM items
+               WHERE source = 'fred' AND ingested_at >= datetime('now', ?)
+               ORDER BY ingested_at DESC LIMIT 10""",
+            (cutoff,),
+        ).fetchall()
+        degraded = conn.execute(
+            """SELECT source, status, error, run_at FROM run_log
+               WHERE id IN (SELECT MAX(id) FROM run_log GROUP BY source)
+                 AND status = 'error'
+               ORDER BY run_at DESC""",
+        ).fetchall()
+    return {"high_burden": high_burden, "tplf": tplf, "fred": fred, "degraded": degraded}
+
+
+def items_needing_embedding(limit: int = 500) -> list[sqlite3.Row]:
+    """Kept items with no embedding yet — id + the text to embed (title + summary)."""
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT i.id, i.title, i.summary
+            FROM items i
+            LEFT JOIN item_embeddings e ON e.item_id = i.id
+            WHERE i.triage_decision = 'keep' AND e.item_id IS NULL
+            ORDER BY i.ingested_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+
+def upsert_embedding(item_id: int, model: str, vector: list[float]) -> None:
+    """Persist one item's embedding (replace on re-embed); mirror to bronze."""
+    vector_json = json.dumps([round(float(x), 6) for x in vector])
+    dim = len(vector)
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO item_embeddings (item_id, model, dim, vector_json)
+               VALUES (?, ?, ?, ?)""",
+            (item_id, model, dim, vector_json),
+        )
+        row = conn.execute(
+            "SELECT source, source_id FROM items WHERE id = ?", (item_id,)
+        ).fetchone()
+    if row:
+        sink.write_embedding(row["source"], row["source_id"], {
+            "model": model, "dim": dim, "vector_json": vector_json,
+        })
+
+
+def load_embeddings() -> list[sqlite3.Row]:
+    """All stored embeddings joined to item display fields, for local kNN."""
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT e.item_id, e.vector_json, i.title, i.topic, i.source, i.url
+            FROM item_embeddings e
+            JOIN items i ON i.id = e.item_id
+            ORDER BY e.item_id
+            """
+        ).fetchall()
+
+
+def get_items_text(ids: list[int]) -> dict[int, sqlite3.Row]:
+    """id → row (title/summary/why/topic/source/url) for the retrieved RAG set."""
+    if not ids:
+        return {}
+    placeholders = ",".join("?" * len(ids))
+    with get_conn() as conn:
+        rows = conn.execute(
+            f"""SELECT id, title, summary, why_it_matters, topic, source, url
+                FROM items WHERE id IN ({placeholders})""",
+            ids,
+        ).fetchall()
+    return {r["id"]: r for r in rows}
+
+
+# ── Outcome backtest helpers (Option 1b) ─────────────────────────────────
+
+
+def items_for_backtest(horizon_days: int, limit: int = 500) -> list[sqlite3.Row]:
+    """Scored, kept items whose `horizon_days` window has fully elapsed and that
+    have no outcome_backtest row yet at that horizon."""
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT i.id, i.source, i.source_id, i.title, i.summary, i.topic,
+                   i.ingested_at
+            FROM items i
+            JOIN signal_scores s     ON s.item_id = i.id
+            LEFT JOIN outcome_backtest o ON o.item_id = i.id AND o.horizon_days = ?
+            WHERE i.triage_decision = 'keep'
+              AND i.ingested_at <= datetime('now', ?)
+              AND o.item_id IS NULL
+            GROUP BY i.id
+            ORDER BY i.ingested_at DESC
+            LIMIT ?
+            """,
+            (horizon_days, f"-{horizon_days} days", limit),
+        ).fetchall()
+
+
+def embeddings_with_time() -> list[sqlite3.Row]:
+    """Embeddings + ingested_at + topic — fuel for forward-window similarity."""
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT e.item_id, e.vector_json, i.ingested_at, i.topic
+               FROM item_embeddings e JOIN items i ON i.id = e.item_id"""
+        ).fetchall()
+
+
+def forward_topic_count(topic: str | None, start_iso: str, end_iso: str,
+                        exclude_id: int) -> int:
+    """Kept items with the same topic ingested in (start, end] — followon fallback
+    when embeddings are unavailable."""
+    if not topic:
+        return 0
+    with get_conn() as conn:
+        (n,) = conn.execute(
+            """SELECT COUNT(*) FROM items
+               WHERE triage_decision = 'keep' AND topic = ?
+                 AND datetime(ingested_at) > datetime(?)
+                 AND datetime(ingested_at) <= datetime(?) AND id <> ?""",
+            (topic, start_iso, end_iso, exclude_id),
+        ).fetchone()
+    return n
+
+
+def edgar_filings_in_window(ticker: str, start_iso: str, end_iso: str) -> int:
+    """Count EDGAR filings for `ticker` ingested in (start, end] (source_id = TICKER:accession)."""
+    with get_conn() as conn:
+        (n,) = conn.execute(
+            """SELECT COUNT(*) FROM items
+               WHERE source = 'edgar' AND source_id LIKE ?
+                 AND datetime(ingested_at) > datetime(?)
+                 AND datetime(ingested_at) <= datetime(?)""",
+            (f"{ticker}:%", start_iso, end_iso),
+        ).fetchone()
+    return n
+
+
+def regime_rows_in_window(start_iso: str, end_iso: str) -> list[sqlite3.Row]:
+    """regime_signals rows with as_of in (start, end]."""
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT as_of, market_cycle, cat_load FROM regime_signals
+               WHERE datetime(as_of) > datetime(?) AND datetime(as_of) <= datetime(?)
+               ORDER BY as_of""",
+            (start_iso, end_iso),
+        ).fetchall()
+
+
+def regime_state_at(iso: str) -> sqlite3.Row | None:
+    """Prevailing regime state at `iso` (latest row at/before it)."""
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT market_cycle, cat_load FROM regime_signals
+               WHERE datetime(as_of) <= datetime(?) ORDER BY as_of DESC LIMIT 1""",
+            (iso,),
+        ).fetchone()
+
+
+def manual_rating_for(item_id: int) -> float | None:
+    """Highest manual rating recorded for an item, or None."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT MAX(user_rating) AS r FROM manual_ratings WHERE item_id = ?",
+            (item_id,),
+        ).fetchone()
+    return row["r"] if row and row["r"] is not None else None
+
+
+def upsert_backtest_outcome(item_id: int, horizon_days: int, outcome: dict) -> None:
+    """Persist one (item, horizon) backtest outcome; mirror to silver.outcome_backtest."""
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO outcome_backtest
+                 (item_id, horizon_days, checked_at, corroborated, signals_json,
+                  followon_count, edgar_filed, regime_shifted, manual_rating,
+                  stock_move_z, stock_move_band)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (item_id, horizon_days, utcnow_iso(),
+             1 if outcome["corroborated"] else 0,
+             json.dumps(outcome.get("signals", [])),
+             outcome.get("followon_count", 0),
+             1 if outcome.get("edgar_filed") else 0,
+             1 if outcome.get("regime_shifted") else 0,
+             outcome.get("manual_rating"),
+             outcome.get("stock_move_z"),
+             outcome.get("stock_move_band")),
+        )
+        row = conn.execute(
+            "SELECT source, source_id FROM items WHERE id = ?", (item_id,)
+        ).fetchone()
+    if row:
+        sink.write_outcome(row["source"], row["source_id"], {
+            "horizon_days":    horizon_days,
+            "corroborated":    bool(outcome["corroborated"]),
+            "signals":         outcome.get("signals", []),
+            "followon_count":  outcome.get("followon_count", 0),
+            "edgar_filed":     bool(outcome.get("edgar_filed")),
+            "regime_shifted":  bool(outcome.get("regime_shifted")),
+            "manual_rating":   outcome.get("manual_rating"),
+            "stock_move_z":    outcome.get("stock_move_z"),
+            "stock_move_band": outcome.get("stock_move_band"),
+        })
+
+
+# ── Learned scorer helpers (Option 4) ────────────────────────────────────
+
+# Shared factor projection (latest signal_scores per item) used by both the
+# training-set assembly and inference.
+_LEARN_FACTORS = (
+    "s.score, s.source_mult, s.regime_mult, s.topic_relevance, s.recency, "
+    "s.llm_judgment, s.topic_boost, s.burden_boost, s.insurer_boost, "
+    "s.inflation_boost, s.regulatory_boost, s.tplf_boost"
+)
+
+
+def learning_dataset(horizon_days: int) -> list[sqlite3.Row]:
+    """Labeled rows for training: latest score factors + materiality + the
+    corroboration label, for items with an outcome_backtest row at `horizon`."""
+    with get_conn() as conn:
+        return conn.execute(
+            f"""
+            WITH latest AS (
+                SELECT item_id, MAX(computed_at) AS computed_at
+                FROM signal_scores GROUP BY item_id
+            )
+            SELECT i.id AS item_id, i.materiality_score, {_LEARN_FACTORS},
+                   o.corroborated
+            FROM outcome_backtest o
+            JOIN latest l        ON l.item_id = o.item_id
+            JOIN signal_scores s ON s.item_id = l.item_id AND s.computed_at = l.computed_at
+            JOIN items i         ON i.id = o.item_id
+            WHERE o.horizon_days = ?
+            """,
+            (horizon_days,),
+        ).fetchall()
+
+
+def items_to_learn_score() -> list[sqlite3.Row]:
+    """Latest-scored items to apply the learned model to (factors + materiality)."""
+    with get_conn() as conn:
+        return conn.execute(
+            f"""
+            WITH latest AS (
+                SELECT item_id, MAX(computed_at) AS computed_at
+                FROM signal_scores GROUP BY item_id
+            )
+            SELECT i.id AS item_id, i.source, i.source_id, i.materiality_score,
+                   {_LEARN_FACTORS}
+            FROM latest l
+            JOIN signal_scores s ON s.item_id = l.item_id AND s.computed_at = l.computed_at
+            JOIN items i         ON i.id = l.item_id
+            """
+        ).fetchall()
+
+
+def save_learned_model(meta: dict) -> int:
+    """Persist a trained model + its metrics; returns the new model_id."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO learned_models
+                 (target, horizon_days, n_samples, auc, heuristic_precision,
+                  learned_precision, features_json, model_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (meta["target"], meta.get("horizon_days"), meta.get("n_samples"),
+             meta.get("auc"), meta.get("heuristic_precision"),
+             meta.get("learned_precision"), meta["features_json"], meta["model_json"]),
+        )
+        return cur.lastrowid
+
+
+def latest_learned_model(target: str = "corroborated") -> sqlite3.Row | None:
+    """Most recently trained model for a target, or None."""
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM learned_models WHERE target = ? ORDER BY id DESC LIMIT 1",
+            (target,),
+        ).fetchone()
+
+
+def learned_model_by_id(model_id: int) -> sqlite3.Row | None:
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM learned_models WHERE id = ?", (model_id,)
+        ).fetchone()
+
+
+def upsert_learned_score(
+    item_id: int, model_id: int, score: float,
+    source: str | None = None, source_id: str | None = None,
+) -> None:
+    """Persist one item's learned score; mirror to silver.learned_scores."""
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO learned_scores (item_id, model_id, learned_score, scored_at)
+               VALUES (?, ?, ?, ?)""",
+            (item_id, model_id, score, utcnow_iso()),
+        )
+        if not (source and source_id):
+            row = conn.execute(
+                "SELECT source, source_id FROM items WHERE id = ?", (item_id,)
+            ).fetchone()
+            if row:
+                source, source_id = row["source"], row["source_id"]
+    if source and source_id:
+        sink.write_learned_score(source, source_id, {
+            "model_id": model_id, "learned_score": score,
+        })
+
+
+# ── Reserving quant helpers (Option 5) ───────────────────────────────────
+
+
+def upsert_triangle_cells(cells: list[dict]) -> int:
+    """Bulk-insert loss-triangle cells. Returns rows written."""
+    if not cells:
+        return 0
+    with get_conn() as conn:
+        conn.executemany(
+            """INSERT OR REPLACE INTO loss_triangles
+                 (insurer, lob, metric, accident_year, dev_period, cumulative_value, as_of)
+               VALUES (:insurer, :lob, :metric, :accident_year, :dev_period,
+                       :cumulative_value, :as_of)""",
+            cells,
+        )
+    return len(cells)
+
+
+def load_triangle(insurer: str, lob: str, metric: str,
+                  as_of: str | None = None) -> list[sqlite3.Row]:
+    """Triangle cells for one insurer/LOB/metric (latest as_of if unspecified)."""
+    with get_conn() as conn:
+        if as_of is None:
+            as_of_row = conn.execute(
+                """SELECT MAX(as_of) AS a FROM loss_triangles
+                   WHERE insurer=? AND lob=? AND metric=?""",
+                (insurer, lob, metric),
+            ).fetchone()
+            as_of = as_of_row["a"] if as_of_row else None
+        if as_of is None:
+            return []
+        return conn.execute(
+            """SELECT accident_year, dev_period, cumulative_value FROM loss_triangles
+               WHERE insurer=? AND lob=? AND metric=? AND as_of=?
+               ORDER BY accident_year, dev_period""",
+            (insurer, lob, metric, as_of),
+        ).fetchall()
+
+
+def triangle_keys() -> list[sqlite3.Row]:
+    """Distinct (insurer, lob, metric) with their latest as_of — what to compute."""
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT insurer, lob, metric, MAX(as_of) AS as_of
+               FROM loss_triangles GROUP BY insurer, lob, metric"""
+        ).fetchall()
+
+
+def prior_reserving_ibnr(insurer: str, lob: str, metric: str, before: str) -> float | None:
+    """Most recent prior IBNR estimate (strictly before `before`) for deterioration."""
+    with get_conn() as conn:
+        row = conn.execute(
+            """SELECT ibnr FROM reserving_signals
+               WHERE insurer=? AND lob=? AND metric=? AND as_of < ?
+               ORDER BY as_of DESC LIMIT 1""",
+            (insurer, lob, metric, before),
+        ).fetchone()
+    return row["ibnr"] if row and row["ibnr"] is not None else None
+
+
+def upsert_reserving_signal(sig: dict) -> None:
+    """Persist a chain-ladder estimate; mirror to silver.reserving_signals."""
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO reserving_signals
+                 (insurer, lob, metric, as_of, ultimate, latest, ibnr, prior_ibnr,
+                  deterioration_pct, direction)
+               VALUES (:insurer, :lob, :metric, :as_of, :ultimate, :latest, :ibnr,
+                       :prior_ibnr, :deterioration_pct, :direction)""",
+            sig,
+        )
+    sink.write_reserving(sig)
+
+
+def latest_reserving_signals(limit: int = 50) -> list[sqlite3.Row]:
+    """Most recent reserving estimate per insurer/LOB/metric, for display."""
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            WITH latest AS (
+                SELECT insurer, lob, metric, MAX(as_of) AS as_of
+                FROM reserving_signals GROUP BY insurer, lob, metric
+            )
+            SELECT r.* FROM reserving_signals r
+            JOIN latest l ON r.insurer=l.insurer AND r.lob=l.lob
+                         AND r.metric=l.metric AND r.as_of=l.as_of
+            ORDER BY ABS(COALESCE(r.deterioration_pct, 0)) DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+
+def reserving_severity_map() -> dict[str, float]:
+    """{insurer: worst adverse deterioration_pct} across latest signals — fuel for
+    the (not-yet-wired) reserve_deterioration_boost."""
+    out: dict[str, float] = {}
+    for r in latest_reserving_signals(limit=500):
+        if r["direction"] == "adverse" and r["deterioration_pct"]:
+            out[r["insurer"]] = max(out.get(r["insurer"], 0.0), r["deterioration_pct"])
+    return out
 
 
 def signal_quality_by_source(since_iso: str | None = None) -> list[sqlite3.Row]:
