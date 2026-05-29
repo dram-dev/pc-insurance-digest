@@ -201,3 +201,21 @@ JOIN pc_silver.triage_verdicts t  USING (item_hash)
 JOIN pc_bronze.ingested_items b   USING (item_hash)
 LEFT JOIN pc_gold.latest_scores s USING (item_hash)
 GROUP BY o.horizon_days, t.topic, b.source, s.tier;
+
+-- ── Option 5: reserving ───────────────────────────────────────────────────
+
+-- Latest chain-ladder estimate per insurer/LOB/metric, ranked by how adverse
+-- the reserve development is. Feeds the reserving digest callout + (once wired)
+-- the reserve_deterioration_boost.
+CREATE OR REPLACE VIEW pc_gold.reserving_signals AS
+WITH latest AS (
+    SELECT insurer, lob, metric, MAX(as_of) AS as_of
+    FROM pc_silver.reserving_signals GROUP BY insurer, lob, metric
+)
+SELECT r.insurer, r.lob, r.metric, r.as_of,
+       r.ultimate, r.latest, r.ibnr, r.prior_ibnr,
+       r.deterioration_pct, r.direction
+FROM pc_silver.reserving_signals r
+JOIN latest l ON r.insurer = l.insurer AND r.lob = l.lob
+             AND r.metric = l.metric AND r.as_of = l.as_of
+ORDER BY ABS(COALESCE(r.deterioration_pct, 0)) DESC;

@@ -189,6 +189,33 @@ MIGRATIONS = [
         PRIMARY KEY (item_id, model_id)
     )""",
     "CREATE INDEX IF NOT EXISTS idx_learned_scores_item ON learned_scores(item_id)",
+    # Reserving quant (Databricks Option 5): loss triangles (cumulative paid/
+    # incurred by accident year × development period) from naic_schedp /
+    # investor_supp, + the chain-ladder estimates derived from them.
+    """CREATE TABLE IF NOT EXISTS loss_triangles (
+        insurer          TEXT NOT NULL,
+        lob              TEXT NOT NULL,
+        metric           TEXT NOT NULL,           -- 'paid' | 'incurred'
+        accident_year    INTEGER NOT NULL,
+        dev_period       INTEGER NOT NULL,        -- development lag, years
+        cumulative_value REAL NOT NULL,
+        as_of            TEXT NOT NULL,
+        PRIMARY KEY (insurer, lob, metric, accident_year, dev_period, as_of)
+    )""",
+    """CREATE TABLE IF NOT EXISTS reserving_signals (
+        insurer          TEXT NOT NULL,
+        lob              TEXT NOT NULL,
+        metric           TEXT NOT NULL,
+        as_of            TEXT NOT NULL,
+        ultimate         REAL,
+        latest           REAL,
+        ibnr             REAL,
+        prior_ibnr       REAL,
+        deterioration_pct REAL,                   -- (ibnr - prior_ibnr)/prior_ibnr
+        direction        TEXT,                    -- 'adverse' | 'favorable' | 'flat'
+        PRIMARY KEY (insurer, lob, metric, as_of)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_reserving_insurer ON reserving_signals(insurer)",
 ]
 
 
@@ -1886,6 +1913,109 @@ def upsert_learned_score(
         sink.write_learned_score(source, source_id, {
             "model_id": model_id, "learned_score": score,
         })
+
+
+# ── Reserving quant helpers (Option 5) ───────────────────────────────────
+
+
+def upsert_triangle_cells(cells: list[dict]) -> int:
+    """Bulk-insert loss-triangle cells. Returns rows written."""
+    if not cells:
+        return 0
+    with get_conn() as conn:
+        conn.executemany(
+            """INSERT OR REPLACE INTO loss_triangles
+                 (insurer, lob, metric, accident_year, dev_period, cumulative_value, as_of)
+               VALUES (:insurer, :lob, :metric, :accident_year, :dev_period,
+                       :cumulative_value, :as_of)""",
+            cells,
+        )
+    return len(cells)
+
+
+def load_triangle(insurer: str, lob: str, metric: str,
+                  as_of: str | None = None) -> list[sqlite3.Row]:
+    """Triangle cells for one insurer/LOB/metric (latest as_of if unspecified)."""
+    with get_conn() as conn:
+        if as_of is None:
+            as_of_row = conn.execute(
+                """SELECT MAX(as_of) AS a FROM loss_triangles
+                   WHERE insurer=? AND lob=? AND metric=?""",
+                (insurer, lob, metric),
+            ).fetchone()
+            as_of = as_of_row["a"] if as_of_row else None
+        if as_of is None:
+            return []
+        return conn.execute(
+            """SELECT accident_year, dev_period, cumulative_value FROM loss_triangles
+               WHERE insurer=? AND lob=? AND metric=? AND as_of=?
+               ORDER BY accident_year, dev_period""",
+            (insurer, lob, metric, as_of),
+        ).fetchall()
+
+
+def triangle_keys() -> list[sqlite3.Row]:
+    """Distinct (insurer, lob, metric) with their latest as_of — what to compute."""
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT insurer, lob, metric, MAX(as_of) AS as_of
+               FROM loss_triangles GROUP BY insurer, lob, metric"""
+        ).fetchall()
+
+
+def prior_reserving_ibnr(insurer: str, lob: str, metric: str, before: str) -> float | None:
+    """Most recent prior IBNR estimate (strictly before `before`) for deterioration."""
+    with get_conn() as conn:
+        row = conn.execute(
+            """SELECT ibnr FROM reserving_signals
+               WHERE insurer=? AND lob=? AND metric=? AND as_of < ?
+               ORDER BY as_of DESC LIMIT 1""",
+            (insurer, lob, metric, before),
+        ).fetchone()
+    return row["ibnr"] if row and row["ibnr"] is not None else None
+
+
+def upsert_reserving_signal(sig: dict) -> None:
+    """Persist a chain-ladder estimate; mirror to silver.reserving_signals."""
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO reserving_signals
+                 (insurer, lob, metric, as_of, ultimate, latest, ibnr, prior_ibnr,
+                  deterioration_pct, direction)
+               VALUES (:insurer, :lob, :metric, :as_of, :ultimate, :latest, :ibnr,
+                       :prior_ibnr, :deterioration_pct, :direction)""",
+            sig,
+        )
+    sink.write_reserving(sig)
+
+
+def latest_reserving_signals(limit: int = 50) -> list[sqlite3.Row]:
+    """Most recent reserving estimate per insurer/LOB/metric, for display."""
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            WITH latest AS (
+                SELECT insurer, lob, metric, MAX(as_of) AS as_of
+                FROM reserving_signals GROUP BY insurer, lob, metric
+            )
+            SELECT r.* FROM reserving_signals r
+            JOIN latest l ON r.insurer=l.insurer AND r.lob=l.lob
+                         AND r.metric=l.metric AND r.as_of=l.as_of
+            ORDER BY ABS(COALESCE(r.deterioration_pct, 0)) DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+
+def reserving_severity_map() -> dict[str, float]:
+    """{insurer: worst adverse deterioration_pct} across latest signals — fuel for
+    the (not-yet-wired) reserve_deterioration_boost."""
+    out: dict[str, float] = {}
+    for r in latest_reserving_signals(limit=500):
+        if r["direction"] == "adverse" and r["deterioration_pct"]:
+            out[r["insurer"]] = max(out.get(r["insurer"], 0.0), r["deterioration_pct"])
+    return out
 
 
 def signal_quality_by_source(since_iso: str | None = None) -> list[sqlite3.Row]:

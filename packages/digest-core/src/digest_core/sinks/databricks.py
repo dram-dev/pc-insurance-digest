@@ -15,6 +15,7 @@ Architecture (originated in pc-insurance-digest; lifted to core 2026-05-25):
   silver.manual_ratings   ← write_rating()          user calibration ratings
   silver.outcome_backtest ← write_outcome()         did a ranked item corroborate?
   silver.learned_scores   ← write_learned_score()   learned relevance (Option 4)
+  silver.reserving_signals ← write_reserving()       chain-ladder IBNR (Option 5)
 
 Join key: `item_hash = sha256(source || '::' || source_id)`, derived here at
 write time. SQLite stays untouched.
@@ -57,6 +58,7 @@ _PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
     "silver.manual_ratings":     ("item_hash", "rated_at"),
     "silver.outcome_backtest":   ("item_hash", "horizon_days"),
     "silver.learned_scores":     ("item_hash", "model_id"),
+    "silver.reserving_signals":  ("insurer", "lob", "metric", "as_of"),
 }
 
 # Max rows per MERGE statement. 50 keeps total parameter count well under
@@ -281,6 +283,25 @@ class DatabricksSink:
             "note":        rating.get("note"),
         }
         self._insert("silver.manual_ratings", [row])
+
+    def write_reserving(self, sig: dict[str, Any]) -> None:
+        """Chain-ladder reserving estimate (Option 5) → silver.reserving_signals.
+        Insurer/LOB-keyed (not item_hash) — a derived actuarial fact, not a news item."""
+        if not self._enabled:
+            return
+        row = {
+            "insurer":           sig.get("insurer"),
+            "lob":               sig.get("lob"),
+            "metric":            sig.get("metric"),
+            "as_of":             _iso(sig.get("as_of")) or _iso(datetime.utcnow()),
+            "ultimate":          sig.get("ultimate"),
+            "latest":            sig.get("latest"),
+            "ibnr":              sig.get("ibnr"),
+            "prior_ibnr":        sig.get("prior_ibnr"),
+            "deterioration_pct": sig.get("deterioration_pct"),
+            "direction":         sig.get("direction"),
+        }
+        self._insert("silver.reserving_signals", [row])
 
     def write_learned_score(self, source: str, source_id: str, ls: dict[str, Any]) -> None:
         """Per-item learned relevance score (Option 4) → silver.learned_scores,

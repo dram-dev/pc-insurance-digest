@@ -108,3 +108,21 @@ CREATE TABLE IF NOT EXISTS pc_silver.learned_scores (
     CONSTRAINT pc_silver_learned_pk PRIMARY KEY (item_hash, model_id)
 )
 USING DELTA;
+
+-- Reserving estimates (Option 5): chain-ladder ultimate / IBNR per insurer /
+-- LOB / metric, with deterioration vs. the prior estimate. Insurer-keyed (a
+-- derived actuarial fact, not a news item).
+CREATE TABLE IF NOT EXISTS pc_silver.reserving_signals (
+    insurer           STRING    NOT NULL,
+    lob               STRING    NOT NULL,
+    metric            STRING    NOT NULL,
+    as_of             TIMESTAMP NOT NULL,
+    ultimate          DOUBLE,
+    latest            DOUBLE,
+    ibnr              DOUBLE,
+    prior_ibnr        DOUBLE,
+    deterioration_pct DOUBLE,                    -- (ibnr - prior_ibnr) / prior_ibnr
+    direction         STRING,                    -- 'adverse' | 'favorable' | 'flat'
+    CONSTRAINT pc_silver_reserving_pk PRIMARY KEY (insurer, lob, metric, as_of)
+)
+USING DELTA;

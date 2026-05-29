@@ -65,6 +65,22 @@ CREATE TABLE IF NOT EXISTS pc_bronze.fred_observations (
 USING DELTA
 PARTITIONED BY (series_id);
 
+-- Loss triangles (Option 5): cumulative paid/incurred by accident year ×
+-- development period, from naic_schedp / investor_supp. The chain-ladder
+-- reserving estimates derived from these land in pc_silver.reserving_signals.
+CREATE TABLE IF NOT EXISTS pc_bronze.loss_triangles (
+    insurer          STRING NOT NULL,
+    lob              STRING NOT NULL,           -- line of business
+    metric           STRING NOT NULL,           -- 'paid' | 'incurred'
+    accident_year    INT    NOT NULL,
+    dev_period       INT    NOT NULL,
+    cumulative_value DOUBLE NOT NULL,
+    as_of            TIMESTAMP NOT NULL,
+    CONSTRAINT pc_bronze_triangles_pk PRIMARY KEY (insurer, lob, metric, accident_year, dev_period, as_of)
+)
+USING DELTA
+PARTITIONED BY (insurer);
+
 -- Regime detector outputs over time. PC Digest is two-axis: market_cycle ×
 -- cat_load. Mirrors the SQLite regime_signals table. `source` defaults to
 -- 'detector' in the application layer (db.upsert_regime_signal), not via

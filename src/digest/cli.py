@@ -334,6 +334,44 @@ def learn(horizon: int) -> None:
 
 
 @main.command()
+def reserving() -> None:
+    """Chain-ladder reserving over stored loss triangles (Option 5).
+
+    Computes ultimate / IBNR per insurer/LOB from loss_triangles (populated by
+    the naic_schedp / investor_supp ingestors once validated on the Mac mini),
+    flags adverse development vs. the prior estimate, and shows the result.
+    """
+    from digest import reserving as reserving_mod
+
+    db.init_db()
+    console.rule("[bold cyan]reserving")
+    counts = reserving_mod.run_reserving()
+    if counts["triangles"] == 0:
+        console.print("[yellow]No loss triangles yet.[/yellow] "
+                      "Enable naic_schedp / investor_supp ingestors on the Mac mini.")
+        return
+    console.print(f"[green]✓[/green] computed {counts['computed']}/{counts['triangles']} estimates")
+    rows = db.latest_reserving_signals(limit=20)
+    if rows:
+        table = Table(title="Reserving — IBNR & development")
+        table.add_column("Insurer", no_wrap=True)
+        table.add_column("LOB", no_wrap=True)
+        table.add_column("Metric", no_wrap=True, style="dim")
+        table.add_column("IBNR", justify="right")
+        table.add_column("Δ vs prior", justify="right")
+        for r in rows:
+            det = r["deterioration_pct"]
+            if det is None:
+                delta = "[dim]—[/dim]"
+            else:
+                colour = "red" if r["direction"] == "adverse" else "green"
+                delta = f"[{colour}]{det:+.1%} {r['direction']}[/{colour}]"
+            table.add_row(r["insurer"], r["lob"], r["metric"],
+                          f"{r['ibnr']:,.0f}" if r["ibnr"] is not None else "—", delta)
+        console.print(table)
+
+
+@main.command()
 def stats() -> None:
     """Item counts by source plus triage + summarizer status."""
     db.init_db()
