@@ -30,6 +30,7 @@ class BackendConfig:
     """Endpoint/model config a domain injects into the backends."""
 
     timeout_sec: int = 120
+    max_tokens: int = 800                               # output cap (API/MLX/Ollama)
     claude_model: str = ""                              # claude_cli_pro --model
     anthropic_api_key: str = ""
     haiku_model: str = "claude-haiku-4-5-20251001"
@@ -92,7 +93,7 @@ def call_haiku_api(system_prompt: str, user_prompt: str, cfg: BackendConfig) -> 
         },
         json={
             "model": cfg.haiku_model,
-            "max_tokens": 800,
+            "max_tokens": cfg.max_tokens,
             "system": [{
                 "type": "text",
                 "text": system_prompt,
@@ -144,7 +145,7 @@ def call_local_qwen(system_prompt: str, user_prompt: str, cfg: BackendConfig) ->
             "prompt": user_prompt,
             "stream": False,
             "format": "json",
-            "options": {"temperature": 0.2, "num_predict": 800, "num_ctx": 8192},
+            "options": {"temperature": 0.2, "num_predict": cfg.max_tokens, "num_ctx": 8192},
         },
         timeout=cfg.timeout_sec,
     )
@@ -171,7 +172,7 @@ def call_mlx_local(system_prompt: str, user_prompt: str, cfg: BackendConfig) -> 
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                "max_tokens": 800,
+                "max_tokens": cfg.max_tokens,
                 "temperature": 0.2,
                 "chat_template_kwargs": {"enable_thinking": False},
             },
@@ -201,3 +202,16 @@ BACKENDS = {
     "local_qwen":         call_local_qwen,
     "mlx_local":          call_mlx_local,
 }
+
+
+def register_backend(name: str, fn) -> None:
+    """Add (or override) a backend so a domain can plug in a new transport
+    without editing core. `fn` must take ``(system_prompt, user_prompt, cfg)``
+    and return the raw model-output string.
+    """
+    BACKENDS[name] = fn
+
+
+def get_backend(name: str):
+    """Look up a backend callable by name, or None if unregistered."""
+    return BACKENDS.get(name)

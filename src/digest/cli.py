@@ -11,7 +11,7 @@ from rich.table import Table
 
 from digest import db
 from digest.config import settings
-from digest_core.cli.base import run_ingest
+from digest_core.cli.base import discover_ingestors, run_ingest
 
 console = Console()
 
@@ -25,29 +25,12 @@ def _setup_logging() -> None:
     )
 
 
-INGESTORS = {
-    "rss":      "digest.ingest.rss:RSSIngestor",
-    "edgar":    "digest.ingest.edgar:EdgarIngestor",
-    "reddit":   "digest.ingest.reddit:RedditIngestor",
-    "substack": "digest.ingest.substack:SubstackIngestor",
-    "hn":       "digest.ingest.hackernews:HNIngestor",
-    # Wave 2 — direct government hazard feeds
-    "nhc":      "digest.ingest.nhc:NHCIngestor",
-    "usgs":     "digest.ingest.usgs:USGSIngestor",
-    "spc":      "digest.ingest.spc:SPCIngestor",
-    "nifc":     "digest.ingest.nifc:NIFCIngestor",
-    # Wave 2.x — quantitative cost-driver series (live)
-    "fred":     "digest.ingest.fred:FredIngestor",
-    # Wave 3 — implemented (courtlistener needs token; collision/state_doi/serff need selector validation)
-    "courtlistener":     "digest.ingest.courtlistener:CourtListenerIngestor",
-    "collision":         "digest.ingest.collision_data:CollisionDataIngestor",
-    "state_doi":         "digest.ingest.state_doi:StateDOIIngestor",
-    "industry_research": "digest.ingest.industry_research:IndustryResearchIngestor",
-    "serff":             "digest.ingest.serff:SerffIngestor",
-    # Wave 3 Phase 3 — actuarial datasets (PDF parsing)
-    "investor_supp":     "digest.ingest.investor_supp:InvestorSuppIngestor",
-    "naic_schedp":       "digest.ingest.naic_schedp:NAICSchedulePIngestor",
-}
+# Sources are no longer hand-listed: every IngestorBase subclass under
+# digest.ingest self-registers (see digest_core.ingest.registry). Drop a new
+# ingestor file in that package and it appears here automatically — and in
+# `digest sources`. A source whose module fails to import (missing optional dep)
+# is reported by `digest sources` rather than silently vanishing.
+INGESTORS = discover_ingestors("digest.ingest")
 
 
 @click.group()
