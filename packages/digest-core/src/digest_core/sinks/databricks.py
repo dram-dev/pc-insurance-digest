@@ -11,6 +11,7 @@ Architecture (originated in pc-insurance-digest; lifted to core 2026-05-25):
   silver.triage_verdicts  ← write_triage()          verdict + topic + burden
   silver.signal_scores    ← write_score()           all boost factors
   silver.summaries        ← write_summary()         materiality + summary text
+  silver.manual_ratings   ← write_rating()          user calibration ratings
 
 Join key: `item_hash = sha256(source || '::' || source_id)`, derived here at
 write time. SQLite stays untouched.
@@ -235,6 +236,19 @@ class DatabricksSink:
             "duration_ms":    summary.get("duration_ms"),
         }
         self._insert("silver.summaries", [row])
+
+    def write_rating(self, source: str, source_id: str, rating: dict[str, Any]) -> None:
+        """User's manual rating of an item — the calibration input that powers
+        gold.score_calibration (system score vs. what the user thinks it's worth)."""
+        if not self._enabled:
+            return
+        row = {
+            "item_hash":   item_hash(source, source_id),
+            "rated_at":    _iso(rating.get("rated_at")) or _iso(datetime.utcnow()),
+            "user_rating": rating.get("user_rating"),
+            "note":        rating.get("note"),
+        }
+        self._insert("silver.manual_ratings", [row])
 
     # ── Internals ─────────────────────────────────────────────────────────
 

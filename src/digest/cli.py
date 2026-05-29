@@ -67,6 +67,32 @@ def sources() -> None:
 
 
 @main.command()
+@click.argument("item_id", type=int)
+@click.argument("rating", type=click.FloatRange(1.0, 5.0))
+@click.option("--note", default=None, help="Optional context for the rating")
+def rate(item_id: int, rating: float, note: str | None) -> None:
+    """Rate an item 1-5 — the calibration input behind score_calibration.
+
+    Records what you think an item was worth so the lakehouse can compare it to
+    the system's computed score (gold.score_calibration). Example:
+    `digest rate 1423 5 --note "exactly the FAIR Plan signal I want surfaced"`.
+    """
+    db.init_db()
+    with db.get_conn() as conn:
+        item = conn.execute(
+            "SELECT id, title, topic FROM items WHERE id = ?", (item_id,)
+        ).fetchone()
+    if item is None:
+        console.print(f"[red]✗[/red] no item with id {item_id}")
+        raise SystemExit(1)
+    db.upsert_manual_rating(item_id, rating, note)
+    console.print(
+        f"[green]✓[/green] rated #{item_id} [bold]{rating:.1f}[/bold] "
+        f"([dim]{item['topic'] or '?'}[/dim]) — {item['title'][:70]}"
+    )
+
+
+@main.command()
 def stats() -> None:
     """Item counts by source plus triage + summarizer status."""
     db.init_db()

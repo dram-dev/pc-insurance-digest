@@ -124,6 +124,17 @@ MIGRATIONS = [
     # Conviction tier (high/medium/low) derived from the leaderboard score.
     # Persisted so it flows to Databricks silver.signal_scores for analytics.
     "ALTER TABLE signal_scores ADD COLUMN tier TEXT",
+    # Calibration loop (Databricks Option 1): the user's manual rating of an item,
+    # the input to gold.score_calibration (system score vs. what the user values).
+    # Keyed by (item_id, rated_at) to keep a history of re-ratings.
+    """CREATE TABLE IF NOT EXISTS manual_ratings (
+        item_id     INTEGER NOT NULL,
+        rated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+        user_rating REAL NOT NULL,
+        note        TEXT,
+        PRIMARY KEY (item_id, rated_at)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_manual_ratings_item ON manual_ratings(item_id)",
 ]
 
 
@@ -1367,6 +1378,47 @@ def upsert_signal_scores(rows: list[dict]) -> int:
         if pair:
             sink.write_score(pair[0], pair[1], r)
     return n
+
+
+def upsert_manual_rating(
+    item_id: int,
+    user_rating: float,
+    note: str | None = None,
+    rated_at: str | None = None,
+) -> None:
+    """Record the user's manual rating (1.0-5.0) of an item — the calibration
+    input behind gold.score_calibration. Keyed by (item_id, rated_at) so
+    re-rating keeps history. Fans out to silver.manual_ratings.
+    """
+    rated_at = rated_at or utcnow_iso()
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO manual_ratings (item_id, rated_at, user_rating, note)
+               VALUES (?, ?, ?, ?)""",
+            (item_id, rated_at, user_rating, note),
+        )
+        row = conn.execute(
+            "SELECT source, source_id FROM items WHERE id = ?", (item_id,)
+        ).fetchone()
+    if row:
+        sink.write_rating(
+            row["source"], row["source_id"],
+            {"user_rating": user_rating, "note": note, "rated_at": rated_at},
+        )
+
+
+def recent_manual_ratings(limit: int = 50) -> list[sqlite3.Row]:
+    """Most recent manual ratings joined to their item title — for review/calibration."""
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT r.item_id, r.user_rating, r.note, r.rated_at,
+                      i.title, i.topic, i.source
+               FROM manual_ratings r
+               JOIN items i ON i.id = r.item_id
+               ORDER BY r.rated_at DESC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
 
 
 def top_signal_scores(
