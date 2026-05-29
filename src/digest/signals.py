@@ -442,6 +442,20 @@ def _insurer_priority_boost(
     return table.get(ticker, 1.0)
 
 
+def _reserve_deterioration_boost(blob: str, reserve_map: dict[str, float]) -> float:
+    """Boost for an item naming an insurer with adverse reserve development.
+
+    Delegates to digest.reserving (lazy import keeps signals decoupled from the
+    reserving/outcomes modules at load time). 1.0 when reserve_map is empty —
+    i.e. until `digest reserving` has produced data — so the formula is
+    behaviour-preserving today.
+    """
+    if not reserve_map:
+        return 1.0
+    from digest.reserving import reserve_deterioration_boost
+    return reserve_deterioration_boost(blob, reserve_map)
+
+
 # ── Recency ────────────────────────────────────────────────────────────
 
 
@@ -502,6 +516,8 @@ class Score:
     inflation_boost: float
     regulatory_boost: float
     tplf_boost: float
+    reserve_boost: float = 1.0
+    learned_score: float | None = None
 
     def as_row(self, computed_at: str) -> dict[str, Any]:
         return {
@@ -520,6 +536,8 @@ class Score:
             "inflation_boost":  self.inflation_boost,
             "regulatory_boost": self.regulatory_boost,
             "tplf_boost":       self.tplf_boost,
+            "reserve_boost":    self.reserve_boost,
+            "learned_score":    self.learned_score,
         }
 
 
@@ -527,6 +545,7 @@ def score_item(
     row: Any,
     regime: RegimeSignal,
     weights: dict[str, dict[str, float]] | None = None,
+    reserve_map: dict[str, float] | None = None,
 ) -> Score:
     """Compute the leaderboard score for one item row.
 
@@ -573,12 +592,15 @@ def score_item(
     inflation_boost  = _inflation_keyword_boost(blob,      kw.get("inflation",  1.2))
     regulatory_boost = _regulatory_action_boost(blob,      kw.get("regulatory", 1.2))
     tplf_boost       = _litigation_tplf_boost(row, blob,   kw.get("tplf",       1.3))
+    # Option 5: adverse reserve development on a named insurer. Neutral (1.0)
+    # until reserving_signals has data (reserve_map empty → no-op).
+    reserve_boost    = _reserve_deterioration_boost(blob, reserve_map or {})
 
     score = (
         src_mult * rg_mult * topic_rel * rec
         * llm_j * topic_boost * burden_boost
         * insurer_boost * inflation_boost * regulatory_boost
-        * tplf_boost
+        * tplf_boost * reserve_boost
     )
     st = weights["signal_tiers"]
     tier = tier_for_score(score, st.get("high"), st.get("medium"))
@@ -597,6 +619,7 @@ def score_item(
         inflation_boost=round(inflation_boost, 3),
         regulatory_boost=round(regulatory_boost, 3),
         tplf_boost=round(tplf_boost, 3),
+        reserve_boost=round(reserve_boost, 3),
     )
 
 
@@ -615,16 +638,35 @@ def run_signals() -> dict[str, int]:
     # once even when scoring hundreds of items. Edits to Scoring Weights.md
     # land on the next run, not mid-batch.
     weights = _load_scoring_weights()
+    reserve_map = db.reserving_severity_map()      # Option 5 (empty until data)
     computed_at = datetime.now(timezone.utc).isoformat()
+
+    # Option 4: if a learned model exists, attach its score alongside the
+    # heuristic (ranking stays on the heuristic). NULL when no model trained yet.
+    model = None
+    row_to_features = None
+    meta = db.latest_learned_model()
+    if meta:
+        from digest.learn import LogisticModel, row_to_features as _rtf
+        model = LogisticModel.from_json(meta["model_json"])
+        row_to_features = _rtf
+
     scored: list[dict[str, Any]] = []
     for row in rows:
-        s = score_item(row, regime, weights=weights)
-        scored.append(s.as_row(computed_at))
+        s = score_item(row, regime, weights=weights, reserve_map=reserve_map)
+        d = s.as_row(computed_at)
+        if model is not None:
+            feat = dict(d)
+            feat["materiality_score"] = (
+                row["materiality_score"] if "materiality_score" in row.keys() else None
+            )
+            d["learned_score"] = round(float(model.predict_proba([row_to_features(feat)])[0]), 4)
+        scored.append(d)
 
     inserted = db.upsert_signal_scores(scored)
     logger.info(
-        "signals: scored %d items at regime ×%.2f (inserted=%d)",
-        len(scored), regime.multiplier, inserted,
+        "signals: scored %d items at regime ×%.2f (inserted=%d, learned=%s)",
+        len(scored), regime.multiplier, inserted, "on" if model else "off",
     )
     return {"scored": len(scored)}
 

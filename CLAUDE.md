@@ -216,7 +216,19 @@ across the pipeline:
   ```
 
   Final formula:
-  `score = source × regime × topic_relevance × recency × llm_judgment × topic_priority_boost × burden_intensity_boost × insurer_priority_boost × inflation_keyword_boost × regulatory_action_boost × litigation_tplf_boost`.
+  `score = source × regime × topic_relevance × recency × llm_judgment × topic_priority_boost × burden_intensity_boost × insurer_priority_boost × inflation_keyword_boost × regulatory_action_boost × litigation_tplf_boost × reserve_deterioration_boost`.
+
+  `reserve_deterioration_boost` (Databricks Option 5) fires when an item names an
+  insurer with adverse reserve development in `reserving_signals`:
+  `min(1 + adverse_IBNR_deterioration, 1.3)`. **Neutral (1.0) until `digest
+  reserving` produces data** (reads `db.reserving_severity_map()`), so the
+  formula is behaviour-preserving until loss-triangle ingestion is live.
+
+  Separately, **`learned_score`** (Databricks Option 4) is persisted on each
+  `signal_scores` row alongside the heuristic `score` whenever a trained model
+  exists (`digest learn`); it does **not** affect ranking — the heuristic stays
+  authoritative — it rides along for the A/B (`gold.score_calibration` /
+  `outcome_hit_rate`). NULL until a model is trained.
 
   **User-editable weights** (Wave 3 Phase 4, shipped 2026-05-25): the
   boost VALUES above are now defaults — the user can override any of

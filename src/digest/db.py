@@ -124,6 +124,11 @@ MIGRATIONS = [
     # Conviction tier (high/medium/low) derived from the leaderboard score.
     # Persisted so it flows to Databricks silver.signal_scores for analytics.
     "ALTER TABLE signal_scores ADD COLUMN tier TEXT",
+    # Option 5: reserve-deterioration boost (1.0 neutral until reserving data).
+    "ALTER TABLE signal_scores ADD COLUMN reserve_boost REAL DEFAULT 1.0",
+    # Option 4: learned relevance score persisted alongside the heuristic
+    # (NULL until a model is trained; ranking stays on the heuristic `score`).
+    "ALTER TABLE signal_scores ADD COLUMN learned_score REAL",
     # Calibration loop (Databricks Option 1): the user's manual rating of an item,
     # the input to gold.score_calibration (system score vs. what the user values).
     # Keyed by (item_id, rated_at) to keep a history of re-ratings.
@@ -1431,12 +1436,14 @@ def upsert_signal_scores(rows: list[dict]) -> int:
             (item_id, computed_at, score,
              source_mult, regime_mult, topic_relevance, recency,
              llm_judgment, topic_boost, burden_boost,
-             insurer_boost, inflation_boost, regulatory_boost, tplf_boost, tier)
+             insurer_boost, inflation_boost, regulatory_boost, tplf_boost, tier,
+             reserve_boost, learned_score)
         VALUES
             (:item_id, :computed_at, :score,
              :source_mult, :regime_mult, :topic_relevance, :recency,
              :llm_judgment, :topic_boost, :burden_boost,
-             :insurer_boost, :inflation_boost, :regulatory_boost, :tplf_boost, :tier)
+             :insurer_boost, :inflation_boost, :regulatory_boost, :tplf_boost, :tier,
+             :reserve_boost, :learned_score)
     """
     item_ids = [int(r["item_id"]) for r in rows if r.get("item_id") is not None]
     src_map: dict[int, tuple[str, str]] = {}
@@ -1451,6 +1458,10 @@ def upsert_signal_scores(rows: list[dict]) -> int:
                 src_map[int(r["id"])] = (r["source"], r["source_id"])
         n = 0
         for r in rows:
+            # Default the newer optional columns so callers (older scripts/tests)
+            # that omit them still bind cleanly.
+            r.setdefault("reserve_boost", 1.0)
+            r.setdefault("learned_score", None)
             cur = conn.execute(sql, r)
             n += cur.rowcount or 0
     # Silver sink — one write per scored row, with all 10 boost factors.

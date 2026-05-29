@@ -44,6 +44,8 @@ CREATE TABLE IF NOT EXISTS pc_silver.signal_scores (
     regulatory_boost  DOUBLE,
     tplf_boost        DOUBLE,                      -- Wave 3 Phase 2: TPLF / mass-tort sub_tag boost
     tier              STRING,                       -- conviction tier (high/medium/low) from the score
+    reserve_boost     DOUBLE,                       -- Option 5: adverse reserve development on a named insurer
+    learned_score     DOUBLE,                       -- Option 4: learned relevance, alongside the heuristic
     CONSTRAINT pc_silver_score_pk PRIMARY KEY (item_hash, computed_at)
 )
 USING DELTA;

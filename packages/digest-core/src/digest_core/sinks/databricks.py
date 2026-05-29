@@ -235,6 +235,8 @@ class DatabricksSink:
             "regulatory_boost": score_row.get("regulatory_boost"),
             "tplf_boost":       score_row.get("tplf_boost"),
             "tier":             score_row.get("tier"),
+            "reserve_boost":    score_row.get("reserve_boost"),
+            "learned_score":    score_row.get("learned_score"),
         }
         self._insert("silver.signal_scores", [row])
 
