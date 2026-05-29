@@ -99,6 +99,71 @@ CREATE TABLE IF NOT EXISTS pc_bronze.regime_signals (
 )
 USING DELTA;
 
+-- ── Wave 4 — Insurance EKG leads (vital-sign feeds) ──────────────────────
+-- These three bronze tables mirror the fred_observations shape (raw value +
+-- mom/yoy + trailing-z + anomaly flag + fetch timestamp). Ingestors are future
+-- waves; the DatabricksSink already has a no-op write_* per table. See
+-- docs/WAVE4_EKG_PLAN.md for the full lead-by-lead spec.
+
+-- Lead 1 — Reinsurance Pulse. GuyCarp rate-on-line indices + Artemis/Lane ILS
+-- spreads. Hardens regime.market_cycle (hard/soft cycle position). One row per
+-- index per observation; ai_forecast() projects the next renewal's direction.
+CREATE TABLE IF NOT EXISTS pc_bronze.reinsurance_pricing (
+    index_name        STRING NOT NULL,            -- 'guycarp_us_property_cat_rol' | 'artemis_ils_spread' | …
+    observation_date  DATE   NOT NULL,
+    value             DOUBLE,                       -- ROL index level or spread (bps)
+    mom_pct_change    DOUBLE,
+    yoy_pct_change    DOUBLE,
+    zscore_12m        DOUBLE,
+    is_anomaly        BOOLEAN,
+    segment           STRING,                       -- 'us_property_cat' | 'retro' | 'casualty' | …
+    source            STRING,                       -- 'guycarp' | 'artemis' | 'lane'
+    fetched_at        TIMESTAMP NOT NULL,
+    CONSTRAINT pc_bronze_reins_pricing_pk PRIMARY KEY (index_name, observation_date)
+)
+USING DELTA
+PARTITIONED BY (index_name);
+
+-- Lead 2 — CAT-Load Nowcast. OpenFEMA disaster declarations + NOAA CPC seasonal
+-- outlook + US Drought Monitor + PowerOutage.us. Hardens regime.cat_load
+-- (low_season / active_season / post_major_event). Region-scoped so a state
+-- nowcast and the national roll-up coexist; Lakeflow DLT + ai_forecast().
+CREATE TABLE IF NOT EXISTS pc_bronze.cat_load_nowcast (
+    metric_name       STRING NOT NULL,            -- 'open_disaster_declarations' | 'cpc_above_normal_prob' | 'drought_coverage_pct' | 'customers_out'
+    region            STRING NOT NULL,            -- state code or 'US'
+    observation_date  DATE   NOT NULL,
+    value             DOUBLE,
+    mom_pct_change    DOUBLE,
+    yoy_pct_change    DOUBLE,
+    zscore_12m        DOUBLE,
+    is_anomaly        BOOLEAN,
+    source            STRING,                       -- 'openfema' | 'noaa_cpc' | 'usdm' | 'poweroutage'
+    fetched_at        TIMESTAMP NOT NULL,
+    CONSTRAINT pc_bronze_cat_nowcast_pk PRIMARY KEY (metric_name, region, observation_date)
+)
+USING DELTA
+PARTITIONED BY (metric_name);
+
+-- Lead 3 — Severity Tape. Manheim Used Vehicle Value Index + the existing FRED
+-- parts/labor/medical loss-cost series, unified so the inflation_*_boost has a
+-- forward read. Feeds signals._inflation_keyword_boost calibration + Feature
+-- Store; ai_forecast() on the index level.
+CREATE TABLE IF NOT EXISTS pc_bronze.severity_index (
+    index_name        STRING NOT NULL,            -- 'manheim_uvvi' | 'fred_parts_ppi' | 'fred_body_labor' | 'fred_medical_cpi'
+    observation_date  DATE   NOT NULL,
+    value             DOUBLE,
+    mom_pct_change    DOUBLE,
+    yoy_pct_change    DOUBLE,
+    zscore_12m        DOUBLE,
+    is_anomaly        BOOLEAN,
+    category          STRING,                       -- 'used_vehicle' | 'parts' | 'labor' | 'medical'
+    source            STRING,                       -- 'manheim' | 'fred'
+    fetched_at        TIMESTAMP NOT NULL,
+    CONSTRAINT pc_bronze_severity_pk PRIMARY KEY (index_name, observation_date)
+)
+USING DELTA
+PARTITIONED BY (index_name);
+
 -- Operational telemetry per pipeline stage. Spots pipeline degradation,
 -- enables source-level SLO dashboards. Subsumes SQLite run_log + summarizer_log.
 -- `errors` defaulting to 0 is handled in the sink wiring, not via column DEFAULT.

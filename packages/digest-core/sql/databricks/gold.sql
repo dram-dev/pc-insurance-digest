@@ -164,6 +164,27 @@ WHERE t.decision = 'keep'
   AND t.burden_intensity IS NOT NULL
 GROUP BY DATE(t.triaged_at), t.burden_intensity, t.burden_direction;
 
+-- Lead 9 — Regulatory Burden Barometer, per state. Mirrors burden_trend but
+-- grouped by the Wave 4 `state` column on triage_verdicts, so Genie can answer
+-- "which states are tightening the screws?" and the per-state Alert can fire.
+-- Rows only appear once triage starts populating `state` (null today → excluded).
+CREATE OR REPLACE VIEW pc_gold.burden_by_state AS
+SELECT
+    t.state,
+    DATE(t.triaged_at)                                             AS day,
+    t.burden_intensity,
+    t.burden_direction,
+    COUNT(*)                                                        AS items,
+    -- intensity-weighted pressure: high=3, medium=2, low=1
+    SUM(CASE t.burden_intensity WHEN 'high' THEN 3
+                                WHEN 'medium' THEN 2
+                                WHEN 'low' THEN 1 ELSE 0 END)       AS burden_pressure
+FROM pc_silver.triage_verdicts t
+WHERE t.decision = 'keep'
+  AND t.topic = 'regulatory_rate'
+  AND t.state IS NOT NULL
+GROUP BY t.state, DATE(t.triaged_at), t.burden_intensity, t.burden_direction;
+
 -- ── Option 1b: outcome calibration ───────────────────────────────────────
 
 -- Top-N precision — of items ranked in the daily top-N, what fraction
@@ -219,3 +240,118 @@ FROM pc_silver.reserving_signals r
 JOIN latest l ON r.insurer = l.insurer AND r.lob = l.lob
              AND r.metric = l.metric AND r.as_of = l.as_of
 ORDER BY ABS(COALESCE(r.deterioration_pct, 0)) DESC;
+
+-- ── Wave 4 — Insurance EKG panel ──────────────────────────────────────────
+-- pc_gold.market_ekg: one row per lead = the panel of vital signs. Each arm
+-- pulls its lead's most-recent reading and reports (latest_value, zscore,
+-- trend, as_of, is_stale). `is_stale` flags a feed that has gone quiet past its
+-- expected cadence — the "flatline" half of the EKG. Leads 7 (Parametric-
+-- Trigger Proximity) and 10 (Macro→Loss Transmission) are view-sketch-only this
+-- wave (see below / xdomain.sql) and are not yet arms of the panel.
+--
+-- Each arm is a latest-row pick via ROW_NUMBER(); trend is the sign of the
+-- most recent change, staleness a per-lead cadence window. Pure view — promote
+-- to a Lakeflow materialized table if the UNION fan-out gets slow.
+CREATE OR REPLACE VIEW pc_gold.market_ekg AS
+WITH reins AS (
+    SELECT *, ROW_NUMBER() OVER (ORDER BY observation_date DESC) rn
+    FROM pc_bronze.reinsurance_pricing
+),
+catld AS (
+    SELECT *, ROW_NUMBER() OVER (ORDER BY observation_date DESC) rn
+    FROM pc_bronze.cat_load_nowcast
+),
+sev AS (
+    SELECT *, ROW_NUMBER() OVER (ORDER BY observation_date DESC) rn
+    FROM pc_bronze.severity_index
+),
+lit AS (
+    SELECT *, ROW_NUMBER() OVER (ORDER BY as_of DESC) rn
+    FROM pc_silver.litigation_pressure
+),
+disc AS (
+    SELECT *, ROW_NUMBER() OVER (ORDER BY as_of DESC) rn
+    FROM pc_silver.disclosure_sentiment
+),
+resv AS (
+    SELECT *, ROW_NUMBER() OVER (ORDER BY as_of DESC) rn
+    FROM pc_silver.reserving_signals
+),
+cap AS (
+    SELECT *, ROW_NUMBER() OVER (ORDER BY as_of DESC) rn
+    FROM pc_silver.capital_flows
+),
+burden AS (
+    SELECT state, day, burden_pressure,
+           ROW_NUMBER() OVER (ORDER BY day DESC) rn
+    FROM pc_gold.burden_by_state
+)
+SELECT 1 AS lead, 'Reinsurance Pulse'            AS lead_name, 'market_cycle' AS hardens,
+       value AS latest_value, zscore_12m AS zscore,
+       CASE WHEN mom_pct_change > 0 THEN 'up' WHEN mom_pct_change < 0 THEN 'down' ELSE 'flat' END AS trend,
+       CAST(observation_date AS TIMESTAMP) AS as_of,
+       observation_date < CURRENT_DATE - INTERVAL 120 DAYS AS is_stale
+FROM reins WHERE rn = 1
+UNION ALL
+SELECT 2, 'CAT-Load Nowcast', 'cat_load',
+       value, zscore_12m,
+       CASE WHEN mom_pct_change > 0 THEN 'up' WHEN mom_pct_change < 0 THEN 'down' ELSE 'flat' END,
+       CAST(observation_date AS TIMESTAMP),
+       observation_date < CURRENT_DATE - INTERVAL 14 DAYS
+FROM catld WHERE rn = 1
+UNION ALL
+SELECT 3, 'Severity Tape', 'inflation_keyword_boost',
+       value, zscore_12m,
+       CASE WHEN mom_pct_change > 0 THEN 'up' WHEN mom_pct_change < 0 THEN 'down' ELSE 'flat' END,
+       CAST(observation_date AS TIMESTAMP),
+       observation_date < CURRENT_DATE - INTERVAL 45 DAYS
+FROM sev WHERE rn = 1
+UNION ALL
+SELECT 4, 'Litigation Pressure', 'litigation_tplf_boost',
+       pressure_index, NULL,
+       NULL, as_of,
+       as_of < CURRENT_TIMESTAMP - INTERVAL 30 DAYS
+FROM lit WHERE rn = 1
+UNION ALL
+SELECT 5, 'Disclosure Sentiment', 'reserve_deterioration_boost',
+       adverse_language_score, NULL,
+       reserve_tone, as_of,
+       as_of < CURRENT_TIMESTAMP - INTERVAL 100 DAYS
+FROM disc WHERE rn = 1
+UNION ALL
+SELECT 6, 'Reserve-Adequacy Radar', 'reserve_deterioration_boost',
+       deterioration_pct, NULL,
+       direction, as_of,
+       as_of < CURRENT_TIMESTAMP - INTERVAL 100 DAYS
+FROM resv WHERE rn = 1
+UNION ALL
+SELECT 8, 'InsurTech Capital-Flow', 'ai_insurtech',
+       amount_usd, NULL,
+       deal_type, as_of,
+       as_of < CURRENT_TIMESTAMP - INTERVAL 30 DAYS
+FROM cap WHERE rn = 1
+UNION ALL
+SELECT 9, 'Regulatory Burden Barometer', 'burden_intensity_boost',
+       burden_pressure, NULL,
+       NULL, CAST(day AS TIMESTAMP),
+       day < CURRENT_DATE - INTERVAL 14 DAYS
+FROM burden WHERE rn = 1;
+
+-- ── Lead 7 — Parametric-Trigger Proximity (VIEW SKETCH ONLY) ──────────────
+-- No physical table this wave. The reading lives in the metadata_json of the
+-- existing NHC wind-probability / USGS ShakeMap items already in
+-- pc_bronze.ingested_items (source IN ('nhc','usgs')). A trigger-band field is
+-- the distance between the live hazard reading and a parametric cat-bond /
+-- ILW attachment point. Sketch — uncomment + harden once a trigger-band is
+-- captured at ingest time, and upgrade the geospatial join to H3 / Databricks
+-- Mosaic for radius-to-exposure proximity:
+--
+-- CREATE OR REPLACE VIEW pc_gold.trigger_proximity AS
+-- SELECT b.source, b.title, b.published_at,
+--        get_json_object(b.metadata_json, '$.trigger_band')   AS trigger_band,
+--        get_json_object(b.metadata_json, '$.peak_value')     AS peak_value,    -- max wind prob / PGA
+--        get_json_object(b.metadata_json, '$.attachment')     AS attachment,    -- bond/ILW attachment point
+--        get_json_object(b.metadata_json, '$.h3_cell')        AS h3_cell        -- H3 index for exposure join
+-- FROM pc_bronze.ingested_items b
+-- WHERE b.source IN ('nhc','usgs')
+--   AND get_json_object(b.metadata_json, '$.trigger_band') IS NOT NULL;
