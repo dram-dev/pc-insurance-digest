@@ -1,185 +1,73 @@
-# digest-core — Phase 2 Plan: the design seams
+# digest-core — extraction status & the (now-optional) design seams
 
-The **code-moving** extraction is done (see EXTRACTION_PLAN.md §1). Everything
-domain-agnostic now lives in `digest_core`; PC Digest consumes it via thin
-shells/aliases and is green on 65 tests, all on `master`.
+## ✅ Foundation extraction COMPLETE (2026-05-29)
 
-What remains is the genuinely *new* design work — the EXTRACTION_PLAN.md §3
-"tricky seams." This file is the concrete pick-up plan for that.
+The shared core is extracted and **de-duplicated across both domains** —
+pc-insurance-digest and macro-ai-digest both run on `digest_core`, and nothing
+in the foundation layer is duplicated between the two repos anymore. Both
+branches are merged to `master` (PC 136 tests, macro 22, all green).
 
-## Status snapshot (what's already in core)
+| Module (in `digest_core`) | Status | How each domain consumes it |
+|---|---|---|
+| `types.IngestedItem` | ✅ | re-export |
+| `db.{schema,helpers}` | ✅ | thin wrappers (default db_path + sink fan-out) + domain MIGRATIONS |
+| `ingest.base` (IngestorBase + ItemStore) | ✅ | `class IngestorBase(CoreBase): store = db` |
+| `ingest.registry` (auto-register via `__init_subclass__` + `discover`) | ✅ | `discover_ingestors("digest.ingest")` — drop a file, it's a source |
+| `ingest.{rss,hackernews,reddit,edgar}` fetch | ✅ | thin shells hold config, delegate fetch() |
+| `summarize.{backends,runner}` (+ `register_backend`) | ✅ | `_backend_config()`; shared `extract_json` |
+| `obsidian.{paths,render,archive}` | ✅ | `Paths` subclass; topic maps + note layout stay domain |
+| `cli.base` (load_ingestor, run_ingest, discover_ingestors) | ✅ | both CLIs route through it |
+| `catalog` (`digest sources`) | ✅ | live source catalog in both domains |
+| `sinks.databricks` (+ `schema_prefix`) | ✅ | singleton per domain; shared `digest` catalog, `pc_*`/`macro_*` schemas |
 
-| Module | Lifted | PC shape | macro shape |
-|---|---|---|---|
-| `types.IngestedItem` | ✅ | re-export | re-export (via `ingest.base`) |
-| `db.{schema,helpers}` | ✅ | thin wrappers + sink fan-out | thin wrappers (no sink) + macro MIGRATIONS |
-| `ingest.base` (IngestorBase + ItemStore) | ✅ | `class IngestorBase(CoreBase): store = db` | same, `register=False` base |
-| `ingest.registry` (`@__init_subclass__` auto-register + `discover`) | ✅ | `discover_ingestors("digest.ingest")` | same |
-| `ingest.{rss,hackernews,reddit,edgar}` | ✅ | shells delegate fetch() | full impls extend base (shells optional) |
-| `summarize.{backends,runner}` | ✅ | `_backend_config()` (800 tok) | `_backend_config()` (600 tok) |
-| `summarize.backends` registry (`register_backend`) | ✅ | — | — |
-| `obsidian.{paths,render,archive}` | ✅ | `Paths` subclass; topic maps stay | adopted — `Paths` subclass + aliased render/archive; topic maps + renderers stay |
-| `cli.base` (load_ingestor, run_ingest, discover_ingestors) | ✅ | group + commands stay | group + commands stay |
-| `catalog` (`digest sources`) | ✅ | `sources` command | `sources` command |
-| `sinks.databricks` | ✅ | singleton built from PC settings | n/a (macro has no sink) |
+Tests: PC `tests/` (136), macro `tests/` (22) — both hermetic.
 
-Tests: PC `tests/` hermetic (88). macro `tests/` hermetic (12, new this round).
+**The original goal is met.** "Both digests become thin plug-ins" is true at the
+layer where it should be: the *framework* is shared; the *domain* logic
+(signals factors, triage prompts/taxonomy, note layout, domain ingestors, and
+macro's essays/debate/velocity/etc.) correctly stays in each repo.
 
-## Status: macro port DONE (foundation) — 2026-05-28
+## The remaining "seams" are OPTIONAL — do them reactively, not on a schedule
 
-macro-ai-digest now runs on `digest-core` (editable path dep from the sibling
-repo). The proven thin-shell pattern lifted db / ingest.base / summarize
-backends+runner / triage extract_json; macro keeps all its domain logic
-(macro_regime, essays, debate, velocity, clustering, dashboard, ~15 ingestors).
-Net ~295 fewer lines in macro.
+These are **design abstractions, not extractions**. They would trade a little
+parallel-but-similar code for a more coupled, more abstract core. The project
+rule *"don't pre-design the framework"* now points the other way: **don't lift a
+seam until it actually bites** (e.g., you go to add a scoring factor and resent
+editing both repos). Ranked by value-if-you-do-it:
 
-**The "grow organically" mechanism shipped:** the ingestor registry. Adding a
-source in either domain is now *drop a file, subclass `IngestorBase`, give it a
-`name`* — it self-registers (via `__init_subclass__`), appears in `digest
-sources`, and is runnable via `digest ingest <name>` / pipeline. No central
-INGESTORS dict to edit. New LLM backends plug in via `register_backend` without
-touching core. `discover()` is import-isolated so a missing optional dep
-degrades to a reported failure, not a crash.
+| Seam | Verdict | Why |
+|---|---|---|
+| **signals factor registry** | highest value *if* it bites | PC (12 boosts) and macro (z-score/cluster) have genuinely different factor sets — a `ScoreFactor` registry shares the *mechanism*, not the factors. Lift it the next time adding a factor means editing both repos. |
+| **triage engine** | low–med | Flow is shared, `extract_json` already is; only the ~15-line run loop remains. Prompts/topics/auto-keep are correctly domain. |
+| **obsidian `DailyNoteBuilder`** | low–med | Render primitives/Paths/archive already shared; only the note *layout* differs (and it should). |
+| **regime N-axis** | **won't do** | Confirmed not peers — PC 2-axis (1 LLM-judged) timestamp-keyed w/ hysteresis/override/staleness vs macro 1-axis mechanical ISO-week. Regime stays domain-specific in both. |
+| **topic-cap / materiality** | ~done | Mechanics (`enforce_topic_caps`) already in core; only the anchor text is domain. |
+| **CLI group-factory** | low | Command sets have diverged (PC: reserving/learn/outcomes; macro: debate/essay/dashboard/velocity) — a shared factory would fight that. |
 
-## The guiding decision (still holds for the remaining seams)
+If you do pick one up, the design notes that were here are preserved in git
+history (pre-2026-05-29 revisions of this file).
 
-Per EXTRACTION_PLAN.md §5 step 4 and *"don't pre-design the framework — wait
-until divergence is visible,"* the **remaining** seams should be driven by the
-two now-concrete domains side by side. The foundation port proved which
-substrate is genuinely shared (it all lifted cleanly). The deeper seams below
-each need a deliberate two-domain design pass:
+## Adding a new source (the organic-growth workflow — already live)
 
-**Recommended next order** (most-self-contained first), now that both domains
-are on core:
-1. **signals factors** — both have `source × recency × llm_judgment`; PC adds
-   6 boost factors + conviction `tier`, macro adds signal_outcomes z-score +
-   cluster size. Good first registry candidate (`ScoreFactor`).
-2. **triage engine** — flow is identical (Python preprocessor → Ollama → JSON
-   parse → DB update); prompt/topics/auto-keep are domain. extract_json already
-   shared. `TriageEngine` with hooks.
-3. **obsidian daily/weekly hooks** — both domains now share core's render/paths/
-   archive primitives; what remains is the `DailyNoteBuilder` extension-point
-   design (top-of-note callouts, domain topic maps, the leaderboard section).
-4. **regime** — still DEFERRED (see §1): the two regimes are not peers.
-5. **topic-cap/materiality**, **CLI group-factory** — last.
+In either repo: add `src/digest/ingest/<source>.py`, subclass `IngestorBase`,
+give it a `name`. It self-registers → appears in `digest sources`, is runnable
+via `digest ingest <source>`, joins the pipeline. No central dict to edit. A new
+LLM backend: `register_backend("name", fn)`. Missing-optional-dep modules are
+reported by `digest sources`, not silently dropped.
 
-## Per-seam design sketches
+## Beyond the foundation (PC domain features shipped on top, 2026-05-29)
 
-### 1. Regime — N-axis abstraction  (EXTRACTION_PLAN §3.1)
-- **STATUS (2026-05-28): DEFERRED after recon.** Read macro's `macro_regime.py`
-  against PC's `regime.py`: they are NOT peers. macro = 1 mechanical axis,
-  ISO-week-keyed, upsert-by-week, **no** hysteresis/override/staleness/LLM. PC =
-  2 axes (1 LLM-judged + 1 mechanical), timestamp-keyed append-history, **with**
-  hysteresis + override + staleness. The only shared concept is "classification →
-  multiplier + prompt framing." A `RegimeAxis`/`RegimeDetectorBase` now would be
-  either too thin to matter or an over-parameterized mess — exactly the "simpler
-  base may be right / don't pre-design" risk this section flagged. **Revisit only
-  during/after the macro port**, and consider that regime may legitimately stay
-  domain-specific in both.
-- **Divergence:** PC = 2 axes (`market_cycle` LLM-judged × `cat_load` mechanical);
-  macro = 1 axis (`macro_regime`, weekly).
-- **Proposed:** core `RegimeAxis` (name, states→multiplier, `compute()->state`) +
-  `RegimeDetectorBase` owning hysteresis + override + staleness + the
-  `regime_signals` table schema. PC registers `MarketCycleAxis`+`CatLoadAxis`;
-  macro registers one axis.
-- **Decide at port:** is macro's regime really a peer axis, or one-state-per-week
-  (which might want a simpler base than `RegimeAxis`)? Confirm before locking.
-- **Watch:** PC's `compute_market_cycle` now calls the backend with the
-  3-arg signature + its own `MARKET_CYCLE_SYSTEM_PROMPT` — keep that when
-  generalizing the LLM-judged-axis path.
-
-### 2. Signals — score-factor composition  (EXTRACTION_PLAN §3.2)
-- **Divergence:** shared `source × recency × llm_judgment`; PC adds
-  topic_priority/burden/insurer/inflation/regulatory/tplf + the conviction
-  `tier`; macro will want its own (signal_outcomes z-score, cluster size…).
-- **Proposed:** core registry of `ScoreFactor(name, fn(item, regime)->float)`;
-  core multiplies registered factors; core ships the common ones
-  (recency, llm_judgment, source-mult lookup against a domain table) + the
-  user-tunable-weights mechanism (already generic-ish in PC's `_load_scoring_weights`).
-- **Decide at port:** if macro is "same formula, different numbers," a
-  config-driven table beats a plugin system — don't build the registry until
-  macro proves it needs custom factors.
-- **Carry:** the conviction `tier` (`tier_for_score`/`tier_badge`) + its
-  `Scoring Weights.md` `signal_tiers` thresholds are PC-shipped; decide if
-  tiering is core mechanism (likely yes) with domain thresholds.
-
-### 3. Triage — engine + auto-keep hooks  (EXTRACTION_PLAN §3.3)
-- **Generic:** the flow (Python preprocessor → Ollama → JSON parse → DB update).
-- **Domain:** prompt, 17-topic enum, auto-keep rules, `burden_*` fields.
-- **Proposed:** core `TriageEngine` with hooks: `domain_system_prompt: str`,
-  `auto_keep_steps: list[Callable[[], int]]` (run before LLM),
-  `verdict_normalizer: Callable[[dict], dict]`. Core enforces decision/score/topic
-  shape only.
-- **DONE (2026-05-28):** unified the JSON extractor. `digest_core.summarize.
-  runner.extract_json` now uses the brace-depth scan (first balanced object —
-  robust to nested braces + trailing prose); triage dropped its duplicate and
-  imports the core one, so triage + summarize + regime share a single, more
-  robust extractor. Tested. (The rest of the TriageEngine seam still waits for
-  the macro port.)
-
-### 4. Obsidian — daily/weekly note extension hooks  (EXTRACTION_PLAN §3.4)
-- **Generic:** note shell, topic grouping, weekly synthesis sections, the
-  already-lifted render primitives + Paths + index block.
-- **Proposed:** core `DailyNoteBuilder` with extension points for "extra
-  top-of-note callouts" (PC adds regime + sonar) + domain-provided
-  `topic_label/callout/emoji/order` maps. Decide whether the Top-Signals
-  leaderboard section is core (feels core, but per-source quality table assumes
-  domain source weights).
-
-### 5. Per-topic caps + materiality anchoring  (EXTRACTION_PLAN §3.5)
-- Mechanics are generic (cap = `enforce_topic_caps`, already in core; materiality
-  clamp). *Which* topic is capped + the materiality anchor text are domain.
-- **Proposed:** core summarize prompt template interpolates a
-  `domain_materiality_anchor: str`; `TOPIC_CAP_PCT` passed in. Verify macro even
-  wants caps before abstracting further.
-
-### 6. CLI — group factory  (deferred from cli.base)
-- Core `build_cli(name, help, ingestors, db, console, log_level)` returning a
-  Click group with generic commands (ingest/stats/recent/init-db) registered +
-  db/console injected; domain adds its own commands. Needs the db-module DI
-  decision — settle alongside the §4 "config.py settings subclassing" question.
-
-## Open questions to settle (EXTRACTION_PLAN §4)
-- Monorepo vs. separate repo for `digest-core` (currently `packages/`).
-- Pin core's Python floor (PC ≥3.12, core declares ≥3.11 — reconcile).
-- **DB schema ownership / migration sequencing**: core owns items/run_log/
-  summarizer_log; each domain layers its own migrations (PC already does via
-  `core_db.init_db_with_migrations(path, MIGRATIONS)`). Confirm macro fits.
-- pydantic-settings `BaseSettings` subclassing across packages (for the CLI/DI seam).
-
-## Adding a new source (the organic-growth workflow)
-
-This is the premise the registry exists to serve — in **either** domain:
-
-1. Add `src/digest/ingest/<source>.py`.
-2. `class <Name>Ingestor(IngestorBase): name = "<source>"; def fetch(self): ...`
-   (optionally `tags = (...)`, `order = N`, and a one-line docstring/module
-   docstring for the catalog).
-3. That's it. It self-registers → shows in `digest sources` (as `never-run`),
-   is runnable via `digest ingest <source>`, and joins the pipeline's stage 1.
-
-No central dict to touch. A new LLM backend: `register_backend("name", fn)` in
-the domain (fn takes `(system_prompt, user_prompt, BackendConfig)`). A source
-whose module fails to import (missing optional dep) is reported in `digest
-sources`, not silently dropped.
-
-## Definition of done for Phase 2
-- macro-ai-digest runs end-to-end on `digest-core`. ✅ (foundation; obsidian +
-  the deeper seams remain)
-- Each seam has a core abstraction + both domains as plug-ins, with tests.
-  (ingest/db/backends/runner/catalog ✅; signals/triage/obsidian-hooks pending)
-- No domain still duplicates code that another domain also has. (foundation
-  de-duped; signals/triage/obsidian still parallel)
+The Databricks-forward roadmap (`~/.claude/plans/`) shipped end-to-end on PC:
+Enabler 0 (cross-domain sink) + Options 1a (calibration), 1b (outcome backtest),
+2 (`digest brief` + gold views + alerts), 3 (embeddings/`ask`), 4 (learned
+scorer), 5 (chainladder reserving), and the reserve/learned signals wired into
+scoring (neutral until their data flows). These are PC *domain* features, not
+core seams — listed here only so the era's scope is on record. Operator steps
+live in the repo-root `MAC_MINI_TASKS.md`.
 
 ## Loose ends carried (not blockers)
-- **macro `gmail`** last-run errors (surfaced by `digest sources` — `✗ error`).
-  Likely OAuth token refresh; check `secrets/` + scopes on the Mac mini.
-- **Mac mini, one-time:** `ALTER TABLE silver.signal_scores ADD COLUMN tier STRING;`
-  (conviction tier sink write is best-effort until then).
-- **Config bug (PC):** `hackernews.QUERIES` are still macro AI/semis terms —
-  retune to P&C insurtech/cyber/cat. (macro's HN queries are correct.)
+- **macro `gmail`** last run errored (surfaced by `digest sources` ✗) — likely OAuth refresh.
+- **(PC) `hackernews.QUERIES`** still macro AI/semis terms — retune to P&C.
 - **Dead branch (PC):** edgar `is_fund → 'fed_markets'` (macro residue; never fires).
-- **Pre-existing lint:** ~23 ruff nits in PC viz/collision/health/serff and ~8 in
-  macro (unused vars, f-strings) — not bugs/security; sweep opportunistically.
-- **Branches:** PC `digest-core-macro-port`, macro `digest-core-port` — review +
-  merge to each `master`.
+- **Pre-existing lint:** ~23 ruff nits in PC viz/collision/health/serff, ~8 in macro — not bugs; sweep opportunistically.
+- **Pre-existing deprecation:** `datetime.utcnow()` in the core sink (4 call sites) — harmless; swap to `datetime.now(UTC)` when convenient.
