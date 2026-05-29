@@ -122,9 +122,15 @@ uv run digest stats
 uv run digest pipeline --run-type manual
 ```
 
-CLI commands: `ingest`, `sources`, `brief`, `rate`, `calibration`, `triage`,
-`summarize`, `regime`, `signals`, `pipeline`, `publish`, `weekly`, `stats`,
-`recent`, `health`, `viz`, `init-db`.
+CLI commands: `ingest`, `sources`, `brief`, `rate`, `calibration`, `embed`,
+`related`, `ask`, `triage`, `summarize`, `regime`, `signals`, `pipeline`,
+`publish`, `weekly`, `stats`, `recent`, `health`, `viz`, `init-db`.
+
+**Semantic layer (optional, local).** `digest embed` builds per-item embeddings
+via the local Ollama server (`ollama pull nomic-embed-text`); then `digest
+related <id>` finds more-like-this and `digest ask "<question>"` answers from
+your own corpus (RAG) with citations. Vectors cache in SQLite and mirror to
+`pc_bronze.item_embeddings`.
 
 **Lakehouse (Databricks, optional).** With `DATABRICKS_ENABLED=true`, the
 pipeline best-effort-mirrors into a shared `digest` catalog (`pc_*` schemas;
