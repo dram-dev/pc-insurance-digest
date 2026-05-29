@@ -20,15 +20,15 @@ from __future__ import annotations
 import logging
 import re
 import sqlite3
-from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Iterable
 
 import yaml
 
 from digest import db, signals
 from digest.config import settings
+from digest_core.obsidian.archive import build_index_block as _build_index_block
+from digest_core.obsidian.paths import Paths as _CorePaths, append_run_log
 from digest_core.obsidian.render import (
     chat_link,
     parse_see_also as _parse_see_also,
@@ -138,14 +138,8 @@ def topic_filename(slug: str) -> str:
 # ── Path resolution ────────────────────────────────────────────────────
 
 
-@dataclass
-class Paths:
-    vault: Path
-    digest_root: Path
-    daily_dir: Path
-    topics_dir: Path
-    weekly_dir: Path
-    meta_dir: Path
+class Paths(_CorePaths):
+    """PC vault paths — settings-driven resolve() over the core layout."""
 
     @classmethod
     def resolve(cls) -> "Paths":
@@ -155,27 +149,7 @@ class Paths:
                 "Set it to the absolute vault path (e.g. "
                 "'/Users/you/Documents/Obsidian Vault/vault_build')."
             )
-        vault = Path(settings.obsidian_vault_path).expanduser()
-        if not vault.exists():
-            raise RuntimeError(f"Obsidian vault not found at: {vault}")
-
-        digest_root = vault / settings.obsidian_digest_dir
-        if not digest_root.resolve().is_relative_to(vault.resolve()):
-            raise RuntimeError(
-                f"OBSIDIAN_DIGEST_DIR {settings.obsidian_digest_dir!r} must be within the vault."
-            )
-        return cls(
-            vault=vault,
-            digest_root=digest_root,
-            daily_dir=digest_root / "Daily",
-            topics_dir=digest_root / "Topics",
-            weekly_dir=digest_root / "Weekly",
-            meta_dir=digest_root / "_meta",
-        )
-
-    def ensure(self) -> None:
-        for p in (self.digest_root, self.daily_dir, self.topics_dir, self.weekly_dir, self.meta_dir):
-            p.mkdir(parents=True, exist_ok=True)
+        return cls.for_vault(settings.obsidian_vault_path, settings.obsidian_digest_dir)
 
 
 # ── Markdown rendering ─────────────────────────────────────────────────
@@ -557,8 +531,6 @@ def write_daily_note(date_iso: str, paths: Paths) -> tuple[Path, int]:
 # with its DB id, so re-runs upsert by ID rather than duplicating.
 ITEM_BEGIN = "<!-- digest:item:{id}:begin -->"
 ITEM_END   = "<!-- digest:item:{id}:end -->"
-INDEX_BEGIN = "<!-- digest:index:begin -->"
-INDEX_END   = "<!-- digest:index:end -->"
 
 
 def _render_topic_item(row: sqlite3.Row, topic_slug: str) -> str:
@@ -620,21 +592,6 @@ def _render_topic_item(row: sqlite3.Row, topic_slug: str) -> str:
     return "\n".join(p for p in parts if p is not None)
 
 
-def _build_index_block(rows: Iterable[sqlite3.Row]) -> str:
-    """YAML index block listing every dated entry in this topic archive."""
-    entries = []
-    for row in rows:
-        entries.append({
-            "id": row["id"],
-            "date": _safe(row["ingested_at"])[:10],
-            "title": (_safe(row["title"]) or "(untitled)")[:120],
-            "source": _safe(row["source"]),
-        })
-    payload = {"entries": entries}
-    yaml_text = yaml.safe_dump(payload, sort_keys=False, allow_unicode=True).strip()
-    return f"{INDEX_BEGIN}\n```yaml\n{yaml_text}\n```\n{INDEX_END}"
-
-
 def render_topic_archive(topic_slug: str) -> tuple[str, list[int]]:
     """Render the full topic archive markdown. Returns (text, item_ids)."""
     rows = db.items_by_topic(topic_slug)
@@ -675,21 +632,6 @@ def write_topic_archive(topic_slug: str, paths: Paths) -> tuple[Path, int]:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(text, encoding="utf-8")
     return target, len(item_ids)
-
-
-# ── Run log ────────────────────────────────────────────────────────────
-
-
-RUN_LOG_HEADER = "# Digest Run Log\n\n_Append-only operations log._\n\n"
-
-
-def append_run_log(paths: Paths, message: str) -> None:
-    target = paths.meta_dir / "Run Log.md"
-    if not target.exists():
-        target.write_text(RUN_LOG_HEADER, encoding="utf-8")
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
-    with target.open("a", encoding="utf-8") as fp:
-        fp.write(f"- `{ts}` — {message}\n")
 
 
 # ── Public entry point ────────────────────────────────────────────────

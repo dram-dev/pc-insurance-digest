@@ -284,12 +284,14 @@ version = "0.0.0"
 source = { editable = "packages/digest-core" }
 dependencies = [
     { name = "feedparser" },
+    { name = "pyyaml" },
     { name = "requests" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "feedparser", specifier = ">=6.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
     { name = "requests", specifier = ">=2.32" },
 ]
 
