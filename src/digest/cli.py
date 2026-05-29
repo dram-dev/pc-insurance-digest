@@ -53,6 +53,20 @@ def ingest(source: str, run_type: str) -> None:
 
 
 @main.command()
+def sources() -> None:
+    """Live source catalog: every registered ingestor + its 7-day pulse.
+
+    Auto-discovered from the registry — a newly added ingestor shows up here on
+    its own (as 'never-run' until its first ingest). Sources whose module can't
+    import (missing optional dep) are flagged rather than silently dropped.
+    """
+    from digest_core import catalog
+
+    db.init_db()
+    catalog.print_sources(db.get_conn, "digest.ingest", console=console)
+
+
+@main.command()
 def stats() -> None:
     """Item counts by source plus triage + summarizer status."""
     db.init_db()

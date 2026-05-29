@@ -27,6 +27,7 @@ import importlib
 import inspect
 import logging
 import pkgutil
+import sys
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -66,8 +67,21 @@ def register(cls: type) -> None:
         cls=cls,
         tags=tuple(getattr(cls, "tags", ()) or ()),
         order=int(getattr(cls, "order", 100)),
-        doc=(inspect.getdoc(cls) or "").strip().split("\n")[0],
+        doc=_describe(cls),
     )
+
+
+def _describe(cls: type) -> str:
+    """First line of the class's own docstring, falling back to its module's.
+
+    Avoids `inspect.getdoc`, which would inherit the framework base class's
+    docstring for every undocumented ingestor.
+    """
+    own = cls.__dict__.get("__doc__") or ""
+    if not own.strip():
+        mod = sys.modules.get(cls.__module__)
+        own = getattr(mod, "__doc__", "") or ""
+    return own.strip().split("\n")[0]
 
 
 def registered() -> dict[str, IngestorSpec]:
