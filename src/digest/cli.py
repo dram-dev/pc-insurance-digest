@@ -299,6 +299,41 @@ def outcomes(horizons: str, limit: int) -> None:
 
 
 @main.command()
+@click.option("--horizon", default=30, help="Outcome horizon to train against (days)")
+def learn(horizon: int) -> None:
+    """Train the learned relevance scorer + A/B it vs the heuristic (Option 4).
+
+    Fits a numpy logistic regression on the boost factors + heuristic score to
+    predict corroboration (from `digest outcomes`), reports holdout AUC and
+    top-N precision (heuristic vs learned), then writes a learned_score for every
+    scored item. The heuristic stays authoritative; this is advisory until the
+    A/B proves a lift. Needs ≥12 labeled items — run `digest outcomes` first.
+    """
+    from digest import learn as learn_mod
+
+    db.init_db()
+    console.rule("[bold cyan]learned scorer")
+    s = learn_mod.run(horizon_days=horizon)
+    if not s.get("model_id"):
+        console.print(f"[yellow]{s.get('note', 'training skipped')}[/yellow] "
+                      f"(n={s.get('n_samples', 0)})")
+        return
+
+    def _p(x):
+        return f"{x:.3f}" if isinstance(x, (int, float)) else "—"
+
+    console.print(f"[green]✓[/green] model #{s['model_id']} trained on {s['n_samples']} items")
+    console.print(f"  holdout AUC: {_p(s.get('auc'))}")
+    h, learned = s.get("heuristic_precision"), s.get("learned_precision")
+    arrow = ""
+    if isinstance(h, (int, float)) and isinstance(learned, (int, float)):
+        arrow = " [green]↑ learned wins[/green]" if learned > h else (
+            " [yellow]→ heuristic holds[/yellow]" if learned == h else " [dim]↓ heuristic better[/dim]")
+    console.print(f"  top-{s.get('k', 5)} precision — heuristic {_p(h)} vs learned {_p(learned)}{arrow}")
+    console.print(f"  [green]✓[/green] learned_score written for {s.get('scored', 0)} items")
+
+
+@main.command()
 def stats() -> None:
     """Item counts by source plus triage + summarizer status."""
     db.init_db()

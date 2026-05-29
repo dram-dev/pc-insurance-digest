@@ -165,6 +165,30 @@ MIGRATIONS = [
         PRIMARY KEY (item_id, horizon_days)
     )""",
     "CREATE INDEX IF NOT EXISTS idx_backtest_horizon ON outcome_backtest(horizon_days)",
+    # Learned scorer (Databricks Option 4): a numpy logistic-regression relevance
+    # model trained on the boost factors + heuristic score to predict
+    # corroboration (the Option 1b labels). The model registry + per-item learned
+    # scores; runs ALONGSIDE the heuristic (which stays authoritative).
+    """CREATE TABLE IF NOT EXISTS learned_models (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        target              TEXT NOT NULL,
+        horizon_days        INTEGER,
+        trained_at          TEXT NOT NULL DEFAULT (datetime('now')),
+        n_samples           INTEGER,
+        auc                 REAL,
+        heuristic_precision REAL,
+        learned_precision   REAL,
+        features_json       TEXT NOT NULL,
+        model_json          TEXT NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS learned_scores (
+        item_id       INTEGER NOT NULL,
+        model_id      INTEGER NOT NULL,
+        learned_score REAL NOT NULL,
+        scored_at     TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (item_id, model_id)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_learned_scores_item ON learned_scores(item_id)",
 ]
 
 
@@ -1756,6 +1780,111 @@ def upsert_backtest_outcome(item_id: int, horizon_days: int, outcome: dict) -> N
             "manual_rating":   outcome.get("manual_rating"),
             "stock_move_z":    outcome.get("stock_move_z"),
             "stock_move_band": outcome.get("stock_move_band"),
+        })
+
+
+# ── Learned scorer helpers (Option 4) ────────────────────────────────────
+
+# Shared factor projection (latest signal_scores per item) used by both the
+# training-set assembly and inference.
+_LEARN_FACTORS = (
+    "s.score, s.source_mult, s.regime_mult, s.topic_relevance, s.recency, "
+    "s.llm_judgment, s.topic_boost, s.burden_boost, s.insurer_boost, "
+    "s.inflation_boost, s.regulatory_boost, s.tplf_boost"
+)
+
+
+def learning_dataset(horizon_days: int) -> list[sqlite3.Row]:
+    """Labeled rows for training: latest score factors + materiality + the
+    corroboration label, for items with an outcome_backtest row at `horizon`."""
+    with get_conn() as conn:
+        return conn.execute(
+            f"""
+            WITH latest AS (
+                SELECT item_id, MAX(computed_at) AS computed_at
+                FROM signal_scores GROUP BY item_id
+            )
+            SELECT i.id AS item_id, i.materiality_score, {_LEARN_FACTORS},
+                   o.corroborated
+            FROM outcome_backtest o
+            JOIN latest l        ON l.item_id = o.item_id
+            JOIN signal_scores s ON s.item_id = l.item_id AND s.computed_at = l.computed_at
+            JOIN items i         ON i.id = o.item_id
+            WHERE o.horizon_days = ?
+            """,
+            (horizon_days,),
+        ).fetchall()
+
+
+def items_to_learn_score() -> list[sqlite3.Row]:
+    """Latest-scored items to apply the learned model to (factors + materiality)."""
+    with get_conn() as conn:
+        return conn.execute(
+            f"""
+            WITH latest AS (
+                SELECT item_id, MAX(computed_at) AS computed_at
+                FROM signal_scores GROUP BY item_id
+            )
+            SELECT i.id AS item_id, i.source, i.source_id, i.materiality_score,
+                   {_LEARN_FACTORS}
+            FROM latest l
+            JOIN signal_scores s ON s.item_id = l.item_id AND s.computed_at = l.computed_at
+            JOIN items i         ON i.id = l.item_id
+            """
+        ).fetchall()
+
+
+def save_learned_model(meta: dict) -> int:
+    """Persist a trained model + its metrics; returns the new model_id."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO learned_models
+                 (target, horizon_days, n_samples, auc, heuristic_precision,
+                  learned_precision, features_json, model_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (meta["target"], meta.get("horizon_days"), meta.get("n_samples"),
+             meta.get("auc"), meta.get("heuristic_precision"),
+             meta.get("learned_precision"), meta["features_json"], meta["model_json"]),
+        )
+        return cur.lastrowid
+
+
+def latest_learned_model(target: str = "corroborated") -> sqlite3.Row | None:
+    """Most recently trained model for a target, or None."""
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM learned_models WHERE target = ? ORDER BY id DESC LIMIT 1",
+            (target,),
+        ).fetchone()
+
+
+def learned_model_by_id(model_id: int) -> sqlite3.Row | None:
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM learned_models WHERE id = ?", (model_id,)
+        ).fetchone()
+
+
+def upsert_learned_score(
+    item_id: int, model_id: int, score: float,
+    source: str | None = None, source_id: str | None = None,
+) -> None:
+    """Persist one item's learned score; mirror to silver.learned_scores."""
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO learned_scores (item_id, model_id, learned_score, scored_at)
+               VALUES (?, ?, ?, ?)""",
+            (item_id, model_id, score, utcnow_iso()),
+        )
+        if not (source and source_id):
+            row = conn.execute(
+                "SELECT source, source_id FROM items WHERE id = ?", (item_id,)
+            ).fetchone()
+            if row:
+                source, source_id = row["source"], row["source_id"]
+    if source and source_id:
+        sink.write_learned_score(source, source_id, {
+            "model_id": model_id, "learned_score": score,
         })
 
 

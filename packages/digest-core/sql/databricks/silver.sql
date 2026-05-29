@@ -96,3 +96,15 @@ CREATE TABLE IF NOT EXISTS pc_silver.outcome_backtest (
     CONSTRAINT pc_silver_backtest_pk PRIMARY KEY (item_hash, horizon_days)
 )
 USING DELTA;
+
+-- Learned relevance score (Option 4): the numpy logistic-regression model's
+-- predicted P(corroborated), written alongside the heuristic so gold can A/B
+-- them. model_id references the SQLite learned_models registry.
+CREATE TABLE IF NOT EXISTS pc_silver.learned_scores (
+    item_hash     STRING    NOT NULL,
+    model_id      INT       NOT NULL,
+    learned_score DOUBLE    NOT NULL,
+    scored_at     TIMESTAMP NOT NULL,
+    CONSTRAINT pc_silver_learned_pk PRIMARY KEY (item_hash, model_id)
+)
+USING DELTA;

@@ -14,6 +14,7 @@ Architecture (originated in pc-insurance-digest; lifted to core 2026-05-25):
   silver.summaries        ← write_summary()         materiality + summary text
   silver.manual_ratings   ← write_rating()          user calibration ratings
   silver.outcome_backtest ← write_outcome()         did a ranked item corroborate?
+  silver.learned_scores   ← write_learned_score()   learned relevance (Option 4)
 
 Join key: `item_hash = sha256(source || '::' || source_id)`, derived here at
 write time. SQLite stays untouched.
@@ -55,6 +56,7 @@ _PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
     "silver.summaries":          ("item_hash", "summarized_at"),
     "silver.manual_ratings":     ("item_hash", "rated_at"),
     "silver.outcome_backtest":   ("item_hash", "horizon_days"),
+    "silver.learned_scores":     ("item_hash", "model_id"),
 }
 
 # Max rows per MERGE statement. 50 keeps total parameter count well under
@@ -279,6 +281,19 @@ class DatabricksSink:
             "note":        rating.get("note"),
         }
         self._insert("silver.manual_ratings", [row])
+
+    def write_learned_score(self, source: str, source_id: str, ls: dict[str, Any]) -> None:
+        """Per-item learned relevance score (Option 4) → silver.learned_scores,
+        for A/B against the heuristic score in gold."""
+        if not self._enabled:
+            return
+        row = {
+            "item_hash":     item_hash(source, source_id),
+            "model_id":      ls.get("model_id"),
+            "learned_score": ls.get("learned_score"),
+            "scored_at":     _iso(ls.get("scored_at")) or _iso(datetime.utcnow()),
+        }
+        self._insert("silver.learned_scores", [row])
 
     def write_outcome(self, source: str, source_id: str, outcome: dict[str, Any]) -> None:
         """Backtest outcome for an item at one horizon — did it corroborate?
