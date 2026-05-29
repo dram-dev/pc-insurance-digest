@@ -18,7 +18,7 @@ What remains is the genuinely *new* design work — the EXTRACTION_PLAN.md §3
 | `ingest.{rss,hackernews,reddit,edgar}` | ✅ | shells delegate fetch() | full impls extend base (shells optional) |
 | `summarize.{backends,runner}` | ✅ | `_backend_config()` (800 tok) | `_backend_config()` (600 tok) |
 | `summarize.backends` registry (`register_backend`) | ✅ | — | — |
-| `obsidian.{paths,render,archive}` | ✅ | `Paths` subclass; topic maps stay | not yet adopted (macro obsidian.py untouched) |
+| `obsidian.{paths,render,archive}` | ✅ | `Paths` subclass; topic maps stay | adopted — `Paths` subclass + aliased render/archive; topic maps + renderers stay |
 | `cli.base` (load_ingestor, run_ingest, discover_ingestors) | ✅ | group + commands stay | group + commands stay |
 | `catalog` (`digest sources`) | ✅ | `sources` command | `sources` command |
 | `sinks.databricks` | ✅ | singleton built from PC settings | n/a (macro has no sink) |
@@ -57,9 +57,9 @@ are on core:
 2. **triage engine** — flow is identical (Python preprocessor → Ollama → JSON
    parse → DB update); prompt/topics/auto-keep are domain. extract_json already
    shared. `TriageEngine` with hooks.
-3. **obsidian daily/weekly hooks** — macro's obsidian.py is NOT yet on core's
-   render/paths/archive primitives; adopting them is the next mechanical lift,
-   then the `DailyNoteBuilder` extension-point design.
+3. **obsidian daily/weekly hooks** — both domains now share core's render/paths/
+   archive primitives; what remains is the `DailyNoteBuilder` extension-point
+   design (top-of-note callouts, domain topic maps, the leaderboard section).
 4. **regime** — still DEFERRED (see §1): the two regimes are not peers.
 5. **topic-cap/materiality**, **CLI group-factory** — last.
 
@@ -179,8 +179,6 @@ sources`, not silently dropped.
 - **Config bug (PC):** `hackernews.QUERIES` are still macro AI/semis terms —
   retune to P&C insurtech/cyber/cat. (macro's HN queries are correct.)
 - **Dead branch (PC):** edgar `is_fund → 'fed_markets'` (macro residue; never fires).
-- **macro obsidian.py** not yet on core's render/paths/archive primitives — next
-  mechanical lift before the daily-note-hooks seam.
 - **Pre-existing lint:** ~23 ruff nits in PC viz/collision/health/serff and ~8 in
   macro (unused vars, f-strings) — not bugs/security; sweep opportunistically.
 - **Branches:** PC `digest-core-macro-port`, macro `digest-core-port` — review +
