@@ -472,6 +472,45 @@ def severity_tape() -> None:
 
 
 @main.command()
+def disclosure() -> None:
+    """Reserve-tone NLP over stored EDGAR filings (EKG Lead 5).
+
+    Scores the reserve language in each insurer's recent EDGAR filings (8-K
+    earnings releases / 10-Q / 10-K) with a deterministic reserve-tone lexicon
+    and feeds an adverse-tone reading into the same reserve-deterioration boost
+    as Lead 6 — a language signal that leads the chain-ladder number.
+    """
+    from digest import disclosure as disclosure_mod
+
+    db.init_db()
+    console.rule("[bold cyan]disclosure")
+    counts = disclosure_mod.run_disclosure()
+    if counts["filings"] == 0:
+        console.print("[yellow]No EDGAR filings with content yet.[/yellow] "
+                      "Run [bold]digest ingest edgar[/bold] first.")
+        return
+    console.print(f"[green]✓[/green] scored {counts['scored']}/{counts['filings']} filings")
+    rows = db.latest_disclosure_sentiment(limit=20)
+    if rows:
+        table = Table(title="Disclosure sentiment — reserve tone")
+        table.add_column("Insurer", no_wrap=True)
+        table.add_column("Period", no_wrap=True, style="dim")
+        table.add_column("Tone", no_wrap=True)
+        table.add_column("Adverse", justify="right")
+        table.add_column("Filing", style="dim", no_wrap=True)
+        for r in rows:
+            tone = r["reserve_tone"] or "neutral"
+            colour = {"strengthening": "red", "releasing": "green"}.get(tone, "white")
+            score = r["adverse_language_score"]
+            table.add_row(
+                r["insurer"], r["period"], f"[{colour}]{tone}[/{colour}]",
+                f"{score:.2f}" if score is not None else "—",
+                (r["source_filing"] or "")[:32],
+            )
+        console.print(table)
+
+
+@main.command()
 def stats() -> None:
     """Item counts by source plus triage + summarizer status."""
     db.init_db()

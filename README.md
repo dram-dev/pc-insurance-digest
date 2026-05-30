@@ -123,7 +123,7 @@ uv run digest pipeline --run-type manual
 ```
 
 CLI commands: `ingest`, `sources`, `brief`, `rate`, `calibration`, `embed`,
-`related`, `ask`, `outcomes`, `learn`, `reserving`, `cat-nowcast`,
+`related`, `ask`, `outcomes`, `learn`, `reserving`, `disclosure`, `cat-nowcast`,
 `severity-tape`, `litigation`, `burden`, `triage`, `summarize`, `regime`,
 `signals`, `pipeline`, `publish`, `weekly`, `stats`, `recent`, `health`, `viz`,
 `init-db`.
