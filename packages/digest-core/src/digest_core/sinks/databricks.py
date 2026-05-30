@@ -229,12 +229,11 @@ class DatabricksSink:
         }
         self._insert("silver.triage_verdicts", [row])
 
-    def write_score(self, source: str, source_id: str, score_row: dict[str, Any]) -> None:
-        """Domain pipelines pass through their boost-factor breakdown unchanged
-        — each domain's silver.signal_scores DDL declares its own column set."""
-        if not self._enabled:
-            return
-        row = {
+    @staticmethod
+    def _score_row(source: str, source_id: str, score_row: dict[str, Any]) -> dict[str, Any]:
+        """Build a silver.signal_scores row from a domain score dict. Each
+        domain's DDL declares its own column set; unknown keys are simply None."""
+        return {
             "item_hash":        item_hash(source, source_id),
             "computed_at":      _iso(score_row.get("computed_at")) or _iso(datetime.utcnow()),
             "score":            score_row.get("score"),
@@ -253,7 +252,22 @@ class DatabricksSink:
             "reserve_boost":    score_row.get("reserve_boost"),
             "learned_score":    score_row.get("learned_score"),
         }
-        self._insert("silver.signal_scores", [row])
+
+    def write_score(self, source: str, source_id: str, score_row: dict[str, Any]) -> None:
+        """Single-row signal-score write. Prefer `write_scores` for a full batch
+        — per-row MERGEs are one network round-trip each."""
+        if not self._enabled:
+            return
+        self._insert("silver.signal_scores", [self._score_row(source, source_id, score_row)])
+
+    def write_scores(self, items: Iterable[tuple[str, str, dict[str, Any]]]) -> None:
+        """Batched signal-score write: all rows go through `_insert`, which
+        chunks them into `_BATCH_SIZE`-row MERGEs — ~50× fewer round-trips than
+        calling `write_score` per item. `items` is (source, source_id, score_row)."""
+        if not self._enabled:
+            return
+        rows = [self._score_row(src, sid, sr) for src, sid, sr in items]
+        self._insert("silver.signal_scores", rows)
 
     def write_summary(self, source: str, source_id: str, summary: dict[str, Any]) -> None:
         if not self._enabled:

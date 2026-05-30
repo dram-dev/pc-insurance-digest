@@ -112,6 +112,11 @@ MIGRATIONS = [
     "ALTER TABLE items ADD COLUMN burden_direction TEXT",   # increasing|neutral|decreasing|null
     "ALTER TABLE items ADD COLUMN burden_intensity TEXT",   # high|medium|low|null
     "CREATE INDEX IF NOT EXISTS idx_items_burden ON items(burden_intensity)",
+    # Wave 4 Lead 9: US state code on regulatory_rate items, so burden can be
+    # sliced per state (mirrors the silver.triage_verdicts.state column + the
+    # gold.burden_by_state view).
+    "ALTER TABLE items ADD COLUMN state TEXT",              # 2-letter US state | null
+    "CREATE INDEX IF NOT EXISTS idx_items_state ON items(state)",
     # Wave 2.x: insurer-priority + inflation-keyword boosts on signal_scores
     "ALTER TABLE signal_scores ADD COLUMN insurer_boost REAL DEFAULT 1.0",
     "ALTER TABLE signal_scores ADD COLUMN inflation_boost REAL DEFAULT 1.0",
@@ -221,6 +226,74 @@ MIGRATIONS = [
         PRIMARY KEY (insurer, lob, metric, as_of)
     )""",
     "CREATE INDEX IF NOT EXISTS idx_reserving_insurer ON reserving_signals(insurer)",
+    # Lead 2 — CAT-Load Nowcast: federal-disaster / drought velocity feeding the
+    # regime cat_load axis (local mirror of pc_bronze.cat_load_nowcast).
+    """CREATE TABLE IF NOT EXISTS cat_load_nowcast (
+        metric_name      TEXT NOT NULL,           -- 'open_disaster_declarations' | 'drought_coverage_pct'
+        region           TEXT NOT NULL,           -- state code or 'US'
+        observation_date TEXT NOT NULL,           -- month bucket (YYYY-MM-01) or ISO date
+        value            REAL,
+        zscore_12m       REAL,
+        is_anomaly       INTEGER,                 -- 0/1
+        source           TEXT,                    -- 'openfema' | 'usdm'
+        fetched_at       TEXT,
+        PRIMARY KEY (metric_name, region, observation_date)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_cat_nowcast_metric ON cat_load_nowcast(metric_name, region)",
+    # Lead 1 — Reinsurance Pulse: priced ROL / ILS-spread series feeding the
+    # regime market_cycle axis (local mirror of pc_bronze.reinsurance_pricing).
+    """CREATE TABLE IF NOT EXISTS reinsurance_pricing (
+        index_name       TEXT NOT NULL,            -- 'guycarp_us_property_cat_rol' | 'artemis_ils_spread'
+        observation_date TEXT NOT NULL,
+        value            REAL,                     -- ROL index level or spread (bps)
+        zscore_12m       REAL,
+        trend            TEXT,                     -- 'firming' | 'softening' | 'flat'
+        is_anomaly       INTEGER,                  -- 0/1
+        segment          TEXT,                     -- 'us_property_cat' | 'retro' | …
+        source           TEXT,                     -- 'guycarp' | 'artemis' | 'lane'
+        fetched_at       TEXT,
+        PRIMARY KEY (index_name, observation_date)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_reins_pricing_index ON reinsurance_pricing(index_name)",
+    # Lead 3 — Severity Tape: blended loss-cost severity index (local mirror of
+    # pc_bronze.severity_index) feeding the signals inflation-keyword boost.
+    """CREATE TABLE IF NOT EXISTS severity_index (
+        index_name       TEXT NOT NULL,            -- 'blended_severity' | 'fred_<series_id>' | 'manheim_uvvi'
+        observation_date TEXT NOT NULL,
+        value            REAL,
+        zscore_12m       REAL,
+        is_anomaly       INTEGER,                  -- 0/1
+        category         TEXT,                     -- 'used_vehicle' | 'parts' | 'labor' | 'medical' | 'blended'
+        source           TEXT,                     -- 'fred' | 'manheim'
+        fetched_at       TEXT,
+        PRIMARY KEY (index_name, observation_date)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_severity_index ON severity_index(index_name)",
+    # Lead 4 — Litigation Pressure Index: per-state×sector verdict / TPLF /
+    # docket-velocity composite (local mirror of pc_silver.litigation_pressure).
+    """CREATE TABLE IF NOT EXISTS litigation_pressure (
+        state            TEXT NOT NULL,            -- US state code, or 'US' national roll-up
+        sector           TEXT NOT NULL,            -- 'commercial_auto' | 'product_liability' | 'all'
+        as_of            TEXT NOT NULL,
+        verdict_count    INTEGER,                  -- nuclear verdicts (≥$10M) in window
+        median_award     REAL,                     -- USD
+        tplf_commitments REAL,                     -- disclosed TPLF committed, USD
+        docket_velocity  REAL,                     -- new P&C dockets / day, trailing window
+        pressure_index   REAL,                     -- composite 0-100, drives the boost
+        PRIMARY KEY (state, sector, as_of)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_litigation_state ON litigation_pressure(state, sector)",
+    # Lead 8 — InsurTech Capital-Flow: structured deal facts extracted from
+    # ai_insurtech news items (local mirror of pc_silver.capital_flows).
+    """CREATE TABLE IF NOT EXISTS capital_flows (
+        item_id     INTEGER PRIMARY KEY,
+        as_of       TEXT,
+        deal_type   TEXT,                          -- 'funding_round' | 'm&a' | 'ipo'
+        amount_usd  REAL,                           -- normalized USD; NULL = unsubstantiated
+        stage       TEXT,                           -- 'seed' | 'series_a' | … | NULL
+        target      TEXT,
+        investors   TEXT
+    )""",
     # Lead 5 — Disclosure Sentiment: reserve-tone read over EDGAR filings.
     """CREATE TABLE IF NOT EXISTS disclosure_sentiment (
         insurer                TEXT NOT NULL,       -- ticker
@@ -861,6 +934,7 @@ def update_triage(
     sub_tags: list[str] | None = None,
     source: str | None = None,
     source_id: str | None = None,
+    state: str | None = None,
 ) -> None:
     """Record a triage outcome on an item.
 
@@ -886,11 +960,12 @@ def update_triage(
                 burden_direction = ?,
                 burden_intensity = ?,
                 sub_tags         = ?,
+                state            = ?,
                 triaged_at       = datetime('now')
             WHERE id = ?
             """,
             (decision, score, topic, burden_direction, burden_intensity,
-             sub_tags_json, item_id),
+             sub_tags_json, state, item_id),
         )
     if pair:
         sink.write_triage(pair[0], pair[1], {
@@ -900,6 +975,7 @@ def update_triage(
             "sub_tags":         sub_tags or [],
             "burden_direction": burden_direction,
             "burden_intensity": burden_intensity,
+            "state":            state,
         })
 
 
@@ -1475,11 +1551,14 @@ def upsert_signal_scores(rows: list[dict]) -> int:
             r.setdefault("learned_score", None)
             cur = conn.execute(sql, r)
             n += cur.rowcount or 0
-    # Silver sink — one write per scored row, with all 10 boost factors.
+    # Silver sink — one batched MERGE per _BATCH_SIZE rows (not per item), so a
+    # full signals run is ~33 round-trips instead of one per scored row.
+    triples = []
     for r in rows:
         pair = src_map.get(int(r.get("item_id") or 0))
         if pair:
-            sink.write_score(pair[0], pair[1], r)
+            triples.append((pair[0], pair[1], r))
+    sink.write_scores(triples)
     return n
 
 
@@ -2047,6 +2126,176 @@ def reserving_severity_map() -> dict[str, float]:
         if sev > 0:
             out[d["insurer"]] = max(out.get(d["insurer"], 0.0), sev)
     return out
+
+
+def upsert_cat_nowcast(rows: list[dict]) -> int:
+    """Persist CAT-load nowcast observations; mirror to bronze.cat_load_nowcast.
+    Returns rows written."""
+    rows = list(rows)
+    if not rows:
+        return 0
+    with get_conn() as conn:
+        conn.executemany(
+            """INSERT OR REPLACE INTO cat_load_nowcast
+                 (metric_name, region, observation_date, value, zscore_12m,
+                  is_anomaly, source, fetched_at)
+               VALUES (:metric_name, :region, :observation_date, :value,
+                       :zscore_12m, :is_anomaly, :source, :fetched_at)""",
+            rows,
+        )
+    sink.write_cat_load_nowcast(rows)
+    return len(rows)
+
+
+def latest_cat_nowcast(metric_name: str, region: str = "US") -> sqlite3.Row | None:
+    """Newest nowcast observation for a metric/region, or None."""
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT * FROM cat_load_nowcast
+               WHERE metric_name=? AND region=?
+               ORDER BY observation_date DESC LIMIT 1""",
+            (metric_name, region),
+        ).fetchone()
+
+
+def upsert_reinsurance_pricing(rows: list[dict]) -> int:
+    """Persist reinsurance-pricing observations; mirror to bronze.reinsurance_pricing."""
+    rows = list(rows)
+    if not rows:
+        return 0
+    with get_conn() as conn:
+        conn.executemany(
+            """INSERT OR REPLACE INTO reinsurance_pricing
+                 (index_name, observation_date, value, zscore_12m, trend,
+                  is_anomaly, segment, source, fetched_at)
+               VALUES (:index_name, :observation_date, :value, :zscore_12m, :trend,
+                       :is_anomaly, :segment, :source, :fetched_at)""",
+            rows,
+        )
+    sink.write_reinsurance_pricing(rows)
+    return len(rows)
+
+
+def latest_reinsurance_pricing(index_name: str | None = None) -> sqlite3.Row | None:
+    """Newest reinsurance-pricing observation overall, or for a given index."""
+    with get_conn() as conn:
+        if index_name:
+            return conn.execute(
+                """SELECT * FROM reinsurance_pricing WHERE index_name=?
+                   ORDER BY observation_date DESC LIMIT 1""",
+                (index_name,),
+            ).fetchone()
+        return conn.execute(
+            "SELECT * FROM reinsurance_pricing ORDER BY observation_date DESC LIMIT 1"
+        ).fetchone()
+
+
+def upsert_severity_index(rows: list[dict]) -> int:
+    """Persist severity-index observations; mirror to bronze.severity_index."""
+    rows = list(rows)
+    if not rows:
+        return 0
+    with get_conn() as conn:
+        conn.executemany(
+            """INSERT OR REPLACE INTO severity_index
+                 (index_name, observation_date, value, zscore_12m, is_anomaly,
+                  category, source, fetched_at)
+               VALUES (:index_name, :observation_date, :value, :zscore_12m,
+                       :is_anomaly, :category, :source, :fetched_at)""",
+            rows,
+        )
+    sink.write_severity_index(rows)
+    return len(rows)
+
+
+def latest_severity_index(index_name: str = "blended_severity") -> sqlite3.Row | None:
+    """Newest severity-index observation for an index (default the blend), or None."""
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT * FROM severity_index WHERE index_name=?
+               ORDER BY observation_date DESC LIMIT 1""",
+            (index_name,),
+        ).fetchone()
+
+
+def upsert_litigation_pressure(sig: dict) -> None:
+    """Persist a litigation-pressure reading; mirror to silver.litigation_pressure."""
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO litigation_pressure
+                 (state, sector, as_of, verdict_count, median_award,
+                  tplf_commitments, docket_velocity, pressure_index)
+               VALUES (:state, :sector, :as_of, :verdict_count, :median_award,
+                       :tplf_commitments, :docket_velocity, :pressure_index)""",
+            sig,
+        )
+    sink.write_litigation_pressure(sig)
+
+
+def latest_litigation_pressure(state: str = "US", sector: str = "all") -> sqlite3.Row | None:
+    """Newest litigation-pressure reading for a state/sector (default national), or None."""
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT * FROM litigation_pressure WHERE state=? AND sector=?
+               ORDER BY as_of DESC LIMIT 1""",
+            (state, sector),
+        ).fetchone()
+
+
+def burden_by_state(window_days: int = 90) -> list[sqlite3.Row]:
+    """Per-state regulatory-burden pressure over the trailing window (Lead 9).
+
+    Intensity-weighted count of `regulatory_rate` items with a state code, the
+    SQLite analog of gold.burden_by_state. Weight high=3 / medium=2 / low=1;
+    `net_direction` nets increasing(+) vs decreasing(-) burden. Most-pressured
+    state first."""
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT state,
+                   COUNT(*) AS n,
+                   SUM(CASE burden_intensity WHEN 'high' THEN 3
+                                             WHEN 'medium' THEN 2
+                                             WHEN 'low' THEN 1 ELSE 0 END) AS weighted_burden,
+                   SUM(CASE burden_direction WHEN 'increasing' THEN 1
+                                             WHEN 'decreasing' THEN -1 ELSE 0 END) AS net_direction
+            FROM items
+            WHERE topic = 'regulatory_rate'
+              AND state IS NOT NULL AND state != ''
+              AND triage_decision = 'keep'
+              AND ingested_at >= datetime('now', ?)
+            GROUP BY state
+            ORDER BY weighted_burden DESC, n DESC
+            """,
+            (f"-{window_days} days",),
+        ).fetchall()
+
+
+def courtlistener_docket_velocity(window_days: int = 30) -> float:
+    """New CourtListener dockets per day over the trailing window (0.0 if none)."""
+    with get_conn() as conn:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM items WHERE source='courtlistener' "
+            "AND ingested_at >= datetime('now', ?)",
+            (f"-{window_days} days",),
+        ).fetchone()[0]
+    return round(n / float(window_days), 4)
+
+
+def upsert_capital_flow(item_id: int, source: str, source_id: str, flow: dict) -> None:
+    """Persist an extracted insurtech deal; mirror to silver.capital_flows."""
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO capital_flows
+                 (item_id, as_of, deal_type, amount_usd, stage, target, investors)
+               VALUES (:item_id, :as_of, :deal_type, :amount_usd, :stage, :target,
+                       :investors)""",
+            {"item_id": item_id, "as_of": flow.get("as_of"),
+             "deal_type": flow.get("deal_type"), "amount_usd": flow.get("amount_usd"),
+             "stage": flow.get("stage"), "target": flow.get("target"),
+             "investors": flow.get("investors")},
+        )
+    sink.write_capital_flow(source, source_id, flow)
 
 
 def edgar_filings_with_content(limit: int = 500) -> list[sqlite3.Row]:

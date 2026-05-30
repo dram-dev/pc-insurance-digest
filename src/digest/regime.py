@@ -107,13 +107,22 @@ class RegimeSignal:
 # ── CAT-load (mechanical) ─────────────────────────────────────────────
 
 
-def compute_cat_load(counts: dict[str, int] | None = None) -> tuple[str, dict[str, int]]:
+def compute_cat_load(
+    counts: dict[str, int] | None = None,
+    nowcast: dict[str, float] | None = None,
+) -> tuple[str, dict[str, int]]:
     """Map NHC/USGS/NIFC counts → cat_load state. Returns (state, raw_counts).
 
     Rules (deliberately simple — easy to tune from the user's read of the daily):
       post_major_event:   ≥ 1 major EQ (M ≥ 6 US) OR ≥ 1 active wildfire OR ≥ 3 NHC advisories in window
       active_season:      ≥ 1 NHC advisory in last 14d
       low_season:         otherwise
+
+    Lead 2 (CAT-Load Nowcast): an anomalous surge in federal disaster
+    declarations can *escalate* the state (never lower it), catching perils the
+    three item sources miss (riverine flood, severe convective, ice). The nudge
+    is a no-op until `digest cat-nowcast` has run, so the axis is behavior-
+    preserving by default.
     """
     if counts is None:
         counts = db.cat_load_counts()
@@ -122,10 +131,21 @@ def compute_cat_load(counts: dict[str, int] | None = None) -> tuple[str, dict[st
     recent_wildfire = counts.get("recent_wildfire", 0)
 
     if recent_major_eq >= 1 or recent_wildfire >= 1 or active_nhc >= 3:
-        return "post_major_event", counts
-    if active_nhc >= 1:
-        return "active_season", counts
-    return "low_season", counts
+        state = "post_major_event"
+    elif active_nhc >= 1:
+        state = "active_season"
+    else:
+        state = "low_season"
+
+    if nowcast is None:
+        from digest.cat_nowcast import nowcast_signal
+        nowcast = nowcast_signal()
+    from digest.cat_nowcast import escalate_cat_load
+    escalated = escalate_cat_load(state, nowcast)
+    out_counts = {**counts}
+    if "declaration_z" in nowcast:
+        out_counts["declaration_z"] = nowcast["declaration_z"]
+    return escalated, out_counts
 
 
 # ── Market-cycle (LLM-judged) ─────────────────────────────────────────
@@ -230,6 +250,7 @@ def compute_market_cycle(window_days: int = 60) -> dict[str, Any]:
     cycle = str(parsed.get("market_cycle", "stable")).lower().strip()
     if cycle not in MARKET_CYCLE_MULT:
         cycle = "stable"
+    cycle = _apply_pricing_hint(cycle)
     return {
         "market_cycle":       cycle,
         "combined_ratio_dir": str(parsed.get("combined_ratio_dir", "stable")).lower().strip(),
@@ -237,6 +258,20 @@ def compute_market_cycle(window_days: int = 60) -> dict[str, Any]:
         "evidence":           str(parsed.get("evidence", ""))[:400],
         "n_items":            len(rows),
     }
+
+
+def _apply_pricing_hint(llm_cycle: str) -> str:
+    """Lead 1 (Reinsurance Pulse): if priced ROL/ILS shows firming, take the
+    *firmer* of the LLM narrative call and the priced hint. Firm-only — price
+    never softens the call here — and a no-op until reinsurance pricing data
+    exists, so the axis is behavior-preserving by default."""
+    from digest.reinsurance import market_cycle_hint
+    hint = market_cycle_hint()
+    if hint is None:
+        return llm_cycle
+    # MARKET_CYCLES is ordered hardest→softest; lower index = harder.
+    rank = {c: i for i, c in enumerate(MARKET_CYCLES)}
+    return hint if rank.get(hint, 99) < rank.get(llm_cycle, 99) else llm_cycle
 
 
 # ── Override + hysteresis ─────────────────────────────────────────────

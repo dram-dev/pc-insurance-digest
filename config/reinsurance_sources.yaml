@@ -1,0 +1,31 @@
+# Reinsurance Pulse (EKG Lead 1) — priced ROL / ILS-spread indices that feed the
+# regime market_cycle axis. Each index stays `enabled: false` until its scraper
+# is implemented in reinsurance._fetch_series and validated against the live
+# source on the Mac mini (these are published commentary / PDFs / HTML tables,
+# not clean APIs — same scaffold discipline as serff.py / state_doi.py).
+#
+# segment ∈ us_property_cat | retro | casualty | ils
+# source  ∈ guycarp | artemis | lane
+
+indices:
+  - index_name: guycarp_us_property_cat_rol
+    segment: us_property_cat
+    source: guycarp
+    # Guy Carpenter Global Property Catastrophe Rate-on-Line Index — published in
+    # renewal commentary (1/1, 4/1, 7/1). Annual + renewal cadence.
+    url: "https://www.guycarp.com/insights.html"
+    enabled: false
+
+  - index_name: artemis_ils_spread
+    segment: ils
+    source: artemis
+    # Artemis Deal Directory — cat-bond spread / expected-loss / multiple.
+    url: "https://www.artemis.bm/deal-directory/"
+    enabled: false
+
+  - index_name: lane_ils_index
+    segment: ils
+    source: lane
+    # Lane Financial quarterly ILS/cat-bond review (published PDFs).
+    url: "http://www.lanefinancialllc.com/"
+    enabled: false

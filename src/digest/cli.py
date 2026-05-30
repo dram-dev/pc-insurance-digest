@@ -371,6 +371,106 @@ def reserving() -> None:
         console.print(table)
 
 
+@main.command(name="cat-nowcast")
+def cat_nowcast() -> None:
+    """Federal-disaster velocity nowcast for the regime cat_load axis (Lead 2).
+
+    Pulls monthly distinct disaster-declaration counts from OpenFEMA (free, no
+    key), z-scores the latest month vs the trailing-12m baseline, and stores the
+    reading so `digest regime` can escalate cat_load on an anomalous surge.
+    """
+    from digest import cat_nowcast as nowcast_mod
+
+    db.init_db()
+    console.rule("[bold cyan]cat-nowcast")
+    counts = nowcast_mod.run_cat_nowcast()
+    if counts["written"] == 0:
+        console.print("[yellow]No nowcast data[/yellow] — OpenFEMA returned too few months.")
+        return
+    sig = nowcast_mod.nowcast_signal()
+    z = sig.get("declaration_z")
+    flag = "[red]⚠ anomalous surge[/red]" if counts["anomaly"] else "[green]normal[/green]"
+    console.print(
+        f"[green]✓[/green] {counts['written']} months stored · latest z="
+        f"[bold]{z:+.2f}[/bold] {flag}" if z is not None
+        else f"[green]✓[/green] {counts['written']} months stored"
+    )
+
+
+@main.command()
+@click.option("--window", default=90, help="Trailing window in days")
+def burden(window: int) -> None:
+    """Per-state regulatory-burden barometer (Lead 9).
+
+    Intensity-weighted count of regulatory_rate items by US state over the
+    trailing window — the local analog of gold.burden_by_state. Populated by the
+    triage `state` field; empty until regulatory_rate items with a state are
+    triaged.
+    """
+    db.init_db()
+    rows = db.burden_by_state(window_days=window)
+    if not rows:
+        console.print("[yellow]No state-tagged regulatory items yet.[/yellow]")
+        return
+    table = Table(title=f"Regulatory burden by state ({window}d)")
+    table.add_column("State", no_wrap=True)
+    table.add_column("Items", justify="right")
+    table.add_column("Weighted", justify="right")
+    table.add_column("Net dir", justify="right")
+    for r in rows:
+        nd = r["net_direction"] or 0
+        arrow = "↑" if nd > 0 else "↓" if nd < 0 else "·"
+        colour = "red" if nd > 0 else "green" if nd < 0 else "white"
+        table.add_row(r["state"], str(r["n"]), str(r["weighted_burden"] or 0),
+                      f"[{colour}]{arrow} {nd:+d}[/{colour}]")
+    console.print(table)
+
+
+@main.command()
+def litigation() -> None:
+    """National litigation-pressure index for the TPLF boost (Lead 4).
+
+    Composes nuclear-verdict counts / median awards (Marathon), TPLF commitments
+    (Westfleet) and CourtListener docket velocity into a 0-100 pressure index.
+    v1 computes the live docket-velocity component; the verdict/TPLF components
+    are pending scraper validation, so the index stays conservative until then.
+    """
+    from digest import litigation as litigation_mod
+
+    db.init_db()
+    console.rule("[bold cyan]litigation")
+    counts = litigation_mod.run_litigation()
+    p = litigation_mod.pressure_signal()
+    console.print(
+        f"[green]✓[/green] national pressure index = [bold]{p:.1f}[/bold]/100 "
+        f"[dim](docket-velocity component live; verdict/TPLF pending)[/dim]"
+    )
+
+
+@main.command(name="severity-tape")
+def severity_tape() -> None:
+    """Blended loss-cost severity index for the inflation boost (Lead 3).
+
+    Blends the FRED parts/labor/used-car/medical series already tracked into one
+    severity z-score so `digest signals` can magnitude-scale the inflation-keyword
+    boost when the loss-cost regime is hot. Needs FRED_API_KEY.
+    """
+    from digest import severity_tape as tape_mod
+
+    db.init_db()
+    console.rule("[bold cyan]severity-tape")
+    counts = tape_mod.run_severity_tape()
+    if counts["written"] == 0:
+        console.print("[yellow]No severity data[/yellow] — check FRED_API_KEY / fred_series.yaml.")
+        return
+    z = tape_mod.severity_regime()
+    flag = "[red]⚠ hot[/red]" if counts.get("anomaly") else "[green]normal[/green]"
+    console.print(
+        f"[green]✓[/green] {counts['components']} FRED components → blended z="
+        f"[bold]{z:+.2f}[/bold] {flag}"
+    )
+
+
 @main.command()
 def disclosure() -> None:
     """Reserve-tone NLP over stored EDGAR filings (EKG Lead 5).

@@ -389,20 +389,30 @@ def _text_blob(row: Any) -> str:
     return " ".join(parts)
 
 
-def _litigation_tplf_boost(row: Any, blob: str, boost_value: float = 1.3) -> float:
-    """Returns `boost_value` when the LLM tagged the item with
-    litigation_tplf sub_tag OR the title/summary names a TPLF / MDL signal.
-    Pass the pre-computed `blob` so score_item doesn't rebuild it per helper.
+def _litigation_tplf_boost(
+    row: Any, blob: str, boost_value: float = 1.3, pressure: float | None = None
+) -> float:
+    """Returns `boost_value` when the LLM tagged the item with litigation_tplf
+    sub_tag OR the title/summary names a TPLF / MDL signal; else 1.0.
+
+    Lead 4: when the litigation-pressure index (`pressure`, 0-100) is elevated,
+    the boost is scaled up (capped). `pressure` is None until the index is
+    computed, so the boost is behavior-preserving by default. Pass the
+    pre-computed `blob` so score_item doesn't rebuild it per helper.
     """
+    fires = False
     sub_tags_json = row["sub_tags"] if "sub_tags" in row.keys() else None
     if sub_tags_json:
         try:
-            tags = json.loads(sub_tags_json)
-            if "litigation_tplf" in tags:
-                return boost_value
+            fires = "litigation_tplf" in json.loads(sub_tags_json)
         except (TypeError, ValueError):
-            pass
-    return boost_value if blob and _TPLF_RE.search(blob) else 1.0
+            fires = False
+    if not fires:
+        fires = bool(blob and _TPLF_RE.search(blob))
+    if not fires:
+        return 1.0
+    from digest.litigation import tplf_pressure_boost
+    return tplf_pressure_boost(boost_value, pressure)
 
 
 def _regulatory_action_boost(blob: str, boost_value: float = 1.2) -> float:
@@ -412,9 +422,28 @@ def _regulatory_action_boost(blob: str, boost_value: float = 1.2) -> float:
     return boost_value if blob and _REGULATORY_RE.search(blob) else 1.0
 
 
-def _inflation_keyword_boost(blob: str, boost_value: float = 1.2) -> float:
-    """Returns `boost_value` if the row blob names an inflation driver."""
-    return boost_value if blob and _INFLATION_RE.search(blob) else 1.0
+# Lead 3 — Severity Tape: when the blended loss-cost tape is in an elevated
+# regime, an inflation-keyword hit is worth more. Uplift + cap stay modest so
+# the heuristic's character is preserved.
+_SEVERITY_HOT_Z = 2.0
+_SEVERITY_UPLIFT = 0.1
+_SEVERITY_BOOST_CAP = 1.4
+
+
+def _inflation_keyword_boost(
+    blob: str, boost_value: float = 1.2, severity_z: float | None = None
+) -> float:
+    """`boost_value` if the row blob names an inflation driver, else 1.0.
+
+    Lead 3: when `severity_z` (the blended FRED loss-cost tape) is hot (≥2σ), the
+    keyword hit is magnitude-scaled up by `_SEVERITY_UPLIFT` (capped). `severity_z`
+    is None until the tape has run, so the boost is behavior-preserving by default.
+    """
+    if not (blob and _INFLATION_RE.search(blob)):
+        return 1.0
+    if severity_z is not None and severity_z >= _SEVERITY_HOT_Z:
+        return min(boost_value + _SEVERITY_UPLIFT, _SEVERITY_BOOST_CAP)
+    return boost_value
 
 
 def _insurer_priority_boost(
@@ -546,6 +575,8 @@ def score_item(
     regime: RegimeSignal,
     weights: dict[str, dict[str, float]] | None = None,
     reserve_map: dict[str, float] | None = None,
+    severity_z: float | None = None,
+    litigation_pressure: float | None = None,
 ) -> Score:
     """Compute the leaderboard score for one item row.
 
@@ -589,9 +620,9 @@ def score_item(
     metadata_json = row["metadata_json"] if "metadata_json" in row.keys() else None
     blob = _text_blob(row)   # build once, reuse across the three keyword helpers
     insurer_boost    = _insurer_priority_boost(source, metadata_json, weights["insurer_priority"])
-    inflation_boost  = _inflation_keyword_boost(blob,      kw.get("inflation",  1.2))
+    inflation_boost  = _inflation_keyword_boost(blob,      kw.get("inflation",  1.2), severity_z)
     regulatory_boost = _regulatory_action_boost(blob,      kw.get("regulatory", 1.2))
-    tplf_boost       = _litigation_tplf_boost(row, blob,   kw.get("tplf",       1.3))
+    tplf_boost       = _litigation_tplf_boost(row, blob,   kw.get("tplf",       1.3), litigation_pressure)
     # Option 5: adverse reserve development on a named insurer. Neutral (1.0)
     # until reserving_signals has data (reserve_map empty → no-op).
     reserve_boost    = _reserve_deterioration_boost(blob, reserve_map or {})
@@ -639,6 +670,10 @@ def run_signals() -> dict[str, int]:
     # land on the next run, not mid-batch.
     weights = _load_scoring_weights()
     reserve_map = db.reserving_severity_map()      # Option 5 (empty until data)
+    from digest.severity_tape import severity_regime
+    severity_z = severity_regime()                 # Lead 3 (None until tape runs)
+    from digest.litigation import pressure_signal
+    litigation_pressure = pressure_signal()        # Lead 4 (None until index runs)
     computed_at = datetime.now(timezone.utc).isoformat()
 
     # Option 4: if a learned model exists, attach its score alongside the
@@ -653,7 +688,8 @@ def run_signals() -> dict[str, int]:
 
     scored: list[dict[str, Any]] = []
     for row in rows:
-        s = score_item(row, regime, weights=weights, reserve_map=reserve_map)
+        s = score_item(row, regime, weights=weights, reserve_map=reserve_map,
+                       severity_z=severity_z, litigation_pressure=litigation_pressure)
         d = s.as_row(computed_at)
         if model is not None:
             feat = dict(d)

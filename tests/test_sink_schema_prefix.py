@@ -6,7 +6,7 @@ while PK lookups stay unprefixed.
 """
 from __future__ import annotations
 
-from digest_core.sinks.databricks import DatabricksSink
+from digest_core.sinks.databricks import _BATCH_SIZE, DatabricksSink
 
 
 def _sink(prefix: str) -> DatabricksSink:
@@ -39,6 +39,36 @@ def test_merge_targets_prefixed_schema(monkeypatch):
     s.write_triage("rss", "r1", {"decision": "keep", "topic": "cyber"})
     assert captured["table"] == "pc_silver.triage_verdicts"   # prefixed
     assert captured["pk_cols"] == ("item_hash", "triaged_at")  # PK lookup unprefixed
+
+
+def test_write_scores_batches_instead_of_per_row(monkeypatch):
+    """write_scores must MERGE in _BATCH_SIZE chunks, not once per item — the
+    fix for the per-row round-trip that made `digest signals` crawl."""
+    s = _sink("pc_")
+    calls: list[int] = []
+
+    def fake_merge(cur, table, cols, pk_cols, rows):
+        assert table == "pc_silver.signal_scores"
+        calls.append(len(rows))
+
+    monkeypatch.setattr(s, "_connection", lambda: _FakeConn())
+    monkeypatch.setattr(DatabricksSink, "_merge_batch", staticmethod(fake_merge))
+
+    n = _BATCH_SIZE * 2 + 7
+    items = [("rss", f"r{i}", {"score": 1.0, "tier": "low"}) for i in range(n)]
+    s.write_scores(items)
+
+    assert sum(calls) == n                      # every row written
+    assert len(calls) == 3                       # ceil(n / _BATCH_SIZE) merges, not n
+    assert max(calls) <= _BATCH_SIZE
+
+
+def test_write_scores_noop_when_disabled(monkeypatch):
+    s = DatabricksSink(enabled=False, host="", http_path="", token="", catalog="c")
+    called = []
+    monkeypatch.setattr(s, "_connection", lambda: called.append(1) or _FakeConn())
+    s.write_scores([("rss", "r1", {"score": 1.0})])
+    assert called == []                          # disabled → never opens a connection
 
 
 class _FakeConn:

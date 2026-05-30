@@ -123,9 +123,10 @@ uv run digest pipeline --run-type manual
 ```
 
 CLI commands: `ingest`, `sources`, `brief`, `rate`, `calibration`, `embed`,
-`related`, `ask`, `outcomes`, `learn`, `reserving`, `disclosure`, `triage`,
-`summarize`, `regime`, `signals`, `pipeline`, `publish`, `weekly`, `stats`,
-`recent`, `health`, `viz`, `init-db`.
+`related`, `ask`, `outcomes`, `learn`, `reserving`, `disclosure`, `cat-nowcast`,
+`severity-tape`, `litigation`, `burden`, `triage`, `summarize`, `regime`,
+`signals`, `pipeline`, `publish`, `weekly`, `stats`, `recent`, `health`, `viz`,
+`init-db`.
 
 **Scoring feedback loop.** `digest rate <id> <1-5>` records what you thought an
 item was worth; `digest calibration` shows system-vs-you deltas; `digest
