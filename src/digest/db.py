@@ -264,6 +264,17 @@ MIGRATIONS = [
         PRIMARY KEY (index_name, observation_date)
     )""",
     "CREATE INDEX IF NOT EXISTS idx_severity_index ON severity_index(index_name)",
+    # Lead 8 — InsurTech Capital-Flow: structured deal facts extracted from
+    # ai_insurtech news items (local mirror of pc_silver.capital_flows).
+    """CREATE TABLE IF NOT EXISTS capital_flows (
+        item_id     INTEGER PRIMARY KEY,
+        as_of       TEXT,
+        deal_type   TEXT,                          -- 'funding_round' | 'm&a' | 'ipo'
+        amount_usd  REAL,                           -- normalized USD; NULL = unsubstantiated
+        stage       TEXT,                           -- 'seed' | 'series_a' | … | NULL
+        target      TEXT,
+        investors   TEXT
+    )""",
 ]
 
 
@@ -2160,6 +2171,22 @@ def latest_severity_index(index_name: str = "blended_severity") -> sqlite3.Row |
                ORDER BY observation_date DESC LIMIT 1""",
             (index_name,),
         ).fetchone()
+
+
+def upsert_capital_flow(item_id: int, source: str, source_id: str, flow: dict) -> None:
+    """Persist an extracted insurtech deal; mirror to silver.capital_flows."""
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO capital_flows
+                 (item_id, as_of, deal_type, amount_usd, stage, target, investors)
+               VALUES (:item_id, :as_of, :deal_type, :amount_usd, :stage, :target,
+                       :investors)""",
+            {"item_id": item_id, "as_of": flow.get("as_of"),
+             "deal_type": flow.get("deal_type"), "amount_usd": flow.get("amount_usd"),
+             "stage": flow.get("stage"), "target": flow.get("target"),
+             "investors": flow.get("investors")},
+        )
+    sink.write_capital_flow(source, source_id, flow)
 
 
 def signal_quality_by_source(since_iso: str | None = None) -> list[sqlite3.Row]:

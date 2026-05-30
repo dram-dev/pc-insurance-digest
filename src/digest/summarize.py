@@ -27,7 +27,7 @@ import requests
 from digest import db
 from digest.config import settings
 from digest_core.summarize.backends import BACKENDS, BackendConfig, BackendError
-from digest_core.summarize.runner import enforce_topic_caps, extract_json
+from digest_core.summarize.runner import extract_json
 
 logger = logging.getLogger(__name__)
 
@@ -447,7 +447,13 @@ def run_summarize(
     # Apply per-topic share caps so a noisy keyword feed doesn't drown
     # substantive items. Items dropped here remain triage=keep and will
     # show up in the kept-unsummarized section of the daily note.
-    rows, dropped_by_topic = enforce_topic_caps(rows, TOPIC_CAP_PCT)
+    # Lead 8: a substantiated insurtech deal (real dollar amount) is exempt from
+    # the ai_insurtech cap, so real capital events survive the keyword cull.
+    from digest import capital_flows
+    protected = capital_flows.run_capital_flows(rows)
+    rows, dropped_by_topic = capital_flows.enforce_topic_caps_protected(
+        rows, TOPIC_CAP_PCT, protected
+    )
     if dropped_by_topic:
         for topic, n in dropped_by_topic.items():
             logger.info(
