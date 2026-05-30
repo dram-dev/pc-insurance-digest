@@ -397,6 +397,27 @@ def cat_nowcast() -> None:
     )
 
 
+@main.command()
+def litigation() -> None:
+    """National litigation-pressure index for the TPLF boost (Lead 4).
+
+    Composes nuclear-verdict counts / median awards (Marathon), TPLF commitments
+    (Westfleet) and CourtListener docket velocity into a 0-100 pressure index.
+    v1 computes the live docket-velocity component; the verdict/TPLF components
+    are pending scraper validation, so the index stays conservative until then.
+    """
+    from digest import litigation as litigation_mod
+
+    db.init_db()
+    console.rule("[bold cyan]litigation")
+    counts = litigation_mod.run_litigation()
+    p = litigation_mod.pressure_signal()
+    console.print(
+        f"[green]✓[/green] national pressure index = [bold]{p:.1f}[/bold]/100 "
+        f"[dim](docket-velocity component live; verdict/TPLF pending)[/dim]"
+    )
+
+
 @main.command(name="severity-tape")
 def severity_tape() -> None:
     """Blended loss-cost severity index for the inflation boost (Lead 3).

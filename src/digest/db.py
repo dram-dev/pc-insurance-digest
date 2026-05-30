@@ -264,6 +264,20 @@ MIGRATIONS = [
         PRIMARY KEY (index_name, observation_date)
     )""",
     "CREATE INDEX IF NOT EXISTS idx_severity_index ON severity_index(index_name)",
+    # Lead 4 — Litigation Pressure Index: per-state×sector verdict / TPLF /
+    # docket-velocity composite (local mirror of pc_silver.litigation_pressure).
+    """CREATE TABLE IF NOT EXISTS litigation_pressure (
+        state            TEXT NOT NULL,            -- US state code, or 'US' national roll-up
+        sector           TEXT NOT NULL,            -- 'commercial_auto' | 'product_liability' | 'all'
+        as_of            TEXT NOT NULL,
+        verdict_count    INTEGER,                  -- nuclear verdicts (≥$10M) in window
+        median_award     REAL,                     -- USD
+        tplf_commitments REAL,                     -- disclosed TPLF committed, USD
+        docket_velocity  REAL,                     -- new P&C dockets / day, trailing window
+        pressure_index   REAL,                     -- composite 0-100, drives the boost
+        PRIMARY KEY (state, sector, as_of)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_litigation_state ON litigation_pressure(state, sector)",
     # Lead 8 — InsurTech Capital-Flow: structured deal facts extracted from
     # ai_insurtech news items (local mirror of pc_silver.capital_flows).
     """CREATE TABLE IF NOT EXISTS capital_flows (
@@ -2171,6 +2185,41 @@ def latest_severity_index(index_name: str = "blended_severity") -> sqlite3.Row |
                ORDER BY observation_date DESC LIMIT 1""",
             (index_name,),
         ).fetchone()
+
+
+def upsert_litigation_pressure(sig: dict) -> None:
+    """Persist a litigation-pressure reading; mirror to silver.litigation_pressure."""
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO litigation_pressure
+                 (state, sector, as_of, verdict_count, median_award,
+                  tplf_commitments, docket_velocity, pressure_index)
+               VALUES (:state, :sector, :as_of, :verdict_count, :median_award,
+                       :tplf_commitments, :docket_velocity, :pressure_index)""",
+            sig,
+        )
+    sink.write_litigation_pressure(sig)
+
+
+def latest_litigation_pressure(state: str = "US", sector: str = "all") -> sqlite3.Row | None:
+    """Newest litigation-pressure reading for a state/sector (default national), or None."""
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT * FROM litigation_pressure WHERE state=? AND sector=?
+               ORDER BY as_of DESC LIMIT 1""",
+            (state, sector),
+        ).fetchone()
+
+
+def courtlistener_docket_velocity(window_days: int = 30) -> float:
+    """New CourtListener dockets per day over the trailing window (0.0 if none)."""
+    with get_conn() as conn:
+        n = conn.execute(
+            "SELECT COUNT(*) FROM items WHERE source='courtlistener' "
+            "AND ingested_at >= datetime('now', ?)",
+            (f"-{window_days} days",),
+        ).fetchone()[0]
+    return round(n / float(window_days), 4)
 
 
 def upsert_capital_flow(item_id: int, source: str, source_id: str, flow: dict) -> None:
