@@ -371,6 +371,32 @@ def reserving() -> None:
         console.print(table)
 
 
+@main.command(name="cat-nowcast")
+def cat_nowcast() -> None:
+    """Federal-disaster velocity nowcast for the regime cat_load axis (Lead 2).
+
+    Pulls monthly distinct disaster-declaration counts from OpenFEMA (free, no
+    key), z-scores the latest month vs the trailing-12m baseline, and stores the
+    reading so `digest regime` can escalate cat_load on an anomalous surge.
+    """
+    from digest import cat_nowcast as nowcast_mod
+
+    db.init_db()
+    console.rule("[bold cyan]cat-nowcast")
+    counts = nowcast_mod.run_cat_nowcast()
+    if counts["written"] == 0:
+        console.print("[yellow]No nowcast data[/yellow] — OpenFEMA returned too few months.")
+        return
+    sig = nowcast_mod.nowcast_signal()
+    z = sig.get("declaration_z")
+    flag = "[red]⚠ anomalous surge[/red]" if counts["anomaly"] else "[green]normal[/green]"
+    console.print(
+        f"[green]✓[/green] {counts['written']} months stored · latest z="
+        f"[bold]{z:+.2f}[/bold] {flag}" if z is not None
+        else f"[green]✓[/green] {counts['written']} months stored"
+    )
+
+
 @main.command()
 def stats() -> None:
     """Item counts by source plus triage + summarizer status."""

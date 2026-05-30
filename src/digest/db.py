@@ -221,6 +221,20 @@ MIGRATIONS = [
         PRIMARY KEY (insurer, lob, metric, as_of)
     )""",
     "CREATE INDEX IF NOT EXISTS idx_reserving_insurer ON reserving_signals(insurer)",
+    # Lead 2 — CAT-Load Nowcast: federal-disaster / drought velocity feeding the
+    # regime cat_load axis (local mirror of pc_bronze.cat_load_nowcast).
+    """CREATE TABLE IF NOT EXISTS cat_load_nowcast (
+        metric_name      TEXT NOT NULL,           -- 'open_disaster_declarations' | 'drought_coverage_pct'
+        region           TEXT NOT NULL,           -- state code or 'US'
+        observation_date TEXT NOT NULL,           -- month bucket (YYYY-MM-01) or ISO date
+        value            REAL,
+        zscore_12m       REAL,
+        is_anomaly       INTEGER,                 -- 0/1
+        source           TEXT,                    -- 'openfema' | 'usdm'
+        fetched_at       TEXT,
+        PRIMARY KEY (metric_name, region, observation_date)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_cat_nowcast_metric ON cat_load_nowcast(metric_name, region)",
 ]
 
 
@@ -2027,6 +2041,36 @@ def reserving_severity_map() -> dict[str, float]:
         if r["direction"] == "adverse" and r["deterioration_pct"]:
             out[r["insurer"]] = max(out.get(r["insurer"], 0.0), r["deterioration_pct"])
     return out
+
+
+def upsert_cat_nowcast(rows: list[dict]) -> int:
+    """Persist CAT-load nowcast observations; mirror to bronze.cat_load_nowcast.
+    Returns rows written."""
+    rows = list(rows)
+    if not rows:
+        return 0
+    with get_conn() as conn:
+        conn.executemany(
+            """INSERT OR REPLACE INTO cat_load_nowcast
+                 (metric_name, region, observation_date, value, zscore_12m,
+                  is_anomaly, source, fetched_at)
+               VALUES (:metric_name, :region, :observation_date, :value,
+                       :zscore_12m, :is_anomaly, :source, :fetched_at)""",
+            rows,
+        )
+    sink.write_cat_load_nowcast(rows)
+    return len(rows)
+
+
+def latest_cat_nowcast(metric_name: str, region: str = "US") -> sqlite3.Row | None:
+    """Newest nowcast observation for a metric/region, or None."""
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT * FROM cat_load_nowcast
+               WHERE metric_name=? AND region=?
+               ORDER BY observation_date DESC LIMIT 1""",
+            (metric_name, region),
+        ).fetchone()
 
 
 def signal_quality_by_source(since_iso: str | None = None) -> list[sqlite3.Row]:
