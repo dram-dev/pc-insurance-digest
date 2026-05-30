@@ -1540,11 +1540,14 @@ def upsert_signal_scores(rows: list[dict]) -> int:
             r.setdefault("learned_score", None)
             cur = conn.execute(sql, r)
             n += cur.rowcount or 0
-    # Silver sink — one write per scored row, with all 10 boost factors.
+    # Silver sink — one batched MERGE per _BATCH_SIZE rows (not per item), so a
+    # full signals run is ~33 round-trips instead of one per scored row.
+    triples = []
     for r in rows:
         pair = src_map.get(int(r.get("item_id") or 0))
         if pair:
-            sink.write_score(pair[0], pair[1], r)
+            triples.append((pair[0], pair[1], r))
+    sink.write_scores(triples)
     return n
 
 
