@@ -221,6 +221,17 @@ MIGRATIONS = [
         PRIMARY KEY (insurer, lob, metric, as_of)
     )""",
     "CREATE INDEX IF NOT EXISTS idx_reserving_insurer ON reserving_signals(insurer)",
+    # Lead 5 — Disclosure Sentiment: reserve-tone read over EDGAR filings.
+    """CREATE TABLE IF NOT EXISTS disclosure_sentiment (
+        insurer                TEXT NOT NULL,       -- ticker
+        period                 TEXT NOT NULL,       -- filing period, e.g. '2026Q1'
+        as_of                  TEXT NOT NULL,       -- filing date (ISO)
+        reserve_tone           TEXT,                -- 'strengthening'|'releasing'|'neutral'
+        adverse_language_score REAL,                -- 0.0-1.0, higher = more adverse
+        source_filing          TEXT,                -- accession number or filing URL
+        PRIMARY KEY (insurer, period, as_of)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_disclosure_insurer ON disclosure_sentiment(insurer)",
 ]
 
 
@@ -2020,13 +2031,68 @@ def latest_reserving_signals(limit: int = 50) -> list[sqlite3.Row]:
 
 
 def reserving_severity_map() -> dict[str, float]:
-    """{insurer: worst adverse deterioration_pct} across latest signals — fuel for
-    the (not-yet-wired) reserve_deterioration_boost."""
+    """Combined reserve severity per insurer = chain-ladder adverse deterioration
+    (Lead 6) ∪ disclosure-tone language severity (Lead 5). Fuel for
+    reserve_deterioration_boost in signals.score_item. Empty until reserving /
+    disclosure data exists, so the scoring formula stays behavior-preserving."""
     out: dict[str, float] = {}
     for r in latest_reserving_signals(limit=500):
         if r["direction"] == "adverse" and r["deterioration_pct"]:
             out[r["insurer"]] = max(out.get(r["insurer"], 0.0), r["deterioration_pct"])
+    # Lead 5: blend in language-derived severity (capped below the triangle's, so
+    # adverse tone leads — but never overpowers — a confirmed chain-ladder number).
+    from digest.disclosure import language_severity  # local: avoid import cycle
+    for d in latest_disclosure_sentiment(limit=500):
+        sev = language_severity(d["reserve_tone"], d["adverse_language_score"] or 0.0)
+        if sev > 0:
+            out[d["insurer"]] = max(out.get(d["insurer"], 0.0), sev)
     return out
+
+
+def edgar_filings_with_content(limit: int = 500) -> list[sqlite3.Row]:
+    """EDGAR items that carry body text, newest first — input for disclosure tone."""
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT id, source_id, title, author, url, content, metadata_json,
+                      published_at, ingested_at
+               FROM items
+               WHERE source='edgar' AND content IS NOT NULL AND TRIM(content) != ''
+               ORDER BY COALESCE(published_at, ingested_at) DESC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+
+
+def upsert_disclosure_sentiment(sig: dict) -> None:
+    """Persist a reserve-tone reading; mirror to silver.disclosure_sentiment."""
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO disclosure_sentiment
+                 (insurer, period, as_of, reserve_tone, adverse_language_score,
+                  source_filing)
+               VALUES (:insurer, :period, :as_of, :reserve_tone,
+                       :adverse_language_score, :source_filing)""",
+            sig,
+        )
+    sink.write_disclosure_sentiment(sig)
+
+
+def latest_disclosure_sentiment(limit: int = 500) -> list[sqlite3.Row]:
+    """Most recent reserve-tone reading per insurer, most-adverse first."""
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            WITH latest AS (
+                SELECT insurer, MAX(as_of) AS as_of
+                FROM disclosure_sentiment GROUP BY insurer
+            )
+            SELECT d.* FROM disclosure_sentiment d
+            JOIN latest l ON d.insurer=l.insurer AND d.as_of=l.as_of
+            ORDER BY COALESCE(d.adverse_language_score, 0) DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
 
 
 def signal_quality_by_source(since_iso: str | None = None) -> list[sqlite3.Row]:

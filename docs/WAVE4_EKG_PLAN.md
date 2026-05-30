@@ -160,7 +160,15 @@ fallback** · **Wiring target** (exact module + symbol) · **Status**.
   score` into the severity map so an insurer with adverse *tone* gets a
   boost ahead of confirmed adverse *development*. Table:
   `pc_silver.disclosure_sentiment`.
-- **Status.** Researched. DDL + sink scaffold shipped; ingestor pending.
+- **Status.** **Shipped** — `src/digest/disclosure.py` (compact reserve-tone
+  lexicon → `reserve_tone` + `adverse_language_score`), `digest disclosure`
+  CLI, `disclosure_sentiment` table, and the language-severity blend into
+  `reserving_severity_map()` (capped at `LANG_SEVERITY_CAP=0.15` → boost ≤
+  1.15, below a confirmed triangle's 1.30). `signals.py` unchanged — it picks
+  up the enriched map automatically. **Follow-up:** v1 scores the EDGAR content
+  already stored (8-K EX-99.1 earnings releases carry the reserve commentary;
+  the 10-Q/10-K *head* often reads neutral); a reserve-footnote deep-fetch in
+  `edgar.py` is the next refinement.
 
 ### Lead 6 — Reserve-Adequacy Radar  **[HIGHEST LEVERAGE — prototyped]**
 
