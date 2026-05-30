@@ -30,10 +30,11 @@ from digest.ingest.base import IngestedItem, IngestorBase
 from digest.parse.pdf_tables import (
     Table,
     extract_tables,
+    extract_text_pages,
     fetch_pdf_bytes,
     find_tables,
 )
-from digest.parse.triangles import parse_triangle
+from digest.parse.triangles import parse_development_text, parse_triangle
 
 logger = logging.getLogger(__name__)
 
@@ -132,10 +133,19 @@ class InvestorSuppIngestor(IngestorBase):
         tables = extract_tables(pdf)
 
         # Loss-development triangles (Lead 6) are structured into the triangle
-        # store, not emitted as news items. Pull them out first so they don't
-        # double-count down the paid/pending news path.
+        # store, not emitted as news items.
+        #
+        # Two extractors, by document shape:
+        #  (1) ASC 944 development triangles in a 10-K are borderless + per-segment;
+        #      the grid detector can't read them, so parse them from the text layer
+        #      (own as_of, from the filing's 'December 31, YYYY' header).
+        #  (2) Gridded triangles in a quarterly supplement go through the grid path
+        #      keyed on the request quarter.
+        text_cells = parse_development_text(extract_text_pages(pdf), insurer=ticker)
+        cells_written = db.upsert_triangle_cells(text_cells) if text_cells else 0
+
         triangle_tables = find_tables(tables, self.triangle_patterns) if self.triangle_patterns else []
-        cells_written = self._route_triangles(triangle_tables, ticker, year, quarter)
+        cells_written += self._route_triangles(triangle_tables, ticker, year, quarter)
         triangle_ids = {id(t) for t in triangle_tables}
         remaining = [t for t in tables if id(t) not in triangle_ids]
 

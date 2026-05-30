@@ -193,6 +193,126 @@ def _cell(insurer: str, lob: str, metric: str, year: int, dev: int,
     }
 
 
+# ── ASC 944 text-layer parser ────────────────────────────────────────────────
+# US-GAAP (ASC 944-40-50) requires insurers to disclose incurred- and paid-claims
+# development triangles by accident year in the annual 10-K. These tables are
+# *borderless* and split per business segment, so pdfplumber's grid detector
+# (`extract_tables` → `find_tables` → `parse_triangle`) can't reconstruct them —
+# it collapses a page into one wide blank-headed blob. Their *text* layer, by
+# contrast, is clean and column-aligned, e.g. (Progressive 2025 10-K):
+#
+#     Personal Lines - Vehicles - Agency - Liability        ← segment caption (LOB)
+#     Incurred Claims and Allocated Claim Adjustment Expenses, Net of Reinsurance December 31, 2025
+#     Accident Year 20211 20221 20231 20241 2025 Reported Claims Counts   ← header years (+footnotes)
+#     2021 $ 6,716 $ 6,862 $ 6,936 $ 6,943 $ 6,831 $ 0 885,914            ← AY row: devs… + IBNR + count
+#     2022 7,077 7,302 7,226 7,222 135 842,281
+#     ...
+#     Cumulative Paid Claims and Allocated Claim Adjustment Expenses, Net of Reinsurance
+#     Accident Year 20211 20221 20231 20241 2025
+#     2021 $ 2,855 $ 5,239 $ 6,183 $ 6,569 $ 6,727
+#
+# `parse_development_text` walks that text: tracks the current segment + metric,
+# reads the calendar-year header, and for each accident-year row takes the first
+# (max_year - AY + 1) numbers as the cumulative development values — dropping the
+# trailing IBNR / claim-count columns. The header-row regexes are tuned to the
+# ASC 944 wording, which is standardized across US insurers; per-carrier segment
+# captions vary, so the LOB is just a slug of the caption line.
+#
+# Databricks-native upgrade: `ai_parse_document()` returns these tables (with OCR
+# for scanned filings) directly into `pc_bronze.loss_triangles`; this text parser
+# is the Free-Edition / CPU-only default. Downstream chain-ladder + boost wiring
+# is identical regardless of extractor.
+
+_ASC944_INCURRED = "incurred claims and allocated claim adjustment"
+_ASC944_PAID = "cumulative paid claims and allocated claim adjustment"
+_ASC944_ANY = "claims and allocated claim adjustment"
+# A development-period unit in months; ASC 944 columns are annual, so dev N → N*12.
+_DEV_MONTHS = 12
+_ASOF_RE = re.compile(r"december\s+31,?\s+(20\d{2})", re.IGNORECASE)
+# Header years carry a trailing footnote digit ('20211' = 2021, footnote 1).
+_YEAR_HEADER_RE = re.compile(r"\b(20\d{2})\d?\b")
+_AY_ROW_RE = re.compile(r"^\s*(20\d{2})\b(.*)$")
+_NUM_TOKEN_RE = re.compile(r"\(?\$?\s?-?[\d,]+(?:\.\d+)?\)?")
+
+
+def _slug(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
+
+
+def _segment_caption(line: str) -> str | None:
+    """A per-segment LOB caption (e.g. 'Personal Lines - Vehicles - Agency -
+    Liability') → slug, else None. Captions hold ' - ', carry no digits, and
+    aren't the metric / header rows."""
+    s = line.strip()
+    if " - " not in s or re.search(r"\d", s):
+        return None
+    low = s.lower()
+    if any(k in low for k in ("december", "accident year", _ASC944_ANY, "for the years")):
+        return None
+    return _slug(s) or None
+
+
+def parse_development_text(pages: list[str], *, insurer: str) -> list[dict]:
+    """Structure ASC 944 incurred/paid development triangles out of a 10-K's text
+    layer into `loss_triangles` cell dicts (same shape `parse_triangle` emits).
+
+    `pages` is per-page text (`parse.pdf_tables.extract_text_pages`). One 10-K
+    yields many triangles — one per (segment LOB × incurred|paid). `as_of` is the
+    'December 31, YYYY' the filing reports as-of (read from the incurred header).
+    Returns [] for a PDF with no ASC 944 tables, so it's safe to run over any
+    investor PDF alongside the grid path."""
+    cells: list[dict] = []
+    seg: str | None = None
+    metric: str | None = None
+    as_of: str | None = None
+    years: list[int] = []
+
+    for text in pages:
+        if _ASC944_ANY not in text.lower():
+            continue
+        for raw in text.splitlines():
+            s = raw.strip()
+            low = s.lower()
+
+            cap = _segment_caption(s)
+            if cap:
+                seg, metric, years = cap, None, []
+                continue
+            if _ASC944_INCURRED in low:
+                metric, years = "incurred", []
+                m = _ASOF_RE.search(s)
+                if m:
+                    as_of = f"{m.group(1)}-12-31"
+                continue
+            if _ASC944_PAID in low:
+                metric, years = "paid", []
+                continue
+            if low.startswith("accident year"):
+                years = [int(y) for y in _YEAR_HEADER_RE.findall(s)]
+                continue
+
+            m = _AY_ROW_RE.match(s)
+            if not (m and seg and metric and as_of and years):
+                continue
+            ay = int(m.group(1))
+            if not (_MIN_YEAR <= ay <= _MAX_YEAR):
+                continue
+            nums = [_parse_number(t) for t in _NUM_TOKEN_RE.findall(m.group(2))]
+            nums = [n for n in nums if n is not None]
+            # The row is left-aligned: its first (max_year - AY + 1) numbers are
+            # the cumulative dev values; anything after is IBNR / claim counts.
+            n_dev = sum(1 for y in years if y >= ay)
+            for i, val in enumerate(nums[:n_dev]):
+                cells.append(_cell(insurer, seg, metric, ay, (i + 1) * _DEV_MONTHS,
+                                   val, as_of))
+
+    if cells:
+        segs = {(c["lob"], c["metric"]) for c in cells}
+        logger.info("triangles(text): %s — %d cells across %d (segment,metric) "
+                    "triangles, as_of=%s", insurer, len(cells), len(segs), as_of)
+    return cells
+
+
 def looks_like_triangle(table: Table) -> bool:
     """Heuristic gate: does this Table plausibly carry a development triangle?
 
