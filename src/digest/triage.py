@@ -153,6 +153,11 @@ burden_intensity:
   low     — routine filing, narrow scope, predictable rate change, or one of
             many comparable actions
 
+state (regulatory_rate items only): the two-letter US state code the action
+applies to (CA, FL, TX, NY, LA, …). Use null for multi-state/federal actions
+and for every non-regulatory_rate item. This lets the digest track per-state
+regulatory burden.
+
 OUTPUT — JSON only, no prose, no markdown fences
 ================================================
 {
@@ -163,8 +168,15 @@ OUTPUT — JSON only, no prose, no markdown fences
   "confidence":       "high" | "medium" | "low",
   "reason":           string, max 50 words; cite the specific signal driving the call,
   "burden_direction": "increasing" | "neutral" | "decreasing" | null,
-  "burden_intensity": "high" | "medium" | "low" | null
+  "burden_intensity": "high" | "medium" | "low" | null,
+  "state":            "CA" | "FL" | … | null
 }"""
+
+# Valid two-letter US state / DC codes for the Lead 9 `state` field.
+_US_STATES = frozenset(
+    "AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO "
+    "MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC".split()
+)
 
 USER_TEMPLATE = """Source:    {source}
 Title:     {title}
@@ -227,6 +239,7 @@ def _normalize_verdict(verdict: dict[str, Any]) -> dict[str, Any]:
     # Regulatory Sonar lite — burden fields populated only for regulatory_rate.
     burden_direction: str | None = None
     burden_intensity: str | None = None
+    state: str | None = None
     if topic == "regulatory_rate":
         raw_dir = str(verdict.get("burden_direction") or "").lower().strip()
         if raw_dir in ("increasing", "neutral", "decreasing"):
@@ -234,6 +247,9 @@ def _normalize_verdict(verdict: dict[str, Any]) -> dict[str, Any]:
         raw_int = str(verdict.get("burden_intensity") or "").lower().strip()
         if raw_int in ("high", "medium", "low"):
             burden_intensity = raw_int
+        raw_state = str(verdict.get("state") or "").upper().strip()
+        if raw_state in _US_STATES:                 # Lead 9; multi-state/federal → null
+            state = raw_state
 
     return {
         "decision":         decision,
@@ -244,6 +260,7 @@ def _normalize_verdict(verdict: dict[str, Any]) -> dict[str, Any]:
         "reason":           str(verdict.get("reason", ""))[:400],  # ~50 words ≈ 350 chars
         "burden_direction": burden_direction,
         "burden_intensity": burden_intensity,
+        "state":            state,
     }
 
 
@@ -293,6 +310,7 @@ def triage_item(item: dict[str, Any]) -> dict[str, Any]:
             "reason":           "parse_error",
             "burden_direction": None,
             "burden_intensity": None,
+            "state":            None,
         }
     return _normalize_verdict(verdict)
 
@@ -366,6 +384,7 @@ def run_triage(limit: int = 200) -> dict[str, int]:
                 sub_tags=verdict.get("sub_tags"),
                 source=item_dict.get("source"),
                 source_id=item_dict.get("source_id"),
+                state=verdict.get("state"),
             )
             if verdict["decision"] == "keep":
                 counts["kept"] += 1

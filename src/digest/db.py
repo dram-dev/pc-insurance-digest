@@ -112,6 +112,11 @@ MIGRATIONS = [
     "ALTER TABLE items ADD COLUMN burden_direction TEXT",   # increasing|neutral|decreasing|null
     "ALTER TABLE items ADD COLUMN burden_intensity TEXT",   # high|medium|low|null
     "CREATE INDEX IF NOT EXISTS idx_items_burden ON items(burden_intensity)",
+    # Wave 4 Lead 9: US state code on regulatory_rate items, so burden can be
+    # sliced per state (mirrors the silver.triage_verdicts.state column + the
+    # gold.burden_by_state view).
+    "ALTER TABLE items ADD COLUMN state TEXT",              # 2-letter US state | null
+    "CREATE INDEX IF NOT EXISTS idx_items_state ON items(state)",
     # Wave 2.x: insurer-priority + inflation-keyword boosts on signal_scores
     "ALTER TABLE signal_scores ADD COLUMN insurer_boost REAL DEFAULT 1.0",
     "ALTER TABLE signal_scores ADD COLUMN inflation_boost REAL DEFAULT 1.0",
@@ -918,6 +923,7 @@ def update_triage(
     sub_tags: list[str] | None = None,
     source: str | None = None,
     source_id: str | None = None,
+    state: str | None = None,
 ) -> None:
     """Record a triage outcome on an item.
 
@@ -943,11 +949,12 @@ def update_triage(
                 burden_direction = ?,
                 burden_intensity = ?,
                 sub_tags         = ?,
+                state            = ?,
                 triaged_at       = datetime('now')
             WHERE id = ?
             """,
             (decision, score, topic, burden_direction, burden_intensity,
-             sub_tags_json, item_id),
+             sub_tags_json, state, item_id),
         )
     if pair:
         sink.write_triage(pair[0], pair[1], {
@@ -957,6 +964,7 @@ def update_triage(
             "sub_tags":         sub_tags or [],
             "burden_direction": burden_direction,
             "burden_intensity": burden_intensity,
+            "state":            state,
         })
 
 
@@ -2209,6 +2217,35 @@ def latest_litigation_pressure(state: str = "US", sector: str = "all") -> sqlite
                ORDER BY as_of DESC LIMIT 1""",
             (state, sector),
         ).fetchone()
+
+
+def burden_by_state(window_days: int = 90) -> list[sqlite3.Row]:
+    """Per-state regulatory-burden pressure over the trailing window (Lead 9).
+
+    Intensity-weighted count of `regulatory_rate` items with a state code, the
+    SQLite analog of gold.burden_by_state. Weight high=3 / medium=2 / low=1;
+    `net_direction` nets increasing(+) vs decreasing(-) burden. Most-pressured
+    state first."""
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            SELECT state,
+                   COUNT(*) AS n,
+                   SUM(CASE burden_intensity WHEN 'high' THEN 3
+                                             WHEN 'medium' THEN 2
+                                             WHEN 'low' THEN 1 ELSE 0 END) AS weighted_burden,
+                   SUM(CASE burden_direction WHEN 'increasing' THEN 1
+                                             WHEN 'decreasing' THEN -1 ELSE 0 END) AS net_direction
+            FROM items
+            WHERE topic = 'regulatory_rate'
+              AND state IS NOT NULL AND state != ''
+              AND triage_decision = 'keep'
+              AND ingested_at >= datetime('now', ?)
+            GROUP BY state
+            ORDER BY weighted_burden DESC, n DESC
+            """,
+            (f"-{window_days} days",),
+        ).fetchall()
 
 
 def courtlistener_docket_velocity(window_days: int = 30) -> float:

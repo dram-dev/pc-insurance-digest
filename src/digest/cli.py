@@ -398,6 +398,35 @@ def cat_nowcast() -> None:
 
 
 @main.command()
+@click.option("--window", default=90, help="Trailing window in days")
+def burden(window: int) -> None:
+    """Per-state regulatory-burden barometer (Lead 9).
+
+    Intensity-weighted count of regulatory_rate items by US state over the
+    trailing window — the local analog of gold.burden_by_state. Populated by the
+    triage `state` field; empty until regulatory_rate items with a state are
+    triaged.
+    """
+    db.init_db()
+    rows = db.burden_by_state(window_days=window)
+    if not rows:
+        console.print("[yellow]No state-tagged regulatory items yet.[/yellow]")
+        return
+    table = Table(title=f"Regulatory burden by state ({window}d)")
+    table.add_column("State", no_wrap=True)
+    table.add_column("Items", justify="right")
+    table.add_column("Weighted", justify="right")
+    table.add_column("Net dir", justify="right")
+    for r in rows:
+        nd = r["net_direction"] or 0
+        arrow = "↑" if nd > 0 else "↓" if nd < 0 else "·"
+        colour = "red" if nd > 0 else "green" if nd < 0 else "white"
+        table.add_row(r["state"], str(r["n"]), str(r["weighted_burden"] or 0),
+                      f"[{colour}]{arrow} {nd:+d}[/{colour}]")
+    console.print(table)
+
+
+@main.command()
 def litigation() -> None:
     """National litigation-pressure index for the TPLF boost (Lead 4).
 
