@@ -101,6 +101,30 @@ def test_triangle_pipeline_activates_reserve_boost(fresh_db, make_item):
     assert oth_boost == 1.0
 
 
+def test_disclosure_tone_alone_activates_reserve_boost(fresh_db, make_item):
+    """Lead 5: adverse reserve TONE (no triangle) fires reserve_deterioration_boost
+    on its own, capped at 1 + LANG_SEVERITY_CAP (1.15) — below a confirmed
+    triangle's 1.30 — and stays 1.0 for an item naming no flagged insurer."""
+    from digest.disclosure import LANG_SEVERITY_CAP
+
+    db.upsert_disclosure_sentiment({
+        "insurer": "PGR", "period": "2026Q1", "as_of": "2026-02-15",
+        "reserve_tone": "strengthening", "adverse_language_score": 1.0,
+        "source_filing": "0001-26-1",
+    })
+    pgr = _kept_summarized(make_item, "p1", "Progressive flags reserve strengthening")
+    other = _kept_summarized(make_item, "o1", "Generic cyber market update")
+
+    signals.run_signals()
+    with db.get_conn() as conn:
+        pgr_boost = conn.execute(
+            "SELECT reserve_boost FROM signal_scores WHERE item_id=?", (pgr,)).fetchone()["reserve_boost"]
+        oth_boost = conn.execute(
+            "SELECT reserve_boost FROM signal_scores WHERE item_id=?", (other,)).fetchone()["reserve_boost"]
+    assert pgr_boost == pytest.approx(1.0 + LANG_SEVERITY_CAP, abs=0.01)   # 1.15, tone-only
+    assert oth_boost == 1.0
+
+
 def test_learned_score_null_without_model(fresh_db, make_item):
     iid = _kept_summarized(make_item, "p1", "Some item")
     signals.run_signals()
