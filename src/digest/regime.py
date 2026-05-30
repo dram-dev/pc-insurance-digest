@@ -250,6 +250,7 @@ def compute_market_cycle(window_days: int = 60) -> dict[str, Any]:
     cycle = str(parsed.get("market_cycle", "stable")).lower().strip()
     if cycle not in MARKET_CYCLE_MULT:
         cycle = "stable"
+    cycle = _apply_pricing_hint(cycle)
     return {
         "market_cycle":       cycle,
         "combined_ratio_dir": str(parsed.get("combined_ratio_dir", "stable")).lower().strip(),
@@ -257,6 +258,20 @@ def compute_market_cycle(window_days: int = 60) -> dict[str, Any]:
         "evidence":           str(parsed.get("evidence", ""))[:400],
         "n_items":            len(rows),
     }
+
+
+def _apply_pricing_hint(llm_cycle: str) -> str:
+    """Lead 1 (Reinsurance Pulse): if priced ROL/ILS shows firming, take the
+    *firmer* of the LLM narrative call and the priced hint. Firm-only — price
+    never softens the call here — and a no-op until reinsurance pricing data
+    exists, so the axis is behavior-preserving by default."""
+    from digest.reinsurance import market_cycle_hint
+    hint = market_cycle_hint()
+    if hint is None:
+        return llm_cycle
+    # MARKET_CYCLES is ordered hardest→softest; lower index = harder.
+    rank = {c: i for i, c in enumerate(MARKET_CYCLES)}
+    return hint if rank.get(hint, 99) < rank.get(llm_cycle, 99) else llm_cycle
 
 
 # ── Override + hysteresis ─────────────────────────────────────────────

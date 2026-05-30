@@ -235,6 +235,21 @@ MIGRATIONS = [
         PRIMARY KEY (metric_name, region, observation_date)
     )""",
     "CREATE INDEX IF NOT EXISTS idx_cat_nowcast_metric ON cat_load_nowcast(metric_name, region)",
+    # Lead 1 — Reinsurance Pulse: priced ROL / ILS-spread series feeding the
+    # regime market_cycle axis (local mirror of pc_bronze.reinsurance_pricing).
+    """CREATE TABLE IF NOT EXISTS reinsurance_pricing (
+        index_name       TEXT NOT NULL,            -- 'guycarp_us_property_cat_rol' | 'artemis_ils_spread'
+        observation_date TEXT NOT NULL,
+        value            REAL,                     -- ROL index level or spread (bps)
+        zscore_12m       REAL,
+        trend            TEXT,                     -- 'firming' | 'softening' | 'flat'
+        is_anomaly       INTEGER,                  -- 0/1
+        segment          TEXT,                     -- 'us_property_cat' | 'retro' | …
+        source           TEXT,                     -- 'guycarp' | 'artemis' | 'lane'
+        fetched_at       TEXT,
+        PRIMARY KEY (index_name, observation_date)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_reins_pricing_index ON reinsurance_pricing(index_name)",
 ]
 
 
@@ -2070,6 +2085,38 @@ def latest_cat_nowcast(metric_name: str, region: str = "US") -> sqlite3.Row | No
                WHERE metric_name=? AND region=?
                ORDER BY observation_date DESC LIMIT 1""",
             (metric_name, region),
+        ).fetchone()
+
+
+def upsert_reinsurance_pricing(rows: list[dict]) -> int:
+    """Persist reinsurance-pricing observations; mirror to bronze.reinsurance_pricing."""
+    rows = list(rows)
+    if not rows:
+        return 0
+    with get_conn() as conn:
+        conn.executemany(
+            """INSERT OR REPLACE INTO reinsurance_pricing
+                 (index_name, observation_date, value, zscore_12m, trend,
+                  is_anomaly, segment, source, fetched_at)
+               VALUES (:index_name, :observation_date, :value, :zscore_12m, :trend,
+                       :is_anomaly, :segment, :source, :fetched_at)""",
+            rows,
+        )
+    sink.write_reinsurance_pricing(rows)
+    return len(rows)
+
+
+def latest_reinsurance_pricing(index_name: str | None = None) -> sqlite3.Row | None:
+    """Newest reinsurance-pricing observation overall, or for a given index."""
+    with get_conn() as conn:
+        if index_name:
+            return conn.execute(
+                """SELECT * FROM reinsurance_pricing WHERE index_name=?
+                   ORDER BY observation_date DESC LIMIT 1""",
+                (index_name,),
+            ).fetchone()
+        return conn.execute(
+            "SELECT * FROM reinsurance_pricing ORDER BY observation_date DESC LIMIT 1"
         ).fetchone()
 
 
