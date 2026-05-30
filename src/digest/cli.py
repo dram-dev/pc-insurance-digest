@@ -397,6 +397,30 @@ def cat_nowcast() -> None:
     )
 
 
+@main.command(name="severity-tape")
+def severity_tape() -> None:
+    """Blended loss-cost severity index for the inflation boost (Lead 3).
+
+    Blends the FRED parts/labor/used-car/medical series already tracked into one
+    severity z-score so `digest signals` can magnitude-scale the inflation-keyword
+    boost when the loss-cost regime is hot. Needs FRED_API_KEY.
+    """
+    from digest import severity_tape as tape_mod
+
+    db.init_db()
+    console.rule("[bold cyan]severity-tape")
+    counts = tape_mod.run_severity_tape()
+    if counts["written"] == 0:
+        console.print("[yellow]No severity data[/yellow] — check FRED_API_KEY / fred_series.yaml.")
+        return
+    z = tape_mod.severity_regime()
+    flag = "[red]⚠ hot[/red]" if counts.get("anomaly") else "[green]normal[/green]"
+    console.print(
+        f"[green]✓[/green] {counts['components']} FRED components → blended z="
+        f"[bold]{z:+.2f}[/bold] {flag}"
+    )
+
+
 @main.command()
 def stats() -> None:
     """Item counts by source plus triage + summarizer status."""

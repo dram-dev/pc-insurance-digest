@@ -250,6 +250,20 @@ MIGRATIONS = [
         PRIMARY KEY (index_name, observation_date)
     )""",
     "CREATE INDEX IF NOT EXISTS idx_reins_pricing_index ON reinsurance_pricing(index_name)",
+    # Lead 3 — Severity Tape: blended loss-cost severity index (local mirror of
+    # pc_bronze.severity_index) feeding the signals inflation-keyword boost.
+    """CREATE TABLE IF NOT EXISTS severity_index (
+        index_name       TEXT NOT NULL,            -- 'blended_severity' | 'fred_<series_id>' | 'manheim_uvvi'
+        observation_date TEXT NOT NULL,
+        value            REAL,
+        zscore_12m       REAL,
+        is_anomaly       INTEGER,                  -- 0/1
+        category         TEXT,                     -- 'used_vehicle' | 'parts' | 'labor' | 'medical' | 'blended'
+        source           TEXT,                     -- 'fred' | 'manheim'
+        fetched_at       TEXT,
+        PRIMARY KEY (index_name, observation_date)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_severity_index ON severity_index(index_name)",
 ]
 
 
@@ -2117,6 +2131,34 @@ def latest_reinsurance_pricing(index_name: str | None = None) -> sqlite3.Row | N
             ).fetchone()
         return conn.execute(
             "SELECT * FROM reinsurance_pricing ORDER BY observation_date DESC LIMIT 1"
+        ).fetchone()
+
+
+def upsert_severity_index(rows: list[dict]) -> int:
+    """Persist severity-index observations; mirror to bronze.severity_index."""
+    rows = list(rows)
+    if not rows:
+        return 0
+    with get_conn() as conn:
+        conn.executemany(
+            """INSERT OR REPLACE INTO severity_index
+                 (index_name, observation_date, value, zscore_12m, is_anomaly,
+                  category, source, fetched_at)
+               VALUES (:index_name, :observation_date, :value, :zscore_12m,
+                       :is_anomaly, :category, :source, :fetched_at)""",
+            rows,
+        )
+    sink.write_severity_index(rows)
+    return len(rows)
+
+
+def latest_severity_index(index_name: str = "blended_severity") -> sqlite3.Row | None:
+    """Newest severity-index observation for an index (default the blend), or None."""
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT * FROM severity_index WHERE index_name=?
+               ORDER BY observation_date DESC LIMIT 1""",
+            (index_name,),
         ).fetchone()
 
 
