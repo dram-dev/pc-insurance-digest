@@ -91,8 +91,10 @@ fallback** · **Wiring target** (exact module + symbol) · **Status**.
   level + trend into the `market_cycle` classifier (today narrative-only)
   so `RegimeSignal.market_cycle_mult` reflects priced ROL, not just
   trade-press tone. Table: `pc_bronze.reinsurance_pricing`.
-- **Status.** Researched. DDL + sink scaffold shipped this wave; ingestor
-  pending.
+- **Status.** **Shipped** — `reinsurance.reduce_series`/`market_cycle_hint` +
+  `regime._apply_pricing_hint` (firm-only, neutral until data). Fetchers are a
+  config scaffold (`reinsurance_sources.yaml`, all `enabled:false`) pending
+  Mac-mini validation; reducer + regime hook tested.
 
 ### Lead 2 — CAT-Load Nowcast
 
@@ -110,7 +112,9 @@ fallback** · **Wiring target** (exact module + symbol) · **Status**.
   A spike in open declarations / outage customers → `post_major_event`
   (1.20×); elevated CPC outlook → `active_season` (1.10×). Table:
   `pc_bronze.cat_load_nowcast`.
-- **Status.** Researched. DDL + sink scaffold shipped; ingestor pending.
+- **Status.** **Shipped + live-validated** — `cat_nowcast` pulls monthly OpenFEMA
+  disaster counts (free, no key) → 12m z-score → escalate-only nudge in
+  `regime.compute_cat_load` (`digest cat-nowcast`). Validated on the Mac mini.
 
 ### Lead 3 — Severity Tape
 
@@ -127,7 +131,10 @@ fallback** · **Wiring target** (exact module + symbol) · **Status**.
   the *magnitude* of the severity regime (e.g. lift to 1.3× when the tape
   is z>2). Symbol: `signals._INFLATION_RE` hit → magnitude-scaled via the
   tape. Table: `pc_bronze.severity_index`.
-- **Status.** Researched. DDL + sink scaffold shipped; ingestor pending.
+- **Status.** **Shipped + live-validated** — `severity_tape` blends the existing
+  FRED loss-cost series into one z-score; `signals._inflation_keyword_boost`
+  uplifts (capped) when the tape is hot. `digest severity-tape`; validated on the
+  Mac mini (Manheim UVVI is the documented additional component).
 
 ### Lead 4 — Litigation Pressure Index
 
@@ -142,7 +149,11 @@ fallback** · **Wiring target** (exact module + symbol) · **Status**.
 - **Wiring target.** `signals.LITIGATION_TPLF_BOOST` → make it a function
   of `pc_silver.litigation_pressure.pressure_index` for the item's state/
   sector instead of a constant. Table: `pc_silver.litigation_pressure`.
-- **Status.** Researched. DDL + sink scaffold shipped; ingestor pending.
+- **Status.** **Shipped** — `litigation.compute_pressure_index` (verdict/award/
+  TPLF/docket composite) + `_litigation_tplf_boost` pressure scaling. v1 computes
+  the live CourtListener docket-velocity component (`digest litigation`); Marathon
+  / Westfleet verdict+TPLF components pending scraper validation, so the index
+  stays conservative until then. Reducer + boost scaling tested.
 
 ### Lead 5 — Disclosure Sentiment
 
@@ -214,7 +225,10 @@ fallback** · **Wiring target** (exact module + symbol) · **Status**.
 - **Wiring target.** `summarize.TOPIC_CAP_PCT['ai_insurtech']` — let a
   substantiated deal (real `amount_usd`/`stage`) bypass or relax the cap,
   and feed `signals` materiality. Table: `pc_silver.capital_flows`.
-- **Status.** Researched. DDL + sink scaffold shipped; ingestor pending.
+- **Status.** **Shipped** — `capital_flows.extract_deal` (amount/round/stage) over
+  the ai_insurtech queue; a substantiated deal (real $ amount) is excluded from
+  the `TOPIC_CAP_PCT` share cap via `enforce_topic_caps_protected`. Offline-tested;
+  behavior-preserving when no deal carries an amount.
 
 ### Lead 9 — Regulatory Burden Barometer
 
@@ -229,8 +243,10 @@ fallback** · **Wiring target** (exact module + symbol) · **Status**.
   to DDL this wave) so burden can be sliced per state. View:
   `pc_gold.burden_by_state` (shipped). The local mirror column +
   triage-prompt change to emit `state` is the follow-up.
-- **Status.** Researched. DDL (`state` column + `burden_by_state` view) +
-  sink scaffold shipped; triage `state` extraction pending.
+- **Status.** **Shipped** — triage now emits a validated `state` on
+  regulatory_rate items → `items.state`; `db.burden_by_state()` rolls up an
+  intensity-weighted per-state pressure reading (`digest burden`). Tested. The
+  LegiScan bill-velocity ingestor remains the documented follow-up.
 
 ### Lead 10 — Macro→Loss Transmission  **[VIEW SKETCH ONLY]**
 
