@@ -116,6 +116,22 @@ def find_tables(tables: list[Table], header_patterns: Iterable[str]) -> list[Tab
     return [t for t in tables if t.header_matches(pats)]
 
 
+def extract_text_pages(pdf_bytes: bytes) -> list[str]:
+    """Per-page plain text (one string per page, 1-indexed by list position+1).
+
+    For text-layout parsers that the grid table detector can't serve. GAAP
+    ASC 944 loss-development triangles in 10-Ks are *borderless* — `find_tables()`
+    collapses them into a single wide column blob — but their text layer is clean
+    and column-aligned, so `parse.triangles.parse_development_text` reconstructs
+    the triangles from this instead. Cheap relative to `extract_tables` (no table
+    detection), so callers can run both passes over one PDF."""
+    out: list[str] = []
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        for page in pdf.pages:
+            out.append(page.extract_text() or "")
+    return out
+
+
 def _norm(cell) -> str:
     if cell is None:
         return ""
