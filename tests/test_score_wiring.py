@@ -9,7 +9,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from digest import db, learn, signals
+from digest import db, learn, reserving, signals
+from digest.parse.pdf_tables import Table
+from digest.parse.triangles import parse_triangle
 
 
 def _kept_summarized(make_item, sid, title):
@@ -47,6 +49,56 @@ def test_reserve_boost_applies_for_named_insurer(fresh_db, make_item):
         oth = conn.execute("SELECT reserve_boost FROM signal_scores WHERE item_id=?", (other,)).fetchone()
     assert pgr["reserve_boost"] == pytest.approx(1.25, abs=0.01)   # 1 + 0.25, capped 1.3
     assert oth["reserve_boost"] == 1.0                              # no insurer match
+
+
+def _triangle_table(scale: float) -> Table:
+    """The known {IBNR 94.5} triangle, all cells scaled by `scale`."""
+    def s(v: float) -> str:
+        return str(round(v * scale, 2))
+    return Table(
+        page=1,
+        header=["Accident Year", "12", "24", "36"],
+        rows=[
+            ["2023", s(100), s(150), s(165)],
+            ["2024", s(110), s(165), ""],
+            ["2025", s(120), "", ""],
+        ],
+    )
+
+
+def test_triangle_pipeline_activates_reserve_boost(fresh_db, make_item):
+    """End-to-end Lead 6: PDF-table triangles → upsert → run_reserving →
+    severity_map → score_item produces a reserve_boost > 1.0 for the insurer.
+
+    Two quarterly snapshots with rising IBNR create adverse development; the
+    boost is 1.0 today only because no triangle data exists yet."""
+    # Q1 snapshot — establishes the prior IBNR baseline.
+    db.upsert_triangle_cells(parse_triangle(
+        _triangle_table(1.0), insurer="PGR", lob="auto",
+        metric="incurred", as_of="2026-03-31"))
+    reserving.run_reserving()
+    assert db.reserving_severity_map() == {}     # no prior yet → no adverse signal
+
+    # Q2 snapshot — losses developed 30% higher → adverse vs. the Q1 estimate.
+    db.upsert_triangle_cells(parse_triangle(
+        _triangle_table(1.3), insurer="PGR", lob="auto",
+        metric="incurred", as_of="2026-06-30"))
+    reserving.run_reserving()
+    sev = db.reserving_severity_map()
+    assert sev.get("PGR", 0.0) == pytest.approx(0.3, abs=0.02)
+
+    # An item naming the insurer now inherits the reserve boost; a generic one doesn't.
+    pgr = _kept_summarized(make_item, "p1", "Progressive posts adverse reserve development")
+    other = _kept_summarized(make_item, "o1", "Generic cyber market update")
+    signals.run_signals()
+    with db.get_conn() as conn:
+        pgr_boost = conn.execute(
+            "SELECT reserve_boost FROM signal_scores WHERE item_id=?", (pgr,)).fetchone()["reserve_boost"]
+        oth_boost = conn.execute(
+            "SELECT reserve_boost FROM signal_scores WHERE item_id=?", (other,)).fetchone()["reserve_boost"]
+    assert pgr_boost > 1.0
+    assert pgr_boost == pytest.approx(1.3, abs=0.02)    # 1 + 0.3
+    assert oth_boost == 1.0
 
 
 def test_learned_score_null_without_model(fresh_db, make_item):

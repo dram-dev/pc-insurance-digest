@@ -17,6 +17,14 @@ Architecture (originated in pc-insurance-digest; lifted to core 2026-05-25):
   silver.learned_scores   ← write_learned_score()   learned relevance (Option 4)
   silver.reserving_signals ← write_reserving()       chain-ladder IBNR (Option 5)
 
+Wave 4 — Insurance EKG leads (no-op scaffolds until each lead's ingestor ships):
+  bronze.reinsurance_pricing ← write_reinsurance_pricing()  Lead 1 ROL/ILS series
+  bronze.cat_load_nowcast    ← write_cat_load_nowcast()      Lead 2 hazard nowcast
+  bronze.severity_index      ← write_severity_index()        Lead 3 severity tape
+  silver.litigation_pressure ← write_litigation_pressure()   Lead 4 verdict/TPLF index
+  silver.disclosure_sentiment ← write_disclosure_sentiment() Lead 5 reserve-tone NLP
+  silver.capital_flows       ← write_capital_flow()          Lead 8 funding/M&A facts
+
 Join key: `item_hash = sha256(source || '::' || source_id)`, derived here at
 write time. SQLite stays untouched.
 
@@ -59,6 +67,13 @@ _PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
     "silver.outcome_backtest":   ("item_hash", "horizon_days"),
     "silver.learned_scores":     ("item_hash", "model_id"),
     "silver.reserving_signals":  ("insurer", "lob", "metric", "as_of"),
+    # Wave 4 — Insurance EKG leads.
+    "bronze.reinsurance_pricing":  ("index_name", "observation_date"),
+    "bronze.cat_load_nowcast":     ("metric_name", "region", "observation_date"),
+    "bronze.severity_index":       ("index_name", "observation_date"),
+    "silver.litigation_pressure":  ("state", "sector", "as_of"),
+    "silver.disclosure_sentiment": ("insurer", "period", "as_of"),
+    "silver.capital_flows":        ("item_hash",),
 }
 
 # Max rows per MERGE statement. 50 keeps total parameter count well under
@@ -338,6 +353,57 @@ class DatabricksSink:
             "stock_move_band": outcome.get("stock_move_band"),
         }
         self._insert("silver.outcome_backtest", [row])
+
+    # ── Wave 4 EKG writers (no-op until each lead's ingestor ships) ─────────
+
+    def write_reinsurance_pricing(self, rows: Iterable[dict[str, Any]]) -> None:
+        """Lead 1 — GuyCarp ROL / Artemis ILS series → bronze.reinsurance_pricing.
+        Rows mirror the fred_observations shape (one per index per date)."""
+        if not self._enabled:
+            return
+        self._insert("bronze.reinsurance_pricing", [dict(r) for r in rows])
+
+    def write_cat_load_nowcast(self, rows: Iterable[dict[str, Any]]) -> None:
+        """Lead 2 — OpenFEMA / NOAA CPC / drought / outage → bronze.cat_load_nowcast."""
+        if not self._enabled:
+            return
+        self._insert("bronze.cat_load_nowcast", [dict(r) for r in rows])
+
+    def write_severity_index(self, rows: Iterable[dict[str, Any]]) -> None:
+        """Lead 3 — Manheim UVVI + FRED parts/labor/medical → bronze.severity_index."""
+        if not self._enabled:
+            return
+        self._insert("bronze.severity_index", [dict(r) for r in rows])
+
+    def write_litigation_pressure(self, sig: dict[str, Any]) -> None:
+        """Lead 4 — per-state × sector verdict/TPLF index → silver.litigation_pressure.
+        (state, sector)-keyed derived fact, not a news item."""
+        if not self._enabled:
+            return
+        self._insert("silver.litigation_pressure", [dict(sig)])
+
+    def write_disclosure_sentiment(self, sig: dict[str, Any]) -> None:
+        """Lead 5 — reserve-tone NLP over EDGAR filings → silver.disclosure_sentiment.
+        (insurer, period)-keyed."""
+        if not self._enabled:
+            return
+        self._insert("silver.disclosure_sentiment", [dict(sig)])
+
+    def write_capital_flow(self, source: str, source_id: str, flow: dict[str, Any]) -> None:
+        """Lead 8 — extracted funding-round / M&A deal facts → silver.capital_flows.
+        item_hash-keyed back to the source news item."""
+        if not self._enabled:
+            return
+        row = {
+            "item_hash":  item_hash(source, source_id),
+            "as_of":      _iso(flow.get("as_of")) or _iso(datetime.utcnow()),
+            "deal_type":  flow.get("deal_type"),
+            "amount_usd": flow.get("amount_usd"),
+            "stage":      flow.get("stage"),
+            "target":     flow.get("target"),
+            "investors":  flow.get("investors"),
+        }
+        self._insert("silver.capital_flows", [row])
 
     # ── Internals ─────────────────────────────────────────────────────────
 

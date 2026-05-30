@@ -28,6 +28,18 @@ defaults:
     - "case (?:counts?|reserves)"
     - "incurred but not reported"
     - "ibnr"
+  # Loss-development triangles (EKG Lead 6 — Reserve-Adequacy Radar). Tables
+  # whose header matches any of these are routed through parse.triangles into
+  # db.upsert_triangle_cells() (feeding chain-ladder reserving) instead of the
+  # news-item path. Matched against the joined header row text (lowercased).
+  triangle_header_patterns:
+    - "loss development"
+    - "accident year"
+    - "cumulative paid"
+    - "incurred losses?"
+    - "development triangle"
+    - "paid loss development"
+    - "incurred loss development"
 
 insurers:
   # ── Personal-auto + homeowners big three ──

@@ -18,12 +18,14 @@ Wave 3 Phase 3 — Liability Intelligence cluster.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from digest import db
 from digest.ingest.base import IngestedItem, IngestorBase
 from digest.parse.pdf_tables import (
     Table,
@@ -31,8 +33,26 @@ from digest.parse.pdf_tables import (
     fetch_pdf_bytes,
     find_tables,
 )
+from digest.parse.triangles import parse_triangle
 
 logger = logging.getLogger(__name__)
+
+# Last day of each calendar quarter, for the triangle snapshot key (as_of).
+_QUARTER_END = {1: "03-31", 2: "06-30", 3: "09-30", 4: "12-31"}
+
+# Line-of-business detection from a triangle's header text. First match wins;
+# unmatched triangles fall back to 'all_lines'.
+_LOB_PATTERNS: tuple[tuple[str, str], ...] = (
+    (r"personal\s+auto|private\s+passenger", "personal_auto"),
+    (r"commercial\s+auto", "commercial_auto"),
+    (r"\bauto(?:mobile)?\b", "auto"),
+    (r"homeowners?|\bhome\b", "homeowners"),
+    (r"workers'?\s+comp", "workers_comp"),
+    (r"general\s+liability|\bGL\b", "general_liability"),
+    (r"commercial\s+property", "commercial_property"),
+    (r"\bproperty\b", "property"),
+    (r"\bumbrella\b", "umbrella"),
+)
 
 _CONFIG_PATH = Path(__file__).resolve().parents[3] / "config" / "investor_supplements.yaml"
 
@@ -71,6 +91,9 @@ class InvestorSuppIngestor(IngestorBase):
         self.pending_patterns: list[str] = list(
             self.defaults.get("pending_count_header_patterns") or []
         )
+        self.triangle_patterns: list[str] = list(
+            self.defaults.get("triangle_header_patterns") or []
+        )
 
     def fetch(self) -> list[IngestedItem]:
         enabled = [i for i in self.insurers if i.get("enabled", False)]
@@ -107,17 +130,58 @@ class InvestorSuppIngestor(IngestorBase):
 
         pdf = fetch_pdf_bytes(url, user_agent=self.user_agent, timeout=self.timeout)
         tables = extract_tables(pdf)
-        paid = find_tables(tables, self.paid_patterns)
-        pending = find_tables(tables, self.pending_patterns)
+
+        # Loss-development triangles (Lead 6) are structured into the triangle
+        # store, not emitted as news items. Pull them out first so they don't
+        # double-count down the paid/pending news path.
+        triangle_tables = find_tables(tables, self.triangle_patterns) if self.triangle_patterns else []
+        cells_written = self._route_triangles(triangle_tables, ticker, year, quarter)
+        triangle_ids = {id(t) for t in triangle_tables}
+        remaining = [t for t in tables if id(t) not in triangle_ids]
+
+        paid = find_tables(remaining, self.paid_patterns)
+        pending = find_tables(remaining, self.pending_patterns)
 
         out: list[IngestedItem] = []
         out.extend(self._tables_to_items(paid, "paid_severity", ticker, name, year, quarter, url))
         out.extend(self._tables_to_items(pending, "pending_count", ticker, name, year, quarter, url))
         logger.info(
-            "investor_supp: %s Q%d %d — paid=%d pending=%d total_tables=%d",
-            ticker, quarter, year, len(paid), len(pending), len(tables),
+            "investor_supp: %s Q%d %d — paid=%d pending=%d triangles=%d (cells=%d) total_tables=%d",
+            ticker, quarter, year, len(paid), len(pending),
+            len(triangle_tables), cells_written, len(tables),
         )
         return out
+
+    def _route_triangles(
+        self,
+        tables: list[Table],
+        ticker: str,
+        year: int,
+        quarter: int,
+    ) -> int:
+        """Parse triangle-shaped tables → upsert loss-triangle cells. Returns the
+        number of cells written across all tables (0 when none parse cleanly).
+
+        Guards the loss_triangles PK against collisions: if two triangles in one
+        supplement resolve to the same (lob, metric) — e.g. both fall back to
+        'all_lines' because their LOB wasn't detectable — the later ones get a
+        numeric suffix so they don't silently overwrite each other via the
+        INSERT OR REPLACE upsert."""
+        as_of = f"{year}-{_QUARTER_END[quarter]}"
+        total = 0
+        seen: dict[tuple[str, str], int] = {}
+        for t in tables:
+            metric = _detect_metric(t)
+            lob = _detect_lob(t)
+            seen[(lob, metric)] = seen.get((lob, metric), 0) + 1
+            if seen[(lob, metric)] > 1:
+                lob = f"{lob}_{seen[(lob, metric)]}"
+            cells = parse_triangle(
+                t, insurer=ticker, lob=lob, metric=metric, as_of=as_of,
+            )
+            if cells:
+                total += db.upsert_triangle_cells(cells)
+        return total
 
     def _tables_to_items(
         self,
@@ -153,3 +217,25 @@ class InvestorSuppIngestor(IngestorBase):
                 )
             )
         return out
+
+
+def _detect_metric(table: Table) -> str:
+    """'paid' | 'incurred' from a triangle's caption + header. Defaults to
+    'incurred' (the more commonly disclosed development basis) when ambiguous.
+    Scans `search_text` because the basis is usually in the caption, not the
+    column-header row."""
+    joined = table.search_text.lower()
+    if "paid" in joined and "incurred" not in joined:
+        return "paid"
+    return "incurred"
+
+
+def _detect_lob(table: Table) -> str:
+    """Line of business from a triangle's caption + header; 'all_lines' fallback.
+    Scans `search_text` because the LOB is usually in the caption, not the
+    column-header row."""
+    joined = table.search_text.lower()
+    for pattern, lob in _LOB_PATTERNS:
+        if re.search(pattern, joined, re.IGNORECASE):
+            return lob
+    return "all_lines"

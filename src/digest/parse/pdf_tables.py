@@ -34,10 +34,22 @@ class Table:
     page: int                  # 1-indexed PDF page
     header: list[str]          # first row, whitespace-normalized
     rows: list[list[str]]      # remaining rows
+    caption: str = ""          # text line directly above the grid (title/LOB/basis)
+
+    @property
+    def search_text(self) -> str:
+        """Caption + header — what header-pattern matching and LOB/metric
+        attribution should scan. In real disclosures the line-of-business and
+        the paid/incurred basis live in the table's *caption*, not its column
+        header row, so detection that ignores the caption silently fails."""
+        return f"{self.caption} {' '.join(self.header)}".strip()
 
     def header_matches(self, patterns: Iterable[str]) -> bool:
-        """True if the joined header text matches any regex in `patterns`."""
-        joined = " ".join(c.lower() for c in self.header)
+        """True if the caption-or-header text matches any regex in `patterns`.
+
+        Caption-aware: `caption` defaults to '' so Tables built without one
+        (tests, other callers) match on the header exactly as before."""
+        joined = self.search_text.lower()
         return any(re.search(p, joined, re.IGNORECASE) for p in patterns)
 
     def to_text(self, max_rows: int = 30) -> str:
@@ -61,19 +73,40 @@ def fetch_pdf_bytes(
     return r.content
 
 
+def _caption_above(page, bbox, band: float = 46.0) -> str:
+    """Nearest non-empty text line in the strip directly above a table's bbox.
+
+    `band` (~2-3 lines at typical supplement font sizes) is the lookback height
+    in PDF points; the line closest to the table top wins. Fails soft to '' on
+    any crop/geometry edge case (table flush to page top, malformed bbox)."""
+    x0, top, x1, _bottom = bbox
+    if top <= 1:
+        return ""
+    try:
+        text = page.crop((x0, max(0.0, top - band), x1, top)).extract_text() or ""
+    except Exception:  # noqa: BLE001 — geometry/crop edge cases, never fatal
+        return ""
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    return lines[-1] if lines else ""
+
+
 def extract_tables(pdf_bytes: bytes) -> list[Table]:
-    """Return every non-empty table from every page."""
+    """Return every non-empty table from every page, each tagged with the
+    caption line above it. Uses `find_tables()` (not `extract_tables()`) so each
+    table's bbox is available to locate that caption."""
     out: list[Table] = []
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for i, page in enumerate(pdf.pages, start=1):
-            for tbl in page.extract_tables() or []:
-                if not tbl or len(tbl) < 2:
+            for tbl in page.find_tables():
+                grid = tbl.extract() or []
+                if len(grid) < 2:
                     continue
-                header = [_norm(c) for c in tbl[0]]
-                rows = [[_norm(c) for c in row] for row in tbl[1:]]
+                header = [_norm(c) for c in grid[0]]
                 if not any(h.strip() for h in header):
                     continue
-                out.append(Table(page=i, header=header, rows=rows))
+                rows = [[_norm(c) for c in row] for row in grid[1:]]
+                out.append(Table(page=i, header=header, rows=rows,
+                                 caption=_caption_above(page, tbl.bbox)))
     return out
 
 

@@ -58,3 +58,56 @@ SELECT series_id, observation_date, value, zscore_12m
 FROM pc_bronze.fred_observations
 WHERE is_anomaly
   AND observation_date >= CURRENT_DATE - INTERVAL 7 DAYS;
+
+-- ── Wave 4 — Insurance EKG panel alerts ───────────────────────────────────
+-- One Alert per lead, read off pc_gold.market_ekg. Each fires when its lead is
+-- either FLATLINING (feed stale past its cadence → is_stale) or SPIKING
+-- (|zscore| past threshold; leads without a z fall back to is_stale only).
+-- Save each SELECT as its own Databricks SQL query + Alert (trigger when
+-- row count > 0). Spike threshold 2.5σ is a starting point — tune per lead once
+-- live distributions exist.
+
+-- EKG 1) Reinsurance Pulse — renewal pricing flatline or spike.
+SELECT lead_name, latest_value, zscore, trend, as_of, is_stale
+FROM pc_gold.market_ekg
+WHERE lead = 1 AND (is_stale OR ABS(COALESCE(zscore, 0)) >= 2.5);
+
+-- EKG 2) CAT-Load Nowcast — hazard-load flatline or spike.
+SELECT lead_name, latest_value, zscore, trend, as_of, is_stale
+FROM pc_gold.market_ekg
+WHERE lead = 2 AND (is_stale OR ABS(COALESCE(zscore, 0)) >= 2.5);
+
+-- EKG 3) Severity Tape — loss-cost inflation flatline or spike.
+SELECT lead_name, latest_value, zscore, trend, as_of, is_stale
+FROM pc_gold.market_ekg
+WHERE lead = 3 AND (is_stale OR ABS(COALESCE(zscore, 0)) >= 2.5);
+
+-- EKG 4) Litigation Pressure — verdict/TPLF pressure surge or stale tracker.
+SELECT lead_name, latest_value, trend, as_of, is_stale
+FROM pc_gold.market_ekg
+WHERE lead = 4 AND (is_stale OR latest_value >= 70);   -- pressure_index 0-100
+
+-- EKG 5) Disclosure Sentiment — adverse reserve-tone surge or stale.
+SELECT lead_name, latest_value, trend, as_of, is_stale
+FROM pc_gold.market_ekg
+WHERE lead = 5 AND (is_stale OR latest_value >= 0.6);  -- adverse_language_score 0-1
+
+-- EKG 6) Reserve-Adequacy Radar — adverse chain-ladder development or stale.
+SELECT lead_name, latest_value, trend, as_of, is_stale
+FROM pc_gold.market_ekg
+WHERE lead = 6 AND (is_stale OR (trend = 'adverse' AND latest_value >= 0.10));
+
+-- EKG 8) InsurTech Capital-Flow — large round/deal or stale feed.
+SELECT lead_name, latest_value, trend, as_of, is_stale
+FROM pc_gold.market_ekg
+WHERE lead = 8 AND (is_stale OR latest_value >= 1e8);  -- $100M+ deal
+
+-- EKG 9) Regulatory Burden Barometer — burden-pressure surge or stale.
+SELECT lead_name, latest_value, as_of, is_stale
+FROM pc_gold.market_ekg
+WHERE lead = 9 AND (is_stale OR latest_value >= 9);    -- intensity-weighted pressure
+
+-- EKG 7) Parametric-Trigger Proximity — VIEW SKETCH ONLY (see gold.sql); no
+--        Alert until pc_gold.trigger_proximity is materialized.
+-- EKG 10) Macro→Loss Transmission — VIEW SKETCH ONLY (see xdomain.sql); cross-
+--        domain Alert deferred until macro_* lands in the shared catalog.

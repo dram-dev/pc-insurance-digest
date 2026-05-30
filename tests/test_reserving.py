@@ -1,10 +1,108 @@
-"""Option 5 — reserving: chain-ladder math, signal, run job, boost."""
+"""Option 5 — reserving: chain-ladder math, signal, run job, boost.
+
+Plus EKG Lead 6: PDF-table → loss-triangle structuring (parse.triangles), which
+closes the only missing link in the otherwise-wired reserving chain.
+"""
 from __future__ import annotations
 
 import numpy as np
 import pytest
 
 from digest import db, reserving
+from digest.parse.pdf_tables import Table
+from digest.parse.triangles import looks_like_triangle, parse_triangle
+
+
+# ── Lead 6: triangle structurer (parse.triangles) ─────────────────────────
+
+
+def _standard_triangle() -> Table:
+    """AY-rows × dev-cols, the known {IBNR 94.5} triangle in PDF-table shape."""
+    return Table(
+        page=1,
+        header=["Accident Year", "12", "24", "36"],
+        rows=[
+            ["2023", "100", "150", "165"],
+            ["2024", "110", "165", ""],
+            ["2025", "120", "", ""],
+        ],
+    )
+
+
+def test_parse_triangle_standard_orientation():
+    cells = parse_triangle(_standard_triangle(), insurer="PGR", lob="auto",
+                           metric="incurred", as_of="2026-03-31")
+    got = {(c["accident_year"], c["dev_period"]): c["cumulative_value"] for c in cells}
+    assert got == {
+        (2023, 12): 100.0, (2023, 24): 150.0, (2023, 36): 165.0,
+        (2024, 12): 110.0, (2024, 24): 165.0,
+        (2025, 12): 120.0,
+    }
+    # every cell carries the snapshot key + metadata
+    assert all(c["insurer"] == "PGR" and c["metric"] == "incurred"
+               and c["as_of"] == "2026-03-31" for c in cells)
+
+
+def test_parse_triangle_transposed_orientation():
+    """Dev-rows × AY-cols must yield the same cells as the standard layout."""
+    transposed = Table(
+        page=1,
+        header=["Months", "2023", "2024", "2025"],
+        rows=[
+            ["12", "100", "110", "120"],
+            ["24", "150", "165", ""],
+            ["36", "165", "", ""],
+        ],
+    )
+    cells = parse_triangle(transposed, insurer="PGR", lob="auto",
+                           metric="incurred", as_of="2026-03-31")
+    got = {(c["accident_year"], c["dev_period"]): c["cumulative_value"] for c in cells}
+    assert got == {
+        (2023, 12): 100.0, (2023, 24): 150.0, (2023, 36): 165.0,
+        (2024, 12): 110.0, (2024, 24): 165.0,
+        (2025, 12): 120.0,
+    }
+
+
+def test_parse_triangle_accounting_numbers_and_subtotals():
+    tbl = Table(
+        page=1,
+        header=["AY", "12", "24", "36"],
+        rows=[
+            ["2023", "$1,200", "(50)", "1,300"],   # $, parens-negative, comma
+            ["2024", "1,100", "1,250", "n/a"],      # n/a → unobserved
+            ["Total", "2,300", "1,200", "1,300"],   # subtotal row → skipped
+        ],
+    )
+    cells = parse_triangle(tbl, insurer="ALL", lob="home",
+                           metric="paid", as_of="2026-03-31")
+    got = {(c["accident_year"], c["dev_period"]): c["cumulative_value"] for c in cells}
+    assert got == {
+        (2023, 12): 1200.0, (2023, 24): -50.0, (2023, 36): 1300.0,
+        (2024, 12): 1100.0, (2024, 24): 1250.0,
+    }
+
+
+def test_parse_triangle_chain_ladder_roundtrip():
+    """Cells parsed from a PDF table develop to the hand-computed IBNR."""
+    cells = parse_triangle(_standard_triangle(), insurer="PGR", lob="auto",
+                           metric="incurred", as_of="2026-03-31")
+    _, mat = reserving.build_matrix(cells)
+    cl = reserving.chain_ladder(mat)
+    assert cl["ibnr"] == pytest.approx(94.5)
+    assert cl["ultimate_total"] == pytest.approx(544.5)
+
+
+def test_looks_like_triangle_rejects_non_triangle():
+    not_a_triangle = Table(
+        page=1,
+        header=["Segment", "Net premiums", "Loss ratio"],
+        rows=[["Personal auto", "$1,234", "92.1%"], ["Homeowners", "$567", "78.4%"]],
+    )
+    assert looks_like_triangle(not_a_triangle) is False
+    assert parse_triangle(not_a_triangle, insurer="X", lob="y",
+                          metric="paid", as_of="2026-03-31") == []
+    assert looks_like_triangle(_standard_triangle()) is True
 
 
 # ── chain-ladder math (hand-computed triangle) ───────────────────────────

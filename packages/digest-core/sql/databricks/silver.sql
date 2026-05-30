@@ -20,10 +20,13 @@ CREATE TABLE IF NOT EXISTS pc_silver.triage_verdicts (
     reason            STRING,                    -- ≤ 50 words
     burden_direction  STRING,                    -- 'increasing'|'neutral'|'decreasing' or null
     burden_intensity  STRING,                    -- 'high'|'medium'|'low' or null
+    state             STRING,                    -- Wave 4 Lead 9: US state code for regulatory_rate items (null elsewhere)
     model_id          STRING,                    -- triage model identifier
     CONSTRAINT pc_silver_triage_pk PRIMARY KEY (item_hash, triaged_at)
 )
 USING DELTA;
+-- Lead 9 migration on an existing table:
+--   ALTER TABLE pc_silver.triage_verdicts ADD COLUMN state STRING;
 
 -- Per-item leaderboard score with all 11 multiplicative factors broken out.
 -- Enables back-testing: "if I bump PGR insurer_boost to 1.7×, what would last
@@ -126,5 +129,57 @@ CREATE TABLE IF NOT EXISTS pc_silver.reserving_signals (
     deterioration_pct DOUBLE,                    -- (ibnr - prior_ibnr) / prior_ibnr
     direction         STRING,                    -- 'adverse' | 'favorable' | 'flat'
     CONSTRAINT pc_silver_reserving_pk PRIMARY KEY (insurer, lob, metric, as_of)
+)
+USING DELTA;
+
+-- ── Wave 4 — Insurance EKG leads (derived facts) ─────────────────────────
+-- See docs/WAVE4_EKG_PLAN.md. Ingestors are future waves; the DatabricksSink
+-- already has a no-op write_* per table.
+
+-- Lead 4 — Litigation Pressure Index. Marathon nuclear-verdict tracker +
+-- Westfleet TPLF survey + CourtListener docket velocity, rolled to a
+-- per-state × sector pressure index. Hardens signals.litigation_tplf_boost.
+-- (state, sector)-keyed — a derived legal-environment fact, not a news item.
+CREATE TABLE IF NOT EXISTS pc_silver.litigation_pressure (
+    state            STRING    NOT NULL,           -- US state code, or 'US' for the national roll-up
+    sector           STRING    NOT NULL,           -- 'commercial_auto' | 'product_liability' | 'med_mal' | …
+    as_of            TIMESTAMP NOT NULL,
+    verdict_count    INT,                           -- nuclear verdicts (≥$10M) in the window
+    median_award     DOUBLE,                        -- USD
+    tplf_commitments DOUBLE,                        -- disclosed third-party funding committed, USD
+    docket_velocity  DOUBLE,                        -- new P&C dockets / day, trailing window
+    pressure_index   DOUBLE,                        -- composite 0-100, drives the boost calibration
+    CONSTRAINT pc_silver_litigation_pk PRIMARY KEY (state, sector, as_of)
+)
+USING DELTA;
+
+-- Lead 5 — Disclosure Sentiment. Reserve-tone NLP (FinBERT / Loughran-McDonald,
+-- or ai_query() on the warehouse) over EDGAR MD&A / reserve footnotes. Hardens
+-- signals reserve_deterioration_boost with a *language* read that leads the
+-- chain-ladder number. (insurer, period)-keyed.
+CREATE TABLE IF NOT EXISTS pc_silver.disclosure_sentiment (
+    insurer               STRING    NOT NULL,       -- ticker
+    period                STRING    NOT NULL,       -- filing period, e.g. '2026Q1'
+    as_of                 TIMESTAMP NOT NULL,        -- filing date
+    reserve_tone          STRING,                    -- 'strengthening' | 'releasing' | 'neutral'
+    adverse_language_score DOUBLE,                   -- 0.0-1.0, higher = more adverse framing
+    source_filing         STRING,                    -- accession number or filing URL
+    CONSTRAINT pc_silver_disclosure_pk PRIMARY KEY (insurer, period, as_of)
+)
+USING DELTA;
+
+-- Lead 8 — InsurTech Capital-Flow. Structured extraction (ai_query() on the
+-- warehouse / Ollama locally) of funding-round + broker-M&A news into deal
+-- facts. Powers the ai_insurtech topic with substance so the 35% share cap
+-- stops being the only governor. item_hash-keyed back to the source news item.
+CREATE TABLE IF NOT EXISTS pc_silver.capital_flows (
+    item_hash   STRING    NOT NULL,                 -- joins to bronze.ingested_items
+    as_of       TIMESTAMP NOT NULL,
+    deal_type   STRING,                              -- 'funding_round' | 'm&a' | 'broker_acquisition' | 'ipo'
+    amount_usd  DOUBLE,
+    stage       STRING,                              -- 'seed' | 'series_a' | … | null for M&A
+    target      STRING,                              -- company acquired / funded
+    investors   STRING,                              -- JSON array or comma-list of investors / acquirer
+    CONSTRAINT pc_silver_capital_flows_pk PRIMARY KEY (item_hash)
 )
 USING DELTA;
