@@ -310,34 +310,44 @@ def _apply_hysteresis(
     """Compare proposed regime to the last 2 stored signals.
 
     Returns (effective_market_cycle, effective_cat_load, transition_confirmed).
-    A regime change holds only when the new state matches the most recent
-    stored signal — i.e., two consecutive recomputes have agreed.
+    A regime change holds only when two consecutive recomputes *propose* the
+    same new state — so a single noisy reading can't flip the multiplier.
     """
-    history = db.recent_regime_signals(n=2)
+    history = db.recent_regime_signals(n=1)
     if not history:
         return proposed_market_cycle, proposed_cat_load, True
 
     last = history[0]
-    # If proposal already matches the last stored, no transition needed.
-    if last["market_cycle"] == proposed_market_cycle and last["cat_load"] == proposed_cat_load:
+    proposed = (proposed_market_cycle, proposed_cat_load)
+    # Already the active state → nothing to transition.
+    if (last["market_cycle"], last["cat_load"]) == proposed:
         return proposed_market_cycle, proposed_cat_load, True
 
-    # If we only have one historical reading, this proposal is the first
-    # "disagreement" — defer transition (treat as pending).
-    if len(history) < 2:
-        return last["market_cycle"], last["cat_load"], False
+    # The proposal differs from the active state. Confirm the change only when
+    # the PREVIOUS recompute proposed the SAME thing — i.e. two consecutive
+    # recomputes agree. Otherwise hold the active state; compute_regime records
+    # this proposal in evidence_json so the next matching recompute confirms it.
+    # Comparing against the prior *proposal* (not the held effective state) is
+    # what lets a transition accumulate out of a stable baseline — comparing
+    # against the effective state left a pending change unable to ever confirm.
+    if _stored_proposal(last) == proposed:
+        return proposed_market_cycle, proposed_cat_load, True
+    return last["market_cycle"], last["cat_load"], False
 
-    # We have two prior readings. If both prior match each other AND the
-    # current proposal also matches them, transition is confirmed; else
-    # the proposal differs from the established baseline and is pending.
-    prev = history[1]
-    if prev["market_cycle"] == last["market_cycle"] and prev["cat_load"] == last["cat_load"]:
-        # Stable baseline; one disagreeing reading isn't enough.
-        return last["market_cycle"], last["cat_load"], False
 
-    # Baseline was already shifting; if the new reading matches the most
-    # recent, accept the transition.
-    return proposed_market_cycle, proposed_cat_load, True
+def _stored_proposal(row: Any) -> tuple[str, str] | None:
+    """The (market_cycle, cat_load) the prior recompute *proposed*, from its
+    evidence_json. None when absent/unparseable, so a missing proposal can never
+    spuriously confirm a transition."""
+    raw = row["evidence_json"] if "evidence_json" in row.keys() else None
+    if not raw:
+        return None
+    try:
+        prop = (json.loads(raw) or {}).get("proposed") or {}
+    except (TypeError, json.JSONDecodeError):
+        return None
+    mc, cl = prop.get("market_cycle"), prop.get("cat_load")
+    return (mc, cl) if mc and cl else None
 
 
 # ── Public API ────────────────────────────────────────────────────────

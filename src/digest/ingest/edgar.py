@@ -11,6 +11,7 @@ the ticker/CIK universe (config/edgar_tickers.yaml) and the per-form topic lock.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -22,6 +23,42 @@ from digest.ingest.base import IngestedItem, IngestorBase
 from digest_core.ingest.edgar import fetch_8k_content, fetch_html_text
 
 logger = logging.getLogger(__name__)
+
+# Lead 5 (Disclosure Sentiment): the 10-K/10-Q *head* (financial highlights) rarely
+# carries reserve tone — that lives in the loss-reserve note / MD&A, deep in the
+# doc. Pull windows around reserve-discussion markers so disclosure.score_filing
+# has the language to read. The HTML download is already full (only the extracted
+# *text* is capped), so retaining more text + slicing here costs no extra fetch.
+_RESERVE_MARKERS = re.compile(
+    r"prior[\s-]*year(?:'s)?\s+(?:reserve\s+)?development"
+    r"|loss(?:es)?\s+and\s+loss\s+adjustment\s+expense"
+    r"|reserves?\s+for\s+(?:unpaid\s+)?(?:losses|claims)"
+    r"|incurred\s+but\s+not\s+reported|\bIBNR\b"
+    r"|(?:favorable|unfavorable|adverse)\s+(?:prior[\s-]*year\s+)?development"
+    r"|reserve\s+(?:strengthening|releases?|deficienc)",
+    re.IGNORECASE,
+)
+# Output text retained from a 10-K/10-Q so the reserve note (often >60% through a
+# 10-K) is within reach; the underlying HTML is downloaded in full regardless.
+_DEEP_FETCH_CHARS = 800_000
+_HEAD_CHARS = 5000
+
+
+def _reserve_excerpt(text: str, window: int = 1400, max_total: int = 3000) -> str:
+    """Concatenate text windows around reserve-discussion markers, capped at
+    `max_total`. '' when no reserve language is present (so nothing is appended)."""
+    if not text:
+        return ""
+    chunks: list[str] = []
+    used = 0
+    for m in _RESERVE_MARKERS.finditer(text):
+        start = max(0, m.start() - window // 3)
+        chunk = text[start:m.start() + window]
+        chunks.append(chunk)
+        used += len(chunk)
+        if used >= max_total:
+            break
+    return " … ".join(chunks)[:max_total]
 
 EDGAR_CONFIG = Path(__file__).resolve().parents[3] / "config" / "edgar_tickers.yaml"
 SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
@@ -109,7 +146,8 @@ class EdgarIngestor(IngestorBase):
 
                     # Fetch content for recent filings only (avoid backfilling).
                     # 8-K → EX-99.1 press release; 10-Q/10-K → primary doc head
-                    # (financial highlights live in the first ~5K chars).
+                    # (financial highlights) + the reserve-discussion excerpt for
+                    # Lead 5 disclosure sentiment.
                     content: str | None = None
                     if (
                         form in _FETCH_CONTENT_FORMS
@@ -119,7 +157,12 @@ class EdgarIngestor(IngestorBase):
                         if form == "8-K":
                             content = fetch_8k_content(cik_int, accession, self.headers)
                         else:
-                            content = fetch_html_text(url, self.headers, max_chars=5000)
+                            full = fetch_html_text(url, self.headers, max_chars=_DEEP_FETCH_CHARS)
+                            if full:
+                                content = full[:_HEAD_CHARS]
+                                excerpt = _reserve_excerpt(full)
+                                if excerpt:
+                                    content += "\n\n[Reserve discussion]\n" + excerpt
                         if content:
                             logger.debug(
                                 "edgar: fetched %s content for %s %s (%d chars)",

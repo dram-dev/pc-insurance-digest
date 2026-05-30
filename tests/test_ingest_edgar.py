@@ -78,3 +78,31 @@ def test_fetch_8k_content_follows_exhibit(monkeypatch):
     monkeypatch.setattr(core_edgar.requests, "get", fake_get)
     out = core_edgar.fetch_8k_content("320193", "0000320193-26-000001", {}, delay_sec=0)
     assert out == "Q1 results: combined ratio 92%"
+
+
+# ── Lead 5: reserve-discussion excerpt from PC's edgar shell ──────────────────
+from digest.ingest.edgar import _reserve_excerpt  # noqa: E402
+
+
+def test_reserve_excerpt_pulls_reserve_language():
+    text = (
+        "Item 1. Business. " + ("filler " * 200)
+        + "The Company recorded unfavorable prior-year reserve development of "
+        + "$120 million, reflecting reserve strengthening in the auto line. "
+        + ("more " * 100)
+    )
+    out = _reserve_excerpt(text)
+    assert "prior-year reserve development" in out
+    assert "reserve strengthening" in out
+    assert len(out) <= 3000
+
+
+def test_reserve_excerpt_empty_when_no_reserve_language():
+    assert _reserve_excerpt("Net premiums written rose 5% on strong retention.") == ""
+    assert _reserve_excerpt("") == ""
+
+
+def test_reserve_excerpt_capped_across_many_matches():
+    text = ("IBNR reserves for unpaid claims. " * 500)
+    out = _reserve_excerpt(text)
+    assert 0 < len(out) <= 3000

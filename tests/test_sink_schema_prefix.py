@@ -41,6 +41,26 @@ def test_merge_targets_prefixed_schema(monkeypatch):
     assert captured["pk_cols"] == ("item_hash", "triaged_at")  # PK lookup unprefixed
 
 
+def test_write_triage_emits_state_only_when_supplied(monkeypatch):
+    """Lead 9: PC passes `state` (column present in its DDL) → it's written;
+    a domain that omits `state` (e.g. macro, no such column) → not in the MERGE."""
+    s = _sink("pc_")
+    cols_seen: dict[str, list] = {}
+
+    def fake_merge(cur, table, cols, pk_cols, rows):
+        cols_seen["cols"] = cols
+
+    monkeypatch.setattr(s, "_connection", lambda: _FakeConn())
+    monkeypatch.setattr(DatabricksSink, "_merge_batch", staticmethod(fake_merge))
+
+    s.write_triage("rss", "r1", {"decision": "keep", "topic": "regulatory_rate", "state": "CA"})
+    assert "state" in cols_seen["cols"]
+
+    cols_seen.clear()
+    s.write_triage("rss", "r2", {"decision": "keep", "topic": "cyber"})   # no state key
+    assert "state" not in cols_seen["cols"]
+
+
 def test_write_scores_batches_instead_of_per_row(monkeypatch):
     """write_scores must MERGE in _BATCH_SIZE chunks, not once per item — the
     fix for the per-row round-trip that made `digest signals` crawl."""
