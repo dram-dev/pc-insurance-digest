@@ -33,8 +33,8 @@ logger = logging.getLogger(__name__)
 
 _CONFIG_PATH = Path(__file__).resolve().parents[3] / "config" / "courtlistener_courts.yaml"
 _API_BASE = "https://www.courtlistener.com/api/rest/v4"
-_REQUEST_TIMEOUT = 20
-_SLEEP_BETWEEN_CALLS = 12   # 5 req/min cap
+_REQUEST_TIMEOUT = 30   # v4 date-filtered docket queries can run >20s
+_SLEEP_BETWEEN_CALLS = 13   # 5 req/min cap is exactly 12s; 13s leaves margin
 _DAILY_REQUEST_CAP = 100    # stay under 125/day; leave headroom for retries
 
 # Nature-of-suit codes that map to P&C-relevant dockets. Expanded 2026-05-25
@@ -117,6 +117,8 @@ class CourtListenerIngestor(IngestorBase):
         global _request_count
 
         headers = {"Authorization": f"Token {settings.courtlistener_token}"}
+        # django-filter lookup on the /dockets/ endpoint. (`filed_after` is a
+        # *search*-endpoint param and 400s here.)
         filed_after = (datetime.now(tz=timezone.utc) - timedelta(days=_FILED_AFTER_DAYS)).date().isoformat()
         items: list[IngestedItem] = []
 
@@ -131,10 +133,10 @@ class CourtListenerIngestor(IngestorBase):
                 if _request_count >= _DAILY_REQUEST_CAP:
                     break
                 params = {
-                    "court":       court_id,
-                    "filed_after": filed_after,
-                    "order_by":    "-date_filed",
-                    "page_size":   20,
+                    "court":           court_id,
+                    "date_filed__gte": filed_after,
+                    "order_by":        "-date_filed",
+                    "page_size":       20,
                 }
                 try:
                     r = requests.get(
