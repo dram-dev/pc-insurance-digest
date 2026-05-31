@@ -827,15 +827,24 @@ def health() -> None:
 
 @main.command()
 @click.option("--open", "open_after", is_flag=True, help="Open generated files in the OS default app")
-def viz(open_after: bool) -> None:
-    """Generate claims trend SVG visualizations into the Obsidian vault."""
-    from digest.viz import write_viz_pages
+@click.option("--lab", is_flag=True,
+              help="Generate the Viz Lab eval harness note (_meta/) instead of the claims-trend pages")
+def viz(open_after: bool, lab: bool) -> None:
+    """Generate claims trend SVG visualizations into the Obsidian vault.
 
+    With --lab, instead renders every candidate Markdown viz technique against the
+    same live SQLite slice into `_meta/Viz Lab (DATE).md` — a side-by-side eval
+    harness to pick which graduate to the daily-note EKG header / dashboard.
+    """
     db.init_db()
     console.rule("[bold cyan]viz")
     try:
-        paths = write_viz_pages(open_after=open_after)
-        for p in paths:
+        if lab:
+            from digest.viz_lab import write_viz_lab
+            console.print(f"  [green]✓[/green] {write_viz_lab(open_after=open_after)}")
+            return
+        from digest.viz import write_viz_pages
+        for p in write_viz_pages(open_after=open_after):
             console.print(f"  [green]✓[/green] {p}")
     except Exception as exc:  # noqa: BLE001
         console.print(f"  [red]✗[/red] {exc}")
