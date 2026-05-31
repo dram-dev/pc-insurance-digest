@@ -333,6 +333,7 @@ def run_triage(limit: int = 200) -> dict[str, int]:
         (db.auto_keep_courtlistener_dockets, "CourtListener MDL dockets"),
         (db.auto_keep_state_doi,            "state DOI press releases"),
         (db.auto_keep_serff,                "SERFF rate filings ≥5%%"),
+        (db.auto_keep_legiscan,             "LegiScan insurance bills"),
         (db.auto_keep_investor_supp,        "investor-supplement tables"),
         (db.auto_keep_naic_schedp,          "NAIC Schedule P triangles"),
     ]

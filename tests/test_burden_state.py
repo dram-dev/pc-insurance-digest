@@ -63,3 +63,28 @@ def test_burden_by_state_intensity_weighted(fresh_db, make_item):
 
 def test_burden_by_state_empty_without_data(fresh_db):
     assert db.burden_by_state() == []
+
+
+# ── auto-keep hooks stamp items.state so velocity sources feed burden_by_state ──
+#    (regression: the hooks set topic but not state, so auto-kept regulatory
+#     items never reached burden_by_state.)
+
+def _auto_keep_item(make_item, source, sid, state):
+    db.upsert_items([make_item(source=source, source_id=sid,
+                               title=f"[{state}] {source} item",
+                               metadata={"topic_hint": "regulatory_rate", "state": state})])
+
+
+def test_auto_keep_legiscan_stamps_state(fresh_db, make_item):
+    _auto_keep_item(make_item, "legiscan", "b1", "CA")
+    assert db.auto_keep_legiscan() == 1
+    with db.get_conn() as c:
+        r = c.execute("SELECT state, topic, triage_decision FROM items WHERE source_id='b1'").fetchone()
+    assert r["state"] == "CA" and r["topic"] == "regulatory_rate" and r["triage_decision"] == "keep"
+    assert any(row["state"] == "CA" for row in db.burden_by_state())   # now feeds the barometer
+
+
+def test_auto_keep_state_doi_stamps_state(fresh_db, make_item):
+    _auto_keep_item(make_item, "state_doi", "d1", "FL")
+    db.auto_keep_state_doi()
+    assert any(row["state"] == "FL" for row in db.burden_by_state())
