@@ -52,6 +52,15 @@ class LegiScanIngestor(IngestorBase):
         self.max_per_state: int = int(d.get("max_per_state", 12))
         self.states: list[str] = cfg.get("states", []) or []
 
+    def _redact(self, text: str) -> str:
+        """Scrub the API key from text before logging.
+
+        The key travels as a URL query param, so a requests.HTTPError raised by
+        raise_for_status() carries it in its message (`...for url: ?key=SECRET`).
+        Replace it so the key never reaches the launchd log files."""
+        key = settings.legiscan_api_key
+        return text.replace(key, "***") if key else text
+
     def fetch(self) -> list[IngestedItem]:
         if not self.enabled:
             return []
@@ -61,7 +70,7 @@ class LegiScanIngestor(IngestorBase):
             try:
                 items.extend(self._search_state(state, cutoff))
             except Exception as exc:  # noqa: BLE001
-                logger.warning("legiscan: %s search failed: %s", state, exc)
+                logger.warning("legiscan: %s search failed: %s", state, self._redact(str(exc)))
         logger.info("legiscan: %d recent insurance bills across %d states",
                     len(items), len(self.states))
         return items

@@ -86,3 +86,21 @@ def test_non_ok_status_returns_empty(monkeypatch):
     ing = LegiScanIngestor()
     ing.states = ["CA"]
     assert ing.fetch() == []
+
+
+def test_api_key_redacted_from_logs(monkeypatch, caplog):
+    """A raise carrying the key in its URL must not leak it to the logs."""
+    secret = "supersecretkey123"
+    monkeypatch.setattr("digest.ingest.legiscan.settings.legiscan_api_key", secret)
+
+    def boom(*a, **k):
+        raise RuntimeError(
+            f"500 Server Error for url: https://api.legiscan.com/?key={secret}&op=getSearch")
+
+    monkeypatch.setattr("digest.ingest.legiscan.requests.get", boom)
+    ing = LegiScanIngestor()
+    ing.states = ["CA"]
+    with caplog.at_level("WARNING"):
+        assert ing.fetch() == []                 # exception swallowed, no items
+    assert secret not in caplog.text             # key scrubbed
+    assert "***" in caplog.text                  # redaction marker present
