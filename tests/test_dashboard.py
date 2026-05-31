@@ -1,0 +1,81 @@
+"""Phase C — Signal Desk dashboard + Home cockpit + calibration heatmap +
+daily-note frontmatter enrichment."""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+from digest import dashboard, db, obsidian, viz_lab
+
+
+def _put_regime():
+    db.upsert_regime_signal(
+        as_of=datetime.now(timezone.utc).isoformat(),
+        market_cycle="hard_market", cat_load="active_season",
+        market_cycle_mult=1.2, cat_load_mult=1.1, multiplier=1.32,
+        evidence_json="{}", source="detector",
+    )
+
+
+# ── Calibration heatmap ──────────────────────────────────────────────────────
+
+def test_calibration_heatmap_empty(fresh_db):
+    assert viz_lab.render_calibration_heatmap().lstrip().startswith("_No data yet")
+
+
+def test_calibration_heatmap_populated(fresh_db, make_item):
+    db.upsert_items([make_item(source="rss", source_id="c1", title="Rated item")])
+    with db.get_conn() as c:
+        iid = c.execute("SELECT id FROM items WHERE source_id='c1'").fetchone()["id"]
+    db.upsert_manual_rating(iid, 4.0, note=None)
+    # a computed score so system_score isn't NULL
+    with db.get_conn() as c:
+        c.execute(
+            "INSERT INTO signal_scores (item_id, score, computed_at) VALUES (?,?,?)",
+            (iid, 3.0, datetime.now(timezone.utc).isoformat()),
+        )
+    out = viz_lab.render_calibration_heatmap()
+    assert "Rated item" in out
+    assert "-1.00" in out          # Δ = system(3.0) − you(4.0)
+    assert "mean |Δ|" in out
+
+
+# ── Dashboard builders ───────────────────────────────────────────────────────
+
+def test_signal_desk_has_all_sections(fresh_db):
+    md = dashboard.build_signal_desk_md()
+    assert md.startswith("---") and "# 🛰️ Signal Desk" in md
+    assert "```dataviewjs" in md
+    assert "Regime & vitals timeline" in md
+    assert "Reserve-adequacy flows" in md
+    assert "Catastrophe-season activity" in md
+    assert "Calibration" in md
+    # the dataview source points at the configured digest dir
+    assert f"{dashboard.settings.obsidian_digest_dir}/Daily" in md
+
+
+def test_home_has_status_and_buttons(fresh_db):
+    md = dashboard.build_home_md()
+    assert "# 🏠 PC Digest — Cockpit" in md
+    assert "```dataviewjs" in md            # status strip
+    assert "```button" in md                # at least one pipeline button
+    assert "Shell Commands to register" in md
+    assert "[[Signal Desk]]" in md
+
+
+def test_write_dashboard_writes_two_meta_notes(fresh_db, tmp_path, monkeypatch):
+    monkeypatch.setattr(dashboard.settings, "obsidian_vault_path", str(tmp_path))
+    paths = dashboard.write_dashboard(open_after=False)
+    names = {p.name for p in paths}
+    assert names == {"Signal Desk.md", "Home.md"}
+    assert all(p.exists() and p.parent.name == "_meta" for p in paths)
+
+
+# ── Frontmatter enrichment ───────────────────────────────────────────────────
+
+def test_daily_frontmatter_enriched_with_regime(fresh_db):
+    _put_regime()
+    from digest.regime import current_regime
+    text, _ = obsidian.render_daily_note("2026-05-31", regime=current_regime())
+    head = text.split("---", 2)[1]            # the YAML frontmatter block
+    assert "regime_cycle: hard_market" in head
+    assert "regime_mult:" in head

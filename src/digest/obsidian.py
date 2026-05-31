@@ -266,6 +266,39 @@ def _render_regime_callout(regime) -> str:
     return "\n".join(lines)
 
 
+def _daily_frontmatter_extra(regime, top_signals) -> dict:
+    """Phase C — extra daily-note frontmatter so the Signal Desk dashboard can
+    query a regime/vitals timeline across Daily/ notes. All best-effort: a failing
+    reader just omits its key, never raises."""
+    extra: dict = {}
+    if regime is not None:
+        extra["regime_cycle"] = regime.market_cycle
+        extra["cat_load"] = regime.cat_load
+        extra["regime_mult"] = round(float(regime.multiplier), 3)
+    if top_signals:
+        try:
+            extra["top_score"] = round(float(top_signals[0]["score"] or 0), 3)
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        sev = db.latest_severity_index("blended_severity")
+        if sev is not None:
+            extra["severity_index"] = round(float(sev["value"]), 3)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        burden = db.burden_by_state(90)
+        if burden:
+            extra["burden_top_state"] = burden[0]["state"]
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        extra["docket_velocity"] = db.courtlistener_docket_velocity(30)
+    except Exception:  # noqa: BLE001
+        pass
+    return extra
+
+
 def _render_ekg_panel() -> str:
     """Phase B — the 'Market EKG' vital-signs strip atop the daily note.
 
@@ -418,6 +451,7 @@ def render_daily_note(
         "topics": sorted({r["topic"] or "other" for r in summarized}),
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
+    front.update(_daily_frontmatter_extra(regime, top_signals))   # Phase C: dashboard timeline
     lines: list[str] = ["---", yaml.safe_dump(front, sort_keys=False).strip(), "---", ""]
     lines.append(f"# Digest — {date_iso}")
     lines.append("")

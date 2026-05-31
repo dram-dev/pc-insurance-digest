@@ -365,6 +365,28 @@ def render_unicode_gauges() -> str:
     return "\n".join(lines) if lines else _no_data("digest regime / severity-tape / cat-nowcast")
 
 
+# ── Calibration heatmap (system score vs your rating) — Phase C dashboard ────
+
+def render_calibration_heatmap(limit: int = 30) -> str:
+    rows = db.calibration_rows(limit=limit)
+    scored = [r for r in rows if r["system_score"] is not None]
+    if not scored:
+        return _no_data("digest rate <id> <1-5>")
+    lines = ["| Item | You | System | Δ |  |", "|---|--:|--:|--:|:-:|"]
+    deltas: list[float] = []
+    for r in scored:
+        d = float(r["system_score"]) - float(r["user_rating"])
+        deltas.append(d)
+        chip = "🟥" if abs(d) >= 1.0 else "🟧" if abs(d) >= 0.5 else "🟩"
+        title = (r["title"] or "(untitled)")[:42].replace("|", "·")
+        lines.append(f"| {title} | {float(r['user_rating']):.1f} | "
+                     f"{float(r['system_score']):.2f} | {d:+.2f} | {chip} |")
+    mean_abs = sum(abs(d) for d in deltas) / len(deltas)
+    lines += ["", f"_mean |Δ| = {mean_abs:.2f} over {len(deltas)} rated · 🟥 ≥1.0 "
+                  f"(system mis-valued) · 🟧 ≥0.5 · 🟩 aligned · Δ = system − you_"]
+    return "\n".join(lines)
+
+
 # ── Assembly ─────────────────────────────────────────────────────────────────
 
 # (H2 title, plugin requirement, renderer)
