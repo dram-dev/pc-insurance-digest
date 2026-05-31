@@ -27,6 +27,14 @@ def parse_date(text: str | None, formats: Iterable[str] | None = None) -> dateti
     if not text:
         return None
     clean = text.strip()
+    # ISO-8601 fast path (e.g. <time datetime="2026-05-28T13:42:01-04:00">) —
+    # strptime formats don't cover tz offsets. Normalize to UTC.
+    if not formats:
+        try:
+            dt = datetime.fromisoformat(clean.replace("Z", "+00:00"))
+            return dt.astimezone(timezone.utc) if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        except ValueError:
+            pass
     for fmt in formats or _DEFAULT_FORMATS:
         try:
             return datetime.strptime(clean, fmt).replace(tzinfo=timezone.utc)
