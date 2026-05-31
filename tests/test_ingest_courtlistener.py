@@ -35,5 +35,5 @@ def test_dockets_query_uses_date_filed_gte(monkeypatch):
     p = captured[0]
     assert "date_filed__gte" in p          # the django-filter lookup
     assert "filed_after" not in p          # the param that 400s on /dockets/
-    assert p["order_by"] == "-date_filed"
+    assert "order_by" not in p             # ordering the filtered set times out (>60s) — dropped
     assert p["court"] == "cand"

@@ -132,10 +132,14 @@ class CourtListenerIngestor(IngestorBase):
             for court_id in self.config.get(tier, []):
                 if _request_count >= _DAILY_REQUEST_CAP:
                     break
+                # No order_by: ordering the date-filtered docket set is unindexed
+                # on CourtListener and times out (validated 2026-05-30 — ilnd was
+                # >60s WITH order_by=-date_filed vs 0.4s without). The 2-day
+                # date_filed__gte window already returns only recent dockets, so
+                # the default order is fine.
                 params = {
                     "court":           court_id,
                     "date_filed__gte": filed_after,
-                    "order_by":        "-date_filed",
                     "page_size":       20,
                 }
                 try:
