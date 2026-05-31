@@ -21,14 +21,32 @@ from __future__ import annotations
 import subprocess
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 from digest import viz_lab
 from digest.config import settings
 
 
+def _vault_root(start: Path) -> Path:
+    """Obsidian vault root = nearest ancestor (incl. start) holding a `.obsidian`."""
+    start = start.resolve()
+    for cand in (start, *start.parents):
+        if (cand / ".obsidian").is_dir():
+            return cand
+    return start
+
+
 def _daily_source() -> str:
-    """Dataview source string for the daily-notes folder, e.g. "81 P&C Digest/Daily"."""
-    return f"{settings.obsidian_digest_dir}/Daily"
+    """Dataview source for the daily-notes folder, relative to the Obsidian vault
+    ROOT — which can sit ABOVE OBSIDIAN_VAULT_PATH (e.g. the digest writes to
+    `vault_build/81 P&C Digest/` inside a vault rooted one level up). Dataview's
+    `dv.pages("...")` resolves against the vault root, so the prefix matters."""
+    vault_path = Path(settings.obsidian_vault_path)
+    daily = (vault_path / settings.obsidian_digest_dir / "Daily").resolve()
+    try:
+        return daily.relative_to(_vault_root(vault_path)).as_posix()
+    except ValueError:
+        return f"{settings.obsidian_digest_dir}/Daily"
 
 
 def build_signal_desk_md() -> str:
