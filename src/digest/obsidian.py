@@ -266,6 +266,48 @@ def _render_regime_callout(regime) -> str:
     return "\n".join(lines)
 
 
+def _render_ekg_panel() -> str:
+    """Phase B — the 'Market EKG' vital-signs strip atop the daily note.
+
+    Composes the Viz Lab winners (the renderers live in `viz_lab`, the single
+    source of truth — no logic duplicated here). Sub-blocks whose EKG lead has no
+    data yet are skipped so the panel stays clean rather than showing 'no data'
+    noise on a quiet day. Returns "" when EKG_HEADER_ENABLED is false or nothing
+    has data. The larger Reserve Sankey + catastrophe heatmap calendar stay out of
+    the daily header — they belong to the Phase C dashboard."""
+    if not settings.ekg_header_enabled:
+        return ""
+    from digest import viz_lab as vl  # lazy: keeps obsidian import-light
+
+    blocks = [
+        ("Vital signs", vl.render_unicode_gauges),
+        ("Market regime", vl.render_regime_quadrant),
+        ("Loss-cost severity", vl.render_severity_drivers),
+        ("Litigation", vl.render_litigation_pulse),
+        ("Regulatory burden", vl.render_burden_bars),
+        ("Reserve adequacy", vl.render_reserve_heatgrid),
+    ]
+    live: list[tuple[str, str]] = []
+    for label, render in blocks:
+        try:
+            body = render()
+        except Exception:  # noqa: BLE001 — a header must never break the daily note
+            continue
+        if body.lstrip().startswith("_No data yet"):
+            continue
+        live.append((label, body))
+    if not live:
+        return ""
+
+    out = ["## 🫀 Market EKG", ""]
+    for label, body in live:
+        out.append(f"**{label}**")
+        out.append("")
+        out.append(body)
+        out.append("")
+    return "\n".join(out).rstrip()
+
+
 def _render_leaderboard_item(row: sqlite3.Row, rank: int) -> str:
     title = _safe(row["title"]) or "(untitled)"
     url   = _safe(row["url"])
@@ -383,6 +425,12 @@ def render_daily_note(
     # ── Regime callout (Wave 2) ──────────────────────────────────────────
     if regime is not None:
         lines.append(_render_regime_callout(regime))
+        lines.append("")
+
+    # ── Market EKG vital-signs panel (Phase B; gated by EKG_HEADER_ENABLED) ──
+    ekg_md = _render_ekg_panel()
+    if ekg_md:
+        lines.append(ekg_md)
         lines.append("")
 
     # ── Regulatory Sonar lite callout (Wave 2 lite) ──────────────────

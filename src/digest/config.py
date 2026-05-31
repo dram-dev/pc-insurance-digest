@@ -60,6 +60,10 @@ class Settings(BaseSettings):
     # Obsidian — vault is shared with macro digest; we land in a sibling folder
     obsidian_vault_path: str = Field(default="", alias="OBSIDIAN_VAULT_PATH")
     obsidian_digest_dir: str = Field(default="81 P&C Digest", alias="OBSIDIAN_DIGEST_DIR")
+    # Phase B EKG header — when true, render_daily_note prepends the "Market EKG"
+    # vital-signs panel (Viz Lab winners) atop each daily note. Default off so the
+    # daily note is unchanged until validated; flip to true in .env to enable.
+    ekg_header_enabled: bool = Field(default=False, alias="EKG_HEADER_ENABLED")
 
     # MLX-LM local server (Apple Silicon, shared with macro digest)
     mlx_server_url: str = Field(default="http://localhost:8080", alias="MLX_SERVER_URL")
