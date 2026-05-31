@@ -138,45 +138,73 @@ def _severity_history(limit: int = 12) -> list[sqlite3.Row]:
     return list(reversed(rows))   # oldest → newest for charting
 
 
-def render_severity_dual() -> str:
-    rows = _severity_history()
-    if not rows:
+def _severity_drivers() -> list[tuple[str, float]]:
+    """Latest-month m/m z-score per cost-driver category (parts/labor/…), hottest first."""
+    with db.get_conn() as conn:
+        latest = conn.execute(
+            "SELECT MAX(observation_date) FROM severity_index WHERE index_name LIKE 'fred_%'"
+        ).fetchone()[0]
+        if not latest:
+            return []
+        rows = conn.execute(
+            "SELECT category, value FROM severity_index "
+            "WHERE index_name LIKE 'fred_%' AND observation_date=?",
+            (latest,),
+        ).fetchall()
+    agg: dict[str, float] = {}
+    for r in rows:                       # several series can share a category → keep the hottest
+        cat, z = (r["category"] or "other"), float(r["value"] or 0.0)
+        if cat not in agg or abs(z) > abs(agg[cat]):
+            agg[cat] = z
+    return sorted(agg.items(), key=lambda kv: kv[1], reverse=True)
+
+
+def _z_chip(z: float) -> str:
+    return "🔴" if z >= 0.5 else "🟠" if z >= 0.2 else "🔵" if z <= -0.2 else "⚪"
+
+
+def render_severity_drivers() -> str:
+    drivers = _severity_drivers()
+    if not drivers:
         return _no_data("digest severity-tape")
-    vals = [float(r["value"]) for r in rows]
-    dates = [str(r["observation_date"])[:7] for r in rows]   # YYYY-MM
-    out = [
-        f"**Braille micro-chart** (zero-plugin, mobile-safe):  `{braille_line(vals)}`  "
-        f"latest **{vals[-1]:.1f}**",
-        "",
-        "**Mermaid `xychart-beta`** (richer, desktop):",
-        "```mermaid",
-        "xychart-beta",
-        '  title "Blended loss-cost severity index"',
-        "  x-axis [" + ", ".join(dates) + "]",
-        '  y-axis "index"',
-        "  line [" + ", ".join(f"{v:.1f}" for v in vals) + "]",
-        "```",
-    ]
-    return "\n".join(out)
+    lines = ["**Loss-cost severity — driver breakdown** (latest-month m/m z-scores):", ""]
+    for cat, z in drivers:
+        bar = "█" * min(10, round(abs(z) * 6))
+        lines.append(f"- {_z_chip(z)} `{cat:<12}` {z:+.2f}σ  {bar}")
+    blended = db.latest_severity_index("blended_severity")
+    if blended is not None:
+        bz = float(blended["value"])
+        lines += ["", f"**Blended:** {bz:+.2f}σ  `{gauge_bar((bz + 3) / 6)}`"]
+    hist = _severity_history()           # add a trend braille once >1 month accumulates
+    if len(hist) > 1:
+        lines.append(f"Trend `{braille_line([float(r['value']) for r in hist])}` ({len(hist)} mo)")
+    return "\n".join(lines)
 
 
 # ── Option 4b — Litigation pulse (block sparkline) ───────────────────────────
 
 def render_litigation_pulse() -> str:
+    vel = db.courtlistener_docket_velocity(30)
+    row = db.latest_litigation_pressure()
+    lines = [f"- **Federal P&C docket velocity:** {vel:.2f}/day (last 30d) — live sub-signal"]
+    # Composite index history sparkline, when it has actually moved.
     with db.get_conn() as conn:
-        rows = conn.execute(
-            """SELECT as_of, pressure_index FROM litigation_pressure
-               WHERE state='US' AND sector='all'
-               ORDER BY as_of DESC LIMIT 12""",
+        hist = conn.execute(
+            """SELECT pressure_index FROM litigation_pressure
+               WHERE state='US' AND sector='all' ORDER BY as_of DESC LIMIT 12""",
         ).fetchall()
-    if not rows:
-        return _no_data("digest litigation")
-    rows = list(reversed(rows))
-    vals = [float(r["pressure_index"] or 0) for r in rows]
-    # sparkline() takes ints; scale to 0–100 for resolution
-    scaled = [int(round(v * 100)) for v in vals]
-    return (f"National litigation pressure  `{sparkline(scaled, width=len(scaled))}`  "
-            f"latest **{vals[-1]:.2f}** {_dir_arrow(vals[-1] - vals[0])}")
+    pis = [float(r["pressure_index"] or 0) for r in reversed(hist)]
+    pi = pis[-1] if pis else 0.0
+    if any(v > 0 for v in pis):
+        spark = sparkline([int(round(v * 100)) for v in pis], width=len(pis))
+        lines.append(f"- **Composite litigation pressure:** `{spark}` latest **{pi:.2f}** "
+                     f"{_dir_arrow(pi - pis[0])}")
+    elif row is not None:
+        lines.append("- **Composite litigation pressure:** 0.00 — pending verdict-count / "
+                     "median-award / TPLF inputs (docket velocity is the only live input today)")
+    else:
+        lines.append("- **Composite litigation pressure:** _not computed — run `digest litigation`_")
+    return "\n".join(lines)
 
 
 # ── Option 4c — Regulatory burden bar chart (Unicode █ bars) ─────────────────
@@ -201,6 +229,20 @@ def render_burden_bars() -> str:
 
 # ── Option 7 — Reserve-adequacy heat-grid + Sankey ───────────────────────────
 
+_LOB_ABBREV = [
+    ("commercial_lines", "Comm"), ("personal_lines", "PL"), ("vehicles", "Veh"),
+    ("agency", "Agcy"), ("direct", "Dir"), ("physical_damage", "PD"),
+    ("liability", "Liab"), ("property", "Prop"),
+]
+
+
+def _abbrev_lob(lob: str) -> str:
+    s = lob
+    for long, short in _LOB_ABBREV:
+        s = s.replace(long, short)
+    return s.replace("_", " ").strip()
+
+
 def _reserve_cell(direction: str, pct: float | None) -> str:
     p = abs(pct or 0.0)
     if direction == "adverse":
@@ -221,7 +263,7 @@ def render_reserve_heatgrid() -> str:
         # keep the most severe cell per (insurer, lob)
         c = _reserve_cell(r["direction"], r["deterioration_pct"])
         cell[(r["insurer"], r["lob"])] = c
-    header = "| insurer \\ LOB | " + " | ".join(lobs) + " |"
+    header = "| insurer \\ LOB | " + " | ".join(_abbrev_lob(l) for l in lobs) + " |"
     sep = "|" + "---|" * (len(lobs) + 1)
     lines = [header, sep]
     for ins in insurers:
@@ -252,38 +294,6 @@ def render_reserve_sankey() -> str:
         lines.append(f"{lob},{bucket},{w * 100:.0f}")
     lines.append("```")
     return "\n".join(lines)
-
-
-# ── Option 9 — Score-decomposition radar (Obsidian Charts / Chart.js) ────────
-
-_RADAR_FACTORS = [
-    ("Source", "source_mult"), ("Regime", "regime_mult"),
-    ("Topic-rel", "topic_relevance"), ("Recency", "recency"),
-    ("LLM", "llm_judgment"), ("Topic-boost", "topic_boost"),
-    ("Burden", "burden_boost"),
-]
-
-
-def render_score_radar() -> str:
-    rows = db.top_signal_scores(limit=1)
-    if not rows:
-        return _no_data("digest signals")
-    r = rows[0]
-    labels = [lbl for lbl, _ in _RADAR_FACTORS]
-    data = [round(float(r[col] or 0), 3) for _, col in _RADAR_FACTORS]
-    title = (r["title"] or "top item")[:48].replace('"', "'")
-    out = [
-        f"Top item: **{title}** (score {float(r['score'] or 0):.2f})",
-        "```chart",
-        "type: radar",
-        "labels: [" + ", ".join(labels) + "]",
-        "series:",
-        f'  - title: "factor multipliers"',
-        "    data: [" + ", ".join(f"{v}" for v in data) + "]",
-        "width: 60%",
-        "```",
-    ]
-    return "\n".join(out)
 
 
 # ── Option 10 — Catastrophe-season heatmap calendar (DataviewJS plugin) ───────
@@ -350,12 +360,11 @@ def render_unicode_gauges() -> str:
 _SECTIONS = [
     ("6 · Regime Quadrant Map", "Mermaid (built-in)", render_regime_quadrant),
     ("4a · Vital Gauges (Unicode)", "none", render_unicode_gauges),
-    ("8 · Severity Tape — braille vs xychart", "Mermaid (built-in)", render_severity_dual),
-    ("4b · Litigation Pulse (sparkline)", "none", render_litigation_pulse),
+    ("8 · Loss-cost Severity — driver breakdown", "none", render_severity_drivers),
+    ("4b · Litigation Pulse (docket velocity)", "none", render_litigation_pulse),
     ("4c · Regulatory Burden Bars", "none", render_burden_bars),
     ("7a · Reserve-Adequacy Heat-grid", "none", render_reserve_heatgrid),
     ("7b · Reserve Sankey", "Mermaid sankey-beta", render_reserve_sankey),
-    ("9 · Score-Decomposition Radar", "Obsidian Charts", render_score_radar),
     ("10 · Catastrophe-Season Heatmap", "Heatmap Calendar + Dataview", render_cat_heatmap),
 ]
 
