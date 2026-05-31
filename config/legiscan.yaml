@@ -1,0 +1,23 @@
+# LegiScan state-legislation sources (Lead 9 — Regulatory Burden Barometer).
+#
+# Per-state full-text search (getSearch) for P&C insurance bills. Bills with
+# recent legislative action surface as regulatory_rate items and feed the
+# per-state burden velocity (db.burden_by_state, via auto_keep_legiscan which
+# stamps items.state from the bill's state).
+#
+# Needs LEGISCAN_API_KEY in .env; the ingestor no-ops without it. Free tier is
+# 30k queries/month — one getSearch per state per run (5 states → 5/run).
+
+defaults:
+  query: "insurance"      # LegiScan full-text relevance search term
+  year: 2                 # 2 = current session/year (1=all, or a specific year)
+  recency_days: 30        # keep only bills with last action in the last N days
+  max_per_state: 12       # cap per state (results are relevance-sorted)
+
+# Top-5 P&C markets (matches the state_doi / serff scope).
+states:
+  - CA
+  - FL
+  - TX
+  - NY
+  - LA

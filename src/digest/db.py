@@ -844,6 +844,7 @@ def auto_keep_state_doi() -> int:
         SET triage_decision = 'keep',
             triage_score    = 0.9,
             topic           = 'regulatory_rate',
+            state           = json_extract(metadata_json, '$.state'),
             triaged_at      = datetime('now')
         WHERE source = 'state_doi'
           AND triage_decision IS NULL
@@ -915,8 +916,34 @@ def auto_keep_serff() -> int:
                                 ELSE 0.9
                               END,
             topic           = 'regulatory_rate',
+            state           = json_extract(metadata_json, '$.state'),
             triaged_at      = datetime('now')
         WHERE source = 'serff'
+          AND triage_decision IS NULL
+    """
+    with get_conn() as conn:
+        cur = conn.execute(sql)
+        return cur.rowcount or 0
+
+
+def auto_keep_legiscan() -> int:
+    """Auto-keep untriaged LegiScan bills, topic=regulatory_rate, score 0.6.
+
+    The legiscan ingestor only emits insurance bills with recent legislative
+    action (filtered + relevance-capped per state), so each is a real regulatory
+    signal worth keeping without Ollama re-gating — but at a lower score than an
+    enacted DOI action (0.9) since a bill is earlier-stage. `state` is stamped
+    from metadata so the bills feed the per-state burden velocity
+    (burden_by_state); the summarizer per-source cap keeps them from flooding the
+    summarized note (over-cap bills stay kept-unsummarized but still count)."""
+    sql = """
+        UPDATE items
+        SET triage_decision = 'keep',
+            triage_score    = 0.6,
+            topic           = 'regulatory_rate',
+            state           = json_extract(metadata_json, '$.state'),
+            triaged_at      = datetime('now')
+        WHERE source = 'legiscan'
           AND triage_decision IS NULL
     """
     with get_conn() as conn:

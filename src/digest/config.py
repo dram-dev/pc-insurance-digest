@@ -78,6 +78,11 @@ class Settings(BaseSettings):
     # Free tier limits: 5 req/min, 50 req/hour, 125 req/day.
     courtlistener_token: str = Field(default="", alias="COURTLISTENER_TOKEN")
 
+    # LegiScan — state legislation API (free tier 30k queries/month). Feeds the
+    # Lead 9 Regulatory Burden Barometer (per-state insurance-bill velocity).
+    # Empty → the legiscan ingestor no-ops.
+    legiscan_api_key: str = Field(default="", alias="LEGISCAN_API_KEY")
+
     # Databricks medallion sink (Wave 3 Phase 1 scaffold). All writes no-op when
     # databricks_enabled=False; workspace provisioning is deferred to Wave 4.
     # See packages/digest-core/sql/databricks/{bronze,silver,gold}.sql for DDL.
