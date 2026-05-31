@@ -2056,11 +2056,20 @@ def load_triangle(insurer: str, lob: str, metric: str,
 
 
 def triangle_keys() -> list[sqlite3.Row]:
-    """Distinct (insurer, lob, metric) with their latest as_of — what to compute."""
+    """Every (insurer, lob, metric, as_of) snapshot, oldest as_of first.
+
+    run_reserving computes them in this order so each later snapshot's prior
+    estimate already exists in reserving_signals — that's what lets deterioration
+    be measured period-over-period even when two snapshots (e.g. two annual 10-Ks)
+    are loaded in the same session. Computing only the latest snapshot per key
+    left the prior estimate missing, so deterioration was always NULL unless
+    reserving had been run in a separate earlier quarter.
+    """
     with get_conn() as conn:
         return conn.execute(
-            """SELECT insurer, lob, metric, MAX(as_of) AS as_of
-               FROM loss_triangles GROUP BY insurer, lob, metric"""
+            """SELECT DISTINCT insurer, lob, metric, as_of
+               FROM loss_triangles
+               ORDER BY insurer, lob, metric, as_of"""
         ).fetchall()
 
 
