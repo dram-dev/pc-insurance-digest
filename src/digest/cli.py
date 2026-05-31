@@ -850,6 +850,25 @@ def viz(open_after: bool, lab: bool) -> None:
         console.print(f"  [red]✗[/red] {exc}")
 
 
+@main.command()
+@click.option("--open", "open_after", is_flag=True, help="Open the dashboard in the OS default app")
+def dashboard(open_after: bool) -> None:
+    """Generate the Signal Desk dashboard + Home cockpit notes into _meta/ (Phase C).
+
+    Signal Desk = live DataviewJS regime/vitals timeline across Daily/ notes +
+    reserve Sankey + catastrophe heatmap calendar + calibration heatmap. Home =
+    status strip + pipeline buttons + quick links.
+    """
+    db.init_db()
+    console.rule("[bold cyan]dashboard")
+    try:
+        from digest.dashboard import write_dashboard
+        for p in write_dashboard(open_after=open_after):
+            console.print(f"  [green]✓[/green] {p}")
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"  [red]✗[/red] {exc}")
+
+
 @main.command("init-db")
 def init_db_cmd() -> None:
     """Create the SQLite DB and schema."""
