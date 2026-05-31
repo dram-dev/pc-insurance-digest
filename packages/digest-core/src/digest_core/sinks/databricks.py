@@ -227,6 +227,13 @@ class DatabricksSink:
             "burden_intensity": verdict.get("burden_intensity"),
             "model_id":         verdict.get("model_id"),
         }
+        # Lead 9 (PC): per-state regulatory burden. Only emit the `state` column
+        # when the caller actually supplies it — PC's update_triage passes the
+        # key (so gold.burden_by_state populates); domains whose triage_verdicts
+        # has no `state` column (e.g. macro) never pass it, so their MERGE is
+        # unchanged.
+        if "state" in verdict:
+            row["state"] = verdict.get("state")
         self._insert("silver.triage_verdicts", [row])
 
     @staticmethod

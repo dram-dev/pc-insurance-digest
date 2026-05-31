@@ -188,3 +188,32 @@ def test_run_reserving_persists_signal(fresh_db):
     assert rows[0]["insurer"] == "PGR"
     assert rows[0]["ibnr"] == pytest.approx(94.5)
     assert rows[0]["direction"] is None              # no prior estimate yet
+
+
+# ── triangle_keys: deterioration when both snapshots are loaded in one session ─
+
+def _scaled_triangle(scale: float) -> Table:
+    def s(v: float) -> str:
+        return str(round(v * scale, 2))
+    return Table(page=1, header=["Accident Year", "12", "24", "36"],
+                 rows=[["2023", s(100), s(150), s(165)],
+                       ["2024", s(110), s(165), ""],
+                       ["2025", s(120), "", ""]])
+
+
+def test_reserving_measures_deterioration_when_both_snapshots_loaded(fresh_db):
+    """Regression: run_reserving must compute the prior snapshot too, so
+    deterioration is measured even when two annual snapshots (e.g. FY2024 +
+    FY2025 10-Ks) are loaded in the same session. Previously triangle_keys
+    returned only MAX(as_of), so the prior estimate was missing → always NULL."""
+    db.upsert_triangle_cells(parse_triangle(
+        _scaled_triangle(1.0), insurer="PGR", lob="auto", metric="paid", as_of="2024-12-31"))
+    db.upsert_triangle_cells(parse_triangle(
+        _scaled_triangle(1.3), insurer="PGR", lob="auto", metric="paid", as_of="2025-12-31"))
+
+    counts = reserving.run_reserving()          # single run, both snapshots present
+    assert counts["computed"] == 2              # prior AND latest, not just latest
+
+    # The latest snapshot now has a prior to compare against → adverse ~+30%.
+    sev = db.reserving_severity_map()
+    assert sev.get("PGR", 0.0) == pytest.approx(0.3, abs=0.02)
