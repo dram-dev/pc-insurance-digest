@@ -11,29 +11,40 @@ states:
   - state: CA
     agency: California Department of Insurance
     url_template: "https://www.insurance.ca.gov/0400-news/0100-press-releases/{year}/"
-    selector: ".releases-list .release-item"   # TODO: confirm
-    enabled: false   # flip to true once scraper is validated
+    # Validated live 2026-05-30: releases are <p> (with a .cfm anchor + a
+    # span.secondaryHeader date) inside the custom content control.
+    selector: ".cs_control.CS_Element_Custom p:has(span.secondaryHeader):has(a[href*='.cfm'])"
+    date_selector: ".secondaryHeader"
+    enabled: true
 
   - state: FL
     agency: Florida Office of Insurance Regulation
     url_template: "https://floir.com/News"
     selector: ".news-item"   # TODO: confirm
+    # 2026-05-30: this URL 404s — FLOIR moved its newsroom. Needs the new URL
+    # rediscovered before the selector can be validated.
     enabled: false
 
   - state: TX
     agency: Texas Department of Insurance
     url_template: "https://www.tdi.texas.gov/news/"
     selector: ".news-listing li"   # TODO: confirm
+    # 2026-05-30: page loads (200) but the news list isn't in the static HTML
+    # (only ~2 anchors) — appears JS-rendered. Needs a rendered fetch or a feed.
     enabled: false
 
   - state: NY
     agency: New York Department of Financial Services
     url_template: "https://www.dfs.ny.gov/reports_and_publications/press_releases"
-    selector: ".pr-listing-item"   # TODO: confirm
-    enabled: false
+    # Validated live 2026-05-30: Drupal listing cards; title in an h3 anchor,
+    # date in a <time datetime> (caught by the generic date selector).
+    selector: ".listing-view__card-content"
+    enabled: true
 
   - state: LA
     agency: Louisiana Department of Insurance
     url_template: "https://www.ldi.la.gov/news"
     selector: ".views-row"   # TODO: confirm
+    # 2026-05-30: returns 403 (WAF/bot-blocked on a normal browser UA). Needs a
+    # different fetch strategy before it can be validated.
     enabled: false

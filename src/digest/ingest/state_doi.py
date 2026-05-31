@@ -112,8 +112,13 @@ class StateDOIIngestor(IngestorBase):
                 continue
             seen_urls.add(href)
 
-            # Date: try common elements
-            date_el = node.select_one("time, .date, .release-date, [class*='date'], span[class*='time']")
+            # Date: a per-state `date_selector` override (sites name the date
+            # element idiosyncratically — CA CDI uses span.secondaryHeader),
+            # falling back to the common patterns.
+            date_sel = entry.get("date_selector") or (
+                "time, .date, .release-date, [class*='date'], span[class*='time']"
+            )
+            date_el = node.select_one(date_sel)
             date_text = (date_el.get("datetime") or date_el.get_text(strip=True)) if date_el else ""
             pub = parse_date(date_text)
 
