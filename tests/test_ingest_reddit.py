@@ -68,6 +68,74 @@ def test_fetch_reddit_json_skips_failing_subreddit():
     assert core_reddit.fetch_reddit_json(GROUPS, _Session(), delay_sec=0) == []
 
 
+# ── RSS path ────────────────────────────────────────────────────────────
+
+
+_ATOM = """<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>t3_keep1</id>
+    <title>Homeowners rate filing approved</title>
+    <link href="https://old.reddit.com/r/Insurance/comments/keep1/x/"/>
+    <author><name>/u/poster</name></author>
+    <updated>2026-05-30T19:59:09+00:00</updated>
+    <content type="html">&lt;div&gt;&lt;p&gt;Body &amp;amp; text&lt;/p&gt;&lt;/div&gt;</content>
+  </entry>
+  <entry>
+    <id>t3_keep2</id>
+    <title>Second post</title>
+    <link href="https://old.reddit.com/r/Insurance/comments/keep2/y/"/>
+    <author><name>/u/other</name></author>
+    <updated>2026-05-30T10:00:00+00:00</updated>
+    <content type="html">&lt;p&gt;more&lt;/p&gt;</content>
+  </entry>
+</feed>"""
+
+
+class _RssResp:
+    content = _ATOM.encode("utf-8")
+
+    def raise_for_status(self):
+        pass
+
+
+def test_fetch_reddit_rss_maps_and_ignores_score_filters():
+    """RSS has no score/comments, so those thresholds must NOT drop posts."""
+    class _Session:
+        def get(self, url, params=None, timeout=None):
+            assert url.endswith("/r/Insurance/top/.rss")
+            return _RssResp()
+
+    items = core_reddit.fetch_reddit_rss(GROUPS, _Session(), delay_sec=0)
+    assert [i.source_id for i in items] == ["keep1", "keep2"]   # t3_ stripped, none filtered
+    it = items[0]
+    assert it.source == "reddit"
+    assert it.author == "poster"                                # /u/ stripped
+    assert it.url == "https://old.reddit.com/r/Insurance/comments/keep1/x/"
+    assert it.content == "Body & text"                          # HTML flattened + unescaped
+    assert it.metadata["fetched_via"] == "rss"
+    assert it.metadata["score"] is None and it.metadata["num_comments"] is None
+    assert it.published_at is not None
+
+
+def test_fetch_reddit_rss_respects_limit():
+    groups = [{"name": "g", "subreddits": ["Insurance"], "limit": 1}]
+
+    class _Session:
+        def get(self, url, params=None, timeout=None):
+            return _RssResp()
+
+    assert len(core_reddit.fetch_reddit_rss(groups, _Session(), delay_sec=0)) == 1
+
+
+def test_fetch_reddit_rss_skips_failing_subreddit():
+    class _Session:
+        def get(self, url, params=None, timeout=None):
+            raise RuntimeError("503 unavailable")
+
+    assert core_reddit.fetch_reddit_rss(GROUPS, _Session(), delay_sec=0) == []
+
+
 # ── PRAW path ───────────────────────────────────────────────────────────
 
 

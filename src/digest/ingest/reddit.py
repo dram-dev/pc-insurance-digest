@@ -1,14 +1,19 @@
-"""Reddit ingestor — defaults to the public JSON endpoint (no API key).
+"""Reddit ingestor — defaults to the Atom RSS feed (no API key).
 
-Reddit's API now requires pre-approval for personal-use scripts as of late 2025.
-While that approval is pending, this ingestor uses the public `.json` endpoint
-(`https://www.reddit.com/r/<sub>/top.json?t=day`) which requires no auth.
+Endpoint reality (2026): Reddit 403s the unauthenticated `.json` endpoint even
+from residential IPs, and OAuth (PRAW) needs Responsible-Builder approval that
+personal-use scripts increasingly can't get. The `.rss` Atom feed is still
+served unauthenticated, so it's the default. Trade-off: RSS carries no score /
+comment counts, so the per-group min_score / min_comments thresholds are inert
+on that path (top/.rss already pre-sorts by top-of-window).
 
-When/if PRAW approval comes through, set REDDIT_USE_PRAW=true in .env to switch
-to the richer PRAW path that also exposes per-post score and comment count.
+Mode selection:
+- ``REDDIT_USE_PRAW=true`` → PRAW (needs REDDIT_CLIENT_ID/SECRET); richest data.
+- ``REDDIT_MODE=json``     → legacy public JSON endpoint (currently 403s).
+- otherwise               → RSS (default).
 
-This shell owns credentials, the json/praw mode decision, and the subreddit
-config; the fetch loops live in `digest_core.ingest.reddit`.
+This shell owns credentials, the mode decision, and the subreddit config; the
+fetch loops live in `digest_core.ingest.reddit`.
 """
 from __future__ import annotations
 
@@ -21,7 +26,11 @@ import yaml
 
 from digest.config import settings
 from digest.ingest.base import IngestedItem, IngestorBase
-from digest_core.ingest.reddit import fetch_reddit_json, fetch_reddit_praw
+from digest_core.ingest.reddit import (
+    fetch_reddit_json,
+    fetch_reddit_praw,
+    fetch_reddit_rss,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,12 +41,19 @@ def _use_praw() -> bool:
     return os.getenv("REDDIT_USE_PRAW", "").lower() in ("1", "true", "yes")
 
 
+def _reddit_mode() -> str:
+    if _use_praw():
+        return "praw"
+    mode = os.getenv("REDDIT_MODE", "rss").lower()
+    return mode if mode in ("rss", "json") else "rss"
+
+
 class RedditIngestor(IngestorBase):
     name = "reddit"
 
     def __init__(self) -> None:
         self.config = yaml.safe_load(SUBREDDITS_CONFIG.read_text())
-        self.mode = "praw" if _use_praw() else "json"
+        self.mode = _reddit_mode()
 
         if self.mode == "praw":
             if not settings.reddit_client_id:
@@ -55,7 +71,7 @@ class RedditIngestor(IngestorBase):
             self.reddit.read_only = True
         else:
             # User-Agent matters: Reddit blocks generic Python defaults.
-            ua = settings.reddit_user_agent or "pc-insurance-digest/0.1 (JSON mode)"
+            ua = settings.reddit_user_agent or "pc-insurance-digest/0.1"
             self.session = requests.Session()
             self.session.headers.update({"User-Agent": ua})
 
@@ -63,4 +79,6 @@ class RedditIngestor(IngestorBase):
         groups = self.config["groups"]
         if self.mode == "praw":
             return fetch_reddit_praw(groups, self.reddit, source_name=self.name)
-        return fetch_reddit_json(groups, self.session, source_name=self.name)
+        if self.mode == "json":
+            return fetch_reddit_json(groups, self.session, source_name=self.name)
+        return fetch_reddit_rss(groups, self.session, source_name=self.name)
