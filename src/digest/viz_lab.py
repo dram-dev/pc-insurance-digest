@@ -107,11 +107,20 @@ def render_regime_quadrant() -> str:
         "  quadrant-3 Soft + Calm",
         "  quadrant-4 Hard + Calm",
     ]
-    # rows are newest-first; label newest "Now", then T-1, T-2, …
-    for i, r in enumerate(rows):
+    # rows are newest-first. Collapse identical positions so a stable regime shows
+    # ONE point (not 3 labels stacked on the same dot) — the trail plots only the
+    # distinct positions the market has actually occupied, labelled Now, T-1, T-2…
+    seen: set[tuple[float, float]] = set()
+    plotted = 0
+    for r in rows:
         x, y = regime_xy(r["market_cycle"], r["cat_load"])
-        label = "Now" if i == 0 else f"T-{i}"
+        key = (round(x, 2), round(y, 2))
+        if key in seen:
+            continue
+        seen.add(key)
+        label = "Now" if plotted == 0 else f"T-{plotted}"
         lines.append(f'  "{label}": [{x:.2f}, {y:.2f}]')
+        plotted += 1
     lines.append("```")
     cur = rows[0]
     lines.append("")
