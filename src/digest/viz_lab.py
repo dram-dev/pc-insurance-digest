@@ -195,6 +195,8 @@ def render_severity_drivers() -> str:
 def render_litigation_pulse() -> str:
     vel = db.courtlistener_docket_velocity(30)
     row = db.latest_litigation_pressure()
+    if vel == 0 and row is None:                 # nothing live yet — hide from the header
+        return _no_data("digest litigation")
     lines = [f"- **Federal P&C docket velocity:** {vel:.2f}/day (last 30d) — live sub-signal"]
     # Composite index history sparkline, when it has actually moved.
     with db.get_conn() as conn:
