@@ -869,6 +869,70 @@ def dashboard(open_after: bool) -> None:
         console.print(f"  [red]✗[/red] {exc}")
 
 
+@main.command()
+def models() -> None:
+    """Show the LLM wired to each pipeline stage + whether it's reachable.
+
+    The plug-and-play control panel: every stage routes through the backend
+    registry, so to upgrade you change a *_BACKEND / *_MODEL env var (see
+    config.py) and re-run this to confirm the new model is reachable BEFORE a
+    real run. ✓ present = the model is pulled (Ollama) / loaded (MLX).
+    """
+    from digest import health
+    from digest_core.summarize.backends import BackendConfig
+    s = settings
+
+    ollama = health.check_ollama()
+    mlx = health.check_mlx()
+    o_models = ollama["details"].get("models_available") if ollama["status"] != "fail" else None
+    m_models = mlx["details"].get("models") if mlx["status"] != "fail" else None
+
+    def present(model: str, available) -> str:
+        if available is None:
+            return "[red]✗ server unreachable[/red]"
+        return ("[green]✓ present[/green]" if any(model in x for x in available)
+                else "[yellow]⚠ not pulled/loaded[/yellow]")
+
+    def cell(backend: str):
+        """(model, endpoint, status) for a backend name."""
+        if backend == "local_qwen":
+            return s.ollama_model, s.ollama_host, present(s.ollama_model, o_models)
+        if backend == "mlx_local":
+            return s.mlx_model, s.mlx_server_url, present(s.mlx_model, m_models)
+        if backend == "claude_cli_pro":
+            ok = health.check_claude_cli().get("status") == "ok"
+            return s.summarizer_model, "claude CLI", (
+                "[green]✓ CLI ok[/green]" if ok else "[yellow]⚠ CLI not found[/yellow]")
+        if backend == "haiku_api":
+            return BackendConfig().haiku_model, "Anthropic API", (
+                "[green]key set[/green]" if s.anthropic_api_key else "[red]✗ key unset[/red]")
+        if backend == "gemini_flash_free":
+            return BackendConfig().gemini_model, "Google AI Studio", (
+                "[green]key set[/green]" if s.gemini_api_key else "[red]✗ key unset[/red]")
+        return "?", "?", f"[red]✗ unknown backend {backend!r}[/red]"
+
+    rows = [
+        ("triage",     s.triage_backend,     *cell(s.triage_backend)),
+        ("summarize",  s.summarizer_backend, *cell(s.summarizer_backend)),
+        ("regime",     s.summarizer_backend, *cell(s.summarizer_backend)),
+        ("embeddings", "ollama", s.embedding_model, s.ollama_host, present(s.embedding_model, o_models)),
+        ("weekly",     "claude_cli_pro",     *cell("claude_cli_pro")),
+    ]
+    table = Table(title="LLM models by pipeline stage")
+    table.add_column("Stage", style="bold")
+    table.add_column("Backend")
+    table.add_column("Model")
+    table.add_column("Endpoint", overflow="fold")
+    table.add_column("Status")
+    for r in rows:
+        table.add_row(*[str(x) for x in r])
+    console.print(table)
+    console.print(
+        "[dim]Upgrade: change the stage's *_BACKEND / *_MODEL env var, "
+        "`ollama pull` (or restart MLX with) the new model, re-run `digest models`.[/dim]"
+    )
+
+
 @main.command("init-db")
 def init_db_cmd() -> None:
     """Create the SQLite DB and schema."""

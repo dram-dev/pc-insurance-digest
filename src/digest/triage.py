@@ -13,15 +13,13 @@ import logging
 import time
 from typing import Any
 
-import requests
-
 from digest import db
 from digest.config import settings
+from digest_core.summarize.backends import BACKENDS, BackendConfig, BackendError
 from digest_core.summarize.runner import extract_json
 
 logger = logging.getLogger(__name__)
 
-OLLAMA_GENERATE_URL = "{host}/api/generate"
 REQUEST_TIMEOUT_SEC = 60
 
 # 17 P&C topics + sub_tags for sub-classification. Triage maps each kept
@@ -264,23 +262,32 @@ def _normalize_verdict(verdict: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _ollama_call(prompt: str) -> str:
-    url = OLLAMA_GENERATE_URL.format(host=settings.ollama_host.rstrip("/"))
-    payload = {
-        "model":  settings.ollama_model,
-        "prompt": prompt,
-        "system": SYSTEM_PROMPT,
-        "stream": False,
-        "format": "json",
-        "options": {
-            "temperature": 0.1,
-            "num_predict": 384,   # bumped from 256 to fit 50-word reason + JSON
-            "num_ctx":     4096,
-        },
-    }
-    r = requests.post(url, json=payload, timeout=REQUEST_TIMEOUT_SEC)
-    r.raise_for_status()
-    return r.json().get("response", "")
+def _triage_backend_config() -> BackendConfig:
+    """BackendConfig for triage — temp 0.1 (it's a classifier; keep it deterministic)."""
+    return BackendConfig(
+        timeout_sec=REQUEST_TIMEOUT_SEC,
+        max_tokens=settings.triage_max_tokens,   # room for the 50-word reason + JSON
+        temperature=0.1,
+        ollama_host=settings.ollama_host,
+        ollama_model=settings.ollama_model,
+        mlx_server_url=settings.mlx_server_url,
+        mlx_model=settings.mlx_model,
+    )
+
+
+def _triage_call(prompt: str) -> str:
+    """Run the configured TRIAGE_BACKEND on one item's prompt; returns raw output.
+
+    Routes through the shared pluggable backend registry (same as the summarizer),
+    so triage can run on Ollama (local_qwen, default) or any other backend without
+    code changes — only TRIAGE_BACKEND + the backend's model var need to change."""
+    backend_fn = BACKENDS.get(settings.triage_backend)
+    if backend_fn is None:
+        raise BackendError(
+            f"Unknown TRIAGE_BACKEND: {settings.triage_backend!r}. "
+            f"Available: {', '.join(sorted(BACKENDS))}"
+        )
+    return backend_fn(SYSTEM_PROMPT, prompt, _triage_backend_config())
 
 
 _DEDUP_THRESHOLD = 0.85
@@ -297,7 +304,7 @@ def _dedup_match(title: str, seen: list[str]) -> str | None:
 def triage_item(item: dict[str, Any]) -> dict[str, Any]:
     """Run triage on one item. Returns the normalized verdict."""
     prompt = _build_prompt(item)
-    raw = _ollama_call(prompt)
+    raw = _triage_call(prompt)
     verdict = extract_json(raw) or {}
     if not verdict:
         logger.warning("triage: failed to parse Qwen output for item %s", item.get("id"))

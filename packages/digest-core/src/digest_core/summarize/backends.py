@@ -31,6 +31,7 @@ class BackendConfig:
 
     timeout_sec: int = 120
     max_tokens: int = 800                               # output cap (API/MLX/Ollama)
+    temperature: float = 0.2                            # sampling temp (lower = more deterministic)
     claude_model: str = ""                              # claude_cli_pro --model
     anthropic_api_key: str = ""
     haiku_model: str = "claude-haiku-4-5-20251001"
@@ -122,7 +123,7 @@ def call_gemini_flash(system_prompt: str, user_prompt: str, cfg: BackendConfig) 
             "system_instruction": {"parts": [{"text": system_prompt}]},
             "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
             "generationConfig": {
-                "temperature": 0.2,
+                "temperature": cfg.temperature,
                 "responseMimeType": "application/json",
             },
         },
@@ -145,7 +146,7 @@ def call_local_qwen(system_prompt: str, user_prompt: str, cfg: BackendConfig) ->
             "prompt": user_prompt,
             "stream": False,
             "format": "json",
-            "options": {"temperature": 0.2, "num_predict": cfg.max_tokens, "num_ctx": 8192},
+            "options": {"temperature": cfg.temperature, "num_predict": cfg.max_tokens, "num_ctx": 8192},
         },
         timeout=cfg.timeout_sec,
     )
@@ -173,7 +174,7 @@ def call_mlx_local(system_prompt: str, user_prompt: str, cfg: BackendConfig) -> 
                     {"role": "user", "content": user_prompt},
                 ],
                 "max_tokens": cfg.max_tokens,
-                "temperature": 0.2,
+                "temperature": cfg.temperature,
                 "chat_template_kwargs": {"enable_thinking": False},
             },
             timeout=cfg.timeout_sec,

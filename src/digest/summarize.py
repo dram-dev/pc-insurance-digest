@@ -482,11 +482,12 @@ def run_summarize(
             )
             return {"ready": len(rows), "succeeded": 0, "failed": 0}
         except (requests.Timeout, Exception) as exc:
+            _port = settings.mlx_server_url.rsplit(":", 1)[-1].split("/")[0] or "8080"
             logger.error(
                 "summarize: MLX server health-check failed (%s) — "
                 "server may have crashed, skipping batch. "
-                "Restart with: mlx_lm.server --model mlx-community/Qwen3.5-27B-4bit --port 8080",
-                exc,
+                "Restart with: mlx_lm.server --model %s --port %s",
+                exc, settings.mlx_model, _port,
             )
             return {"ready": len(rows), "succeeded": 0, "failed": 0}
 
