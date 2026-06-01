@@ -35,18 +35,39 @@ class Settings(BaseSettings):
     # EDGAR
     edgar_user_agent: str = Field(default="", alias="EDGAR_USER_AGENT")
 
-    # Summarizer
+    # ════════════════════════════════════════════════════════════════════
+    # LOCAL LLM MODELS — upgrade here (plug-and-play, no code changes)
+    # ════════════════════════════════════════════════════════════════════
+    # Every pipeline stage routes through the pluggable backend registry
+    # (digest_core.summarize.backends). To move to a newer model, change ONLY
+    # the env vars below — `digest models` then shows what's wired and pings
+    # each one for reachability. Available backends: claude_cli_pro · haiku_api
+    # · gemini_flash_free · local_qwen (Ollama) · mlx_local (MLX server).
+    #
+    #   stage      backend var           model var
+    #   ─────      ───────────           ─────────
+    #   triage     TRIAGE_BACKEND        OLLAMA_MODEL / MLX_MODEL (per backend)
+    #   summarize  SUMMARIZER_BACKEND    MLX_MODEL / SUMMARIZER_MODEL (per backend)
+    #   regime     SUMMARIZER_BACKEND    (shares the summarizer backend)
+    #   embeddings (Ollama only)         EMBEDDING_MODEL
+    #   weekly     (claude_cli_pro)      SUMMARIZER_MODEL
+
+    # Summarizer (long-form notes + regime judgment)
     summarizer_backend: str = Field(default="mlx_local", alias="SUMMARIZER_BACKEND")
     summarizer_model: str = Field(default="mlx-community/Qwen3.5-27B-4bit", alias="SUMMARIZER_MODEL")
     summarizer_max_per_run: int = Field(default=50, alias="SUMMARIZER_MAX_PER_RUN")
     summarizer_max_per_source: int = Field(default=12, alias="SUMMARIZER_MAX_PER_SOURCE")
     summarizer_timeout_sec: int = Field(default=120, alias="SUMMARIZER_TIMEOUT_SEC")
 
-    # Optional API keys for fallback summarizer backends
+    # Optional API keys for the cloud summarizer backends
     anthropic_api_key: str = Field(default="", alias="ANTHROPIC_API_KEY")
     gemini_api_key: str = Field(default="", alias="GEMINI_API_KEY")
 
-    # Triage (Ollama Qwen2.5:14b — shared local server with macro digest)
+    # Triage (keep/drop + topic). Routes through the backend registry too, so it
+    # can run on Ollama (local_qwen, default) or any other backend. The model is
+    # the backend's model var (OLLAMA_MODEL for local_qwen, MLX_MODEL for mlx_local).
+    triage_backend: str = Field(default="local_qwen", alias="TRIAGE_BACKEND")
+    triage_max_tokens: int = Field(default=384, alias="TRIAGE_MAX_TOKENS")
     ollama_host: str = Field(default="http://localhost:11434", alias="OLLAMA_HOST")
     ollama_model: str = Field(default="qwen2.5:14b", alias="OLLAMA_MODEL")
     triage_min_score: float = Field(default=0.5, alias="TRIAGE_MIN_SCORE")
