@@ -748,11 +748,13 @@ def publish(date_iso: str | None, topics_only: bool) -> None:
               help="Also run the outcomes backtest + learned-scorer training "
                    "(the weekly launchd job does; pass --no-calibration for a note-only run).")
 def weekly(date_iso: str | None, calibration: bool) -> None:
-    """Generate the weekly synthesis note, then run the calibration loop.
+    """Generate the weekly synthesis note, run the calibration loop, then
+    refresh the dashboard snapshots.
 
     The weekly job is the natural cadence for the outcome backtest (items need
     the 7d/30d window to mature) and the learned-scorer training it unblocks.
-    Both run best-effort here so a failure never blocks the weekly note.
+    Finally it regenerates the Signal Desk + Home cockpit so the _meta/ visuals
+    stay current. All three run best-effort so a failure never blocks the note.
     """
     from digest.obsidian import publish_weekly
 
@@ -768,28 +770,38 @@ def weekly(date_iso: str | None, calibration: bool) -> None:
     except Exception as exc:  # noqa: BLE001
         console.print(f"  [red]✗[/red] {exc}")
 
-    if not calibration:
-        return
-
     # Calibration / learning loop — backtest matured items, then (re)train the
     # learned scorer on the labels. Best-effort: each is wrapped so a failure
     # (or a too-small label set) just logs and the job still exits cleanly.
-    console.rule("[bold cyan]calibration loop")
+    if calibration:
+        console.rule("[bold cyan]calibration loop")
+        try:
+            from digest.outcomes import run_outcomes
+            oc = run_outcomes()
+            console.print(f"  [green]✓[/green] outcomes: {oc}")
+        except Exception as exc:  # noqa: BLE001
+            console.print(f"  [yellow]outcomes skipped:[/yellow] {exc}")
+        try:
+            from digest import learn as learn_mod
+            ls = learn_mod.run(horizon_days=30)
+            if ls.get("model_id"):
+                console.print(f"  [green]✓[/green] learn: model {ls['model_id']} trained")
+            else:
+                console.print("  [dim]learn: not enough labeled items yet (need ≥12)[/dim]")
+        except Exception as exc:  # noqa: BLE001
+            console.print(f"  [yellow]learn skipped:[/yellow] {exc}")
+
+    # Refresh the Signal Desk dashboard + Home cockpit so the _meta/ snapshot
+    # visuals track the freshest DB state on the weekly cadence. Runs after the
+    # calibration loop (when enabled) so the calibration heatmap reflects it.
+    # Best-effort: a render failure never blocks the weekly job.
+    console.rule("[bold cyan]dashboard refresh")
     try:
-        from digest.outcomes import run_outcomes
-        oc = run_outcomes()
-        console.print(f"  [green]✓[/green] outcomes: {oc}")
+        from digest.dashboard import write_dashboard
+        for p in write_dashboard():
+            console.print(f"  [green]✓[/green] {p}")
     except Exception as exc:  # noqa: BLE001
-        console.print(f"  [yellow]outcomes skipped:[/yellow] {exc}")
-    try:
-        from digest import learn as learn_mod
-        ls = learn_mod.run(horizon_days=30)
-        if ls.get("model_id"):
-            console.print(f"  [green]✓[/green] learn: model {ls['model_id']} trained")
-        else:
-            console.print("  [dim]learn: not enough labeled items yet (need ≥12)[/dim]")
-    except Exception as exc:  # noqa: BLE001
-        console.print(f"  [yellow]learn skipped:[/yellow] {exc}")
+        console.print(f"  [yellow]dashboard skipped:[/yellow] {exc}")
 
 
 @main.command()
