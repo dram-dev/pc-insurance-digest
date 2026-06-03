@@ -47,11 +47,15 @@ states:
   - state: FL
     agency: Florida Office of Insurance Regulation
     portal: floir_irfa
-    # 2026-06-03 recon: the old apps.fldfs.com/iportal URL is dead (404). The
-    # current FLOIR rate-filing search moved to irfssearch.fldfs.com ("IRFS Forms
-    # & Rates Filing Search"; ASP.NET, 6 forms). Build pending — needs the
-    # interactive-render search flow + results parse (Phase 3).
-    url_template: "https://irfssearch.fldfs.com/"
+    # 2026-06-03 recon: current search = irfssearch.floir.gov (the old
+    # irfssearch.fldfs.com redirects here; apps.fldfs.com/iportal 404s). The form
+    # HAS the data we want — a `fileTypeRates` filter, file/close date ranges, and
+    # rate-change requested/approved fields — but it's a complex tabbed JS app
+    # (Quick/Advanced Search) whose search flow resisted automation in this pass
+    # (no data-file shortcut like CA's xlsx; the search submit didn't yield a
+    # results grid). BUILD DEFERRED to a focused follow-up; the other 4 SERFF
+    # states (TX/NY/LA standard + CA xlsx) are live.
+    url_template: "https://irfssearch.floir.gov/"
     enabled: false
 
   # ── TX — Standard SERFF Filing Access ──
