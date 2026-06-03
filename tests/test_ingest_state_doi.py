@@ -128,3 +128,38 @@ def test_render_unavailable_skips_state(monkeypatch, ingestor):
     monkeypatch.setattr("digest.ingest.render.fetch_rendered", lambda url, **k: None)
     entry = {"selector": ".news-list-title", "render": True}
     assert ingestor._scrape_state("TX", "x", "https://x/", entry) == []
+
+
+# LA LDI shape (validated live 2026-06-02): each release is a <p> in .sfContentBlock
+# whose own text is the date-prefixed headline; its only anchor is the date link.
+# A trailing "Subscribe" <p> (link to /subscriptions/) must not match.
+_LA_HTML = """
+<div class="sfContentBlock">
+  <p><a href="/news/press-releases/6-1-26-media-advisory">June 1, 2026</a> - MEDIA ADVISORY - Commissioner acts</p>
+  <p><a href="/news/press-releases/5-27-26-fortify">May 27, 2026</a> - Fortify Homes lottery goes live</p>
+  <p><a href="/news/press-releases/5-13-26-arrests">May 13, 2026</a> - LDI referral leads to arrests</p>
+  <p>Sign up to receive LDI press releases <a href="/subscriptions/x">Subscribe</a></p>
+</div>
+"""
+
+
+def test_la_title_from_node_date_selector_and_max_items(monkeypatch, ingestor):
+    monkeypatch.setattr("digest.ingest.render.fetch_rendered", lambda url, **k: _LA_HTML)
+    entry = {
+        "selector": ".sfContentBlock p:has(a[href*='/news/press-releases/'])",
+        "title_from_node": True,
+        "date_selector": "a[href*='/news/press-releases/']",
+        "max_items": 2,
+        "render": True,
+    }
+    items = ingestor._scrape_state("LA", "Louisiana DOI",
+                                   "https://www.ldi.la.gov/news/press-releases", entry)
+    # max_items=2 keeps the two newest; the Subscribe <p> never matched (no release link).
+    assert len(items) == 2
+    # title_from_node → the <p>'s own text (date-prefixed headline), not the date link alone.
+    assert items[0].title == "[LA DOI] June 1, 2026 - MEDIA ADVISORY - Commissioner acts"
+    # date_selector read the link text.
+    assert items[0].published_at is not None
+    assert (items[0].published_at.year, items[0].published_at.month, items[0].published_at.day) == (2026, 6, 1)
+    assert items[1].title.startswith("[LA DOI] May 27, 2026")
+    assert items[0].url.endswith("/news/press-releases/6-1-26-media-advisory")

@@ -111,16 +111,26 @@ class StateDOIIngestor(IngestorBase):
             )
             return []
 
+        # `max_items` caps newest-first listings that render their whole archive
+        # (LA LDI lists ~97 releases back to 2024) — keep only the most recent.
+        max_items = entry.get("max_items")
+        if max_items:
+            nodes = nodes[: int(max_items)]
+
         items: list[IngestedItem] = []
         seen_urls: set[str] = set()
         for node in nodes:
-            # Title: a per-state `title_selector` override (some sites put the
-            # headline in an idiosyncratic element — FL FLOIR uses
-            # span.newsSummary.h-3, with the only anchor being a "Full story"
-            # button), falling back to the common heading/anchor patterns.
-            title_sel = entry.get("title_selector") or "a, h2, h3, h4, .title, .headline"
-            title_el = node.select_one(title_sel)
-            title = title_el.get_text(strip=True) if title_el else node.get_text(strip=True)[:200]
+            # Title: `title_from_node` takes the row's own text when the headline
+            # isn't a child element (LA LDI: each release is a <p> whose text IS
+            # the headline, its only anchor being the date link). Otherwise a
+            # per-state `title_selector` override (FL FLOIR uses
+            # span.newsSummary.h-3), falling back to common heading/anchor patterns.
+            if entry.get("title_from_node"):
+                title = node.get_text(" ", strip=True)[:200]
+            else:
+                title_sel = entry.get("title_selector") or "a, h2, h3, h4, .title, .headline"
+                title_el = node.select_one(title_sel)
+                title = title_el.get_text(strip=True) if title_el else node.get_text(strip=True)[:200]
             if not title:
                 continue
 

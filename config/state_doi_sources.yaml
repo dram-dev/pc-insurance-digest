@@ -49,11 +49,13 @@ states:
   - state: LA
     agency: Louisiana Department of Insurance
     url_template: "https://www.ldi.la.gov/news/press-releases"
-    selector: ".views-row"   # TODO: finalize — see note
-    # 2026-06-02: the WAF 403 (plain GET) IS bypassed by the render path (headless
-    # browser → 200), and the press list lives at /news/press-releases. But that
-    # page renders the full ~149-item archive as date-link + title-link pairs;
-    # needs a row-container selector + a recency cap before enabling. render:true
-    # is set so it's ready the moment the selector is finalized.
+    # Validated live 2026-06-02 via the render path (plain GET 403s — WAF; the
+    # headless browser gets 200). Each release is a <p> inside .sfContentBlock
+    # whose own text is the (date-prefixed) headline; its only anchor is the date
+    # link to the release. 97 rows render newest-first → capped to the recent 20.
+    selector: ".sfContentBlock p:has(a[href*='/news/press-releases/'])"
+    title_from_node: true                              # headline = the <p>'s text
+    date_selector: "a[href*='/news/press-releases/']"  # the link text is the date
+    max_items: 20
     render: true
-    enabled: false
+    enabled: true
