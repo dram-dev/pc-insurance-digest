@@ -45,8 +45,11 @@ insurers:
   # ── Personal-auto + homeowners big three ──
   - ticker: PGR
     name: Progressive
-    url_template: "https://investors.progressive.com/financial-info/financial-results/{year}/Q{q}-Supplement.pdf"
-    enabled: false
+    # Latest 10-K (refreshed each annual cycle). FY2024 (UUID path) was loaded
+    # once as the prior snapshot for reserve deterioration; both years persist in
+    # loss_triangles. FY2025:
+    url_template: "https://s202.q4cdn.com/605347829/files/doc_financials/2025/q4/PGR-Q4-2025-10K.pdf"
+    enabled: true
 
   - ticker: ALL
     name: Allstate
