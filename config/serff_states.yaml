@@ -1,6 +1,6 @@
 # SERFF rate filings sources. Heterogeneous portal landscape:
 #   - ~30 states use standard SERFF Filing Access at
-#     https://filingaccess.serff.com/sfa/home/<STATE> (TX, NY, LA fit this pattern)
+#     https://filingaccess.serff.com/sfa/home/<STATE> (TX/NY/LA/IL/NJ/MI/NV fit this)
 #   - CA runs its own Prior Approval system via interactive.web.insurance.ca.gov
 #   - FL runs its own iRFA at apps.fldfs.com/iportal
 #
@@ -83,5 +83,37 @@ states:
     agency: Louisiana Department of Insurance
     portal: serff_standard
     url_template: "https://filingaccess.serff.com/sfa/home/LA"
+    # Shares the TX-validated serff_standard flow (positional filingTable parse).
+    enabled: true
+
+  # ── IL — Standard SERFF Filing Access ──
+  - state: IL
+    agency: Illinois Department of Insurance
+    portal: serff_standard
+    url_template: "https://filingaccess.serff.com/sfa/home/IL"
+    # Shares the TX-validated serff_standard flow (positional filingTable parse).
+    # IL is an open-competition rating state (no prior approval for personal P&C
+    # rates), but carriers still file informationally via SERFF Filing Access.
+    enabled: true
+
+  # ── NJ / MI / NV — Standard SERFF Filing Access ──
+  - state: NJ
+    agency: New Jersey Department of Banking and Insurance
+    portal: serff_standard
+    url_template: "https://filingaccess.serff.com/sfa/home/NJ"
+    # Shares the TX-validated serff_standard flow (positional filingTable parse).
+    enabled: true
+
+  - state: MI
+    agency: Michigan Department of Insurance and Financial Services
+    portal: serff_standard
+    url_template: "https://filingaccess.serff.com/sfa/home/MI"
+    # Shares the TX-validated serff_standard flow (positional filingTable parse).
+    enabled: true
+
+  - state: NV
+    agency: Nevada Division of Insurance
+    portal: serff_standard
+    url_template: "https://filingaccess.serff.com/sfa/home/NV"
     # Shares the TX-validated serff_standard flow (positional filingTable parse).
     enabled: true

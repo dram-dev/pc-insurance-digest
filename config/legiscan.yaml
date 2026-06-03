@@ -6,7 +6,7 @@
 # stamps items.state from the bill's state).
 #
 # Needs LEGISCAN_API_KEY in .env; the ingestor no-ops without it. Free tier is
-# 30k queries/month — one getSearch per state per run (5 states → 5/run).
+# 30k queries/month — one getSearch per state per run (9 states → 9/run).
 
 defaults:
   query: "insurance"      # LegiScan full-text relevance search term
@@ -14,10 +14,14 @@ defaults:
   recency_days: 30        # keep only bills with last action in the last N days
   max_per_state: 12       # cap per state (results are relevance-sorted)
 
-# Top-5 P&C markets (matches the state_doi / serff scope).
+# Big-9 P&C markets (matches the state_doi / serff scope).
 states:
   - CA
   - FL
   - TX
   - NY
   - LA
+  - IL
+  - NJ
+  - MI
+  - NV

@@ -6,6 +6,39 @@
 # state as the scraper is implemented. `url_template` supports a {year}
 # token which the ingestor populates with the current year (handles
 # states that paginate by year, like CA CDI).
+#
+# Health filtering: every emitted item is auto-kept WITHOUT re-triage, so by
+# default we drop health-insurance press releases (several DOIs — IL, NJ, MI —
+# also run the ACA marketplace). Multi-domain regulators (insurance + banking +
+# health) additionally set `pc_allowlist: true` to keep only releases that name
+# a P&C signal from `defaults.pc_keywords` (+ optional `pc_keywords_extra`).
+# Opt a state out of the health drop with `drop_health: false`.
+
+defaults:
+  # Keep keywords in singular base form — the matcher tolerates a trailing "s"
+  # (so "homeowner" matches "homeowners" but not "homeownership").
+  pc_keywords:
+    - property
+    - casualty
+    - homeowner
+    - home insurance
+    - home inventory
+    - auto insurance
+    - automobile
+    - no-fault
+    - personal lines
+    - policyholder
+    - rate filing
+    - rate increase
+    - rate hike
+    - fair plan
+    - wildfire
+    - catastrophe
+    - flood insurance
+    - reinsurance
+    - workers comp
+    - claim
+    - contractor
 
 states:
   - state: CA
@@ -58,4 +91,72 @@ states:
     date_selector: "a[href*='/news/press-releases/']"  # the link text is the date
     max_items: 20
     render: true
+    enabled: true
+
+  - state: IL
+    agency: Illinois Department of Insurance
+    # IDOI's /news.html renders its press list from a JS "news-feed" widget
+    # backed by a clean Sling model JSON — fetch that directly (no SPA, no
+    # browser). url_template points straight at the model endpoint; the json_feed
+    # path reads newsFeedItemList (title/type/date/year/description/url).
+    # Validated live 2026-06-03 (14 releases; 13 are Get Covered Illinois / ACA).
+    url_template: "https://idoi.illinois.gov/content/soi/insurance/en/news/jcr:content/responsivegrid/container/container_293684588/container/news_feed.model.json"
+    json_feed: true
+    # IDOI also runs the ACA marketplace, so the feed is mostly health. The
+    # default health drop + this P&C allowlist gate it to insurance signal.
+    # Live 2026-06-03: 1 of 14 kept (catastrophe policyholder-relief release).
+    pc_allowlist: true
+    max_items: 20
+    enabled: true
+
+  # ── NJ — Dept of Banking & Insurance (per-year static index) ──
+  - state: NJ
+    agency: New Jersey Department of Banking and Insurance
+    # /dobi/pressreleases/index.htm meta-refreshes to a per-year {year}.html. The
+    # page is a table of <td> cells, each an <a href="pr<YYMMDD>.html"> headline;
+    # the date is the "Month DD, YYYY" text that leads the cell (date_from_text).
+    # NJ DOBI also runs Get Covered NJ → health-heavy → P&C allowlist. Validated
+    # live 2026-06-03 (recent releases are ACA-subsidy / administrative).
+    url_template: "https://www.nj.gov/dobi/pressreleases/{year}.html"
+    selector: "td:has(a[href^='pr'])"
+    date_from_text: true
+    pc_allowlist: true
+    max_items: 20
+    enabled: true
+
+  # ── MI — Dept of Insurance & Financial Services (Sitecore SXA JSON) ──
+  - state: MI
+    agency: Michigan Department of Insurance and Financial Services
+    # The press-releases page is a Sitecore SXA search; its results endpoint
+    # returns JSON via a plain GET (no browser). Each result carries a rendered
+    # HTML fragment (title in a.content-title-link) and a Url with a /YYYY/MM/DD/
+    # date. DIFS regulates insurance + banking, so the feed mixes mortgage / ACA /
+    # life content → P&C allowlist (+ no-fault, MI's signature auto line).
+    # Validated live 2026-06-03. The s/itemid/v GUIDs are the live SXA scope.
+    url_template: "https://www.michigan.gov/difs/sxa/search/results/?l=en&s=%7B62E9FB6A-7717-4EF1-832C-E5ECBB9BB2D9%7D&itemid=%7B99AC6551-2302-4269-B223-45BCA0A2AA06%7D&v=%7BB7A22BE8-17FC-44A5-83BC-F54442A57941%7D&p=30&e=0&o=Article%20Date%2CDescending"
+    json_feed: true
+    json_list_key: Results
+    json_url_field: Url
+    json_html_field: Html
+    json_html_title_selector: ".content-title-link"
+    pc_allowlist: true
+    pc_keywords_extra:
+      - no-fault
+      - auto
+    max_items: 20
+    enabled: true
+
+  # ── NV — Division of Insurance (static HTML listing) ──
+  - state: NV
+    agency: Nevada Division of Insurance
+    # Static page: each release is a <div class="article"> with an anchor to
+    # /News_Notices/Press_Releases/<slug>; the headline and date both live in the
+    # date-prefixed anchor text ("May 13, 2026 - Annual Fraud Assessment").
+    # NV DOI is insurance-only (no banking) so no P&C allowlist — just drop health;
+    # admin items (assessments, market-conduct) are kept. Validated live 2026-06-03.
+    url_template: "https://doi.nv.gov/News-Notices/Press-Releases/"
+    selector: "div.article:has(a[href*='Press_Releases'])"
+    date_from_text: true
+    strip_date_prefix: true
+    max_items: 20
     enabled: true
