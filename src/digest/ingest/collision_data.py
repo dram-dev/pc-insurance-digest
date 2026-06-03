@@ -8,15 +8,18 @@ low volume (~6–10 reports/year combined).
 Auto-keep is handled by `db.auto_keep_quantitative()` since 'collision'
 is in QUANT_SOURCES. topic_hint = 'supply_chain' is passed via metadata.
 
-Sources:
-  - CCC Intelligent Solutions: https://www.cccis.com/about-us/news-and-events/
-  - Mitchell / Enlyte:         https://www.mitchell.com/news
+Sources (validated live 2026-06-02 — both static HTML, no render needed):
+  - CCC Intelligent Solutions: https://www.cccis.com/news-and-insights/news
+      Webflow collection; each post card directly wraps its /posts/ link
+      (`div:has(> a[href*='/news-and-insights/posts/'])` also grabs the featured
+      Crash Course card the plain .news-card grid omits). CCC posts carry no
+      machine-readable date → published_at falls back to ingested_at.
+  - Mitchell / Enlyte:         https://www.mitchell.com/about/news
+      Drupal listing; each `.listing-item` is wrapped in a PARENT <a>, so
+      `_extract_href` walks to the ancestor anchor.
 
-TODO: Both pages require selector validation. Run:
-  curl -sL -A 'Mozilla/5.0' <url> | grep -i 'crash\\|industry\\|trend\\|report'
-to find the correct article/card selectors. Then update _CCC_SELECTORS /
-_MITCHELL_SELECTORS accordingly. Until validated, both lists return [] and
-log a warning — safe to run in production.
+Both feeds mix high-value severity/cost/claims reports with corporate PR;
+`COLLISION_TITLE_FILTERS` keeps only loss-cost-signal titles.
 """
 from __future__ import annotations
 
@@ -35,39 +38,38 @@ logger = logging.getLogger(__name__)
 _REQUEST_TIMEOUT = 20
 _UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 
-CCC_NEWS_URL      = "https://www.cccis.com/about-us/news-and-events/"
-MITCHELL_NEWS_URL = "https://www.mitchell.com/news"
+CCC_NEWS_URL      = "https://www.cccis.com/news-and-insights/news"
+MITCHELL_NEWS_URL = "https://www.mitchell.com/about/news"
 
-CCC_TITLE_FILTERS = (
-    "crash course",
-    "industry trends",
-    "intelligence report",
-)
-MITCHELL_TITLE_FILTERS = (
-    "industry trends",
-    "auto physical damage",
-    "casualty edition",
+# Shared signal filter — these vendor pages mix high-value severity/cost/claims
+# reports (what we want) with corporate PR (CFO appointments, product launches).
+# Keep an item only if its title names a loss-cost / claims-trend signal.
+# Validated against live titles 2026-06-02: catches "Crash Course … Higher
+# Severity", "EV Collision Claims Rise 14%", "Hybrid … Record High", "Envision
+# Trends Report", "PartsTrader"; drops "Announces CFO", "Extends Relationship".
+COLLISION_TITLE_FILTERS = (
+    "crash course", "trends report", "industry trends", "envision",
+    "severity", "repair", "physical damage", "collision claim", "casualty",
+    "claim frequency", "claims rise", "claims hit", "record high",
+    "electric vehicle", "hybrid", "parts", "labor", "total loss",
+    "diminished value", "adas", "subrogation",
 )
 
 # Candidate CSS selectors tried in order; first one that returns nodes is used.
-# TODO: validate against live pages (curl blocked in remote execution env).
+# Validated live 2026-06-02: CCC is a Webflow collection (.news-card); Mitchell
+# is a Drupal listing (.listing-item, each wrapped in a parent <a>).
 _CCC_SELECTORS = [
+    # Each post card directly wraps its /posts/ link; this also catches the
+    # "featured" Crash Course card that the plain .news-card grid omits.
+    "div:has(> a[href*='/news-and-insights/posts/'])",
+    ".news-card",
+    "div.w-dyn-item",
     ".news-list article",
-    ".news-events-list .item",
-    "article.news-card",
-    ".newsroom-item",
-    "ul.news-listing li",
-    "div.news-item",
-    "div[class*='news'] article",
 ]
 _MITCHELL_SELECTORS = [
-    "article.post",
-    ".post-listing article",
+    ".listing-item",
     ".news-listing .item",
-    "div.blog-post",
-    ".press-release-item",
-    "ul.press li",
-    "div[class*='post']",
+    "article.post",
 ]
 
 
@@ -89,7 +91,13 @@ def _extract_text(node: Any, selectors: list[str]) -> str:
 
 
 def _extract_href(node: Any, base_url: str) -> str | None:
+    # The link may be a child (CCC card), the node itself, or a wrapping ancestor
+    # (Mitchell wraps each .listing-item in a parent <a>).
     a = node.select_one("a[href]")
+    if a is None and getattr(node, "name", None) == "a" and node.get("href"):
+        a = node
+    if a is None:
+        a = node.find_parent("a", href=True)
     if not a:
         return None
     href = a.get("href", "")
@@ -160,8 +168,8 @@ class CollisionDataIngestor(IngestorBase):
 
     def fetch(self) -> list[IngestedItem]:
         items: list[IngestedItem] = []
-        items.extend(_scrape("ccc",      CCC_NEWS_URL,      _CCC_SELECTORS,      CCC_TITLE_FILTERS))
-        items.extend(_scrape("mitchell", MITCHELL_NEWS_URL, _MITCHELL_SELECTORS, MITCHELL_TITLE_FILTERS))
+        items.extend(_scrape("ccc",      CCC_NEWS_URL,      _CCC_SELECTORS,      COLLISION_TITLE_FILTERS))
+        items.extend(_scrape("mitchell", MITCHELL_NEWS_URL, _MITCHELL_SELECTORS, COLLISION_TITLE_FILTERS))
         if not items:
             logger.info(
                 "collision: 0 items — selectors may need updating once validated against live pages"
