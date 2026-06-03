@@ -35,30 +35,22 @@ states:
   - state: CA
     agency: California Department of Insurance
     portal: cdi_prior_approval
-    url_template: "https://interactive.web.insurance.ca.gov/apex_extprd/f?p=400"
-    selectors:
-      row:         ".filing-row"               # TODO: validate
-      company:     ".company-name"
-      rate_change: ".requested-change"
-      lob:         ".line-of-business"
-      filing_id:   ".filing-number"
-      status:      ".status"
-      filed_at:    ".filed-date"
+    # 2026-06-03 recon: the old f?p=400 is the LOGIN-gated Apex app. The PUBLIC
+    # "Insurance Company Rate Filing Search" is f?p=186 (no login; 1 Apex form,
+    # 4 selects). Build pending — needs the interactive-render search flow +
+    # results parse (Phase 2), like serff_standard.
+    url_template: "https://interactive.web.insurance.ca.gov/apex_extprd/f?p=186"
     enabled: false
 
   # ── FL — FLOIR iRFA (Internet Rate File Access; custom) ──
   - state: FL
     agency: Florida Office of Insurance Regulation
     portal: floir_irfa
-    url_template: "https://apps.fldfs.com/iportal/Filing/SearchEvent.aspx"
-    selectors:
-      row:         "table.results-table tr.filing"   # TODO: validate
-      company:     "td.company"
-      rate_change: "td.rate-impact"
-      lob:         "td.line-of-business"
-      filing_id:   "td.filing-number"
-      status:      "td.status"
-      filed_at:    "td.filed-date"
+    # 2026-06-03 recon: the old apps.fldfs.com/iportal URL is dead (404). The
+    # current FLOIR rate-filing search moved to irfssearch.fldfs.com ("IRFS Forms
+    # & Rates Filing Search"; ASP.NET, 6 forms). Build pending — needs the
+    # interactive-render search flow + results parse (Phase 3).
+    url_template: "https://irfssearch.fldfs.com/"
     enabled: false
 
   # ── TX — Standard SERFF Filing Access ──
