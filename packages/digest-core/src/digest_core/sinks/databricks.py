@@ -45,7 +45,7 @@ import hashlib
 import json
 import logging
 from dataclasses import asdict, is_dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Iterable
 
 logger = logging.getLogger(__name__)
@@ -86,6 +86,16 @@ def item_hash(source: str, source_id: str) -> str:
     """Stable medallion join key derived from the SQLite natural key."""
     raw = f"{source}::{source_id}".encode("utf-8")
     return hashlib.sha256(raw).hexdigest()
+
+
+def _utcnow() -> datetime:
+    """Naive UTC `now`, identical in value to the deprecated `_utcnow()`.
+
+    Kept naive (not tz-aware) so `_iso` emits the same 19-char, suffix-free
+    string as the stored-timestamp path (`str(ts)[:19]`) — switching to an aware
+    datetime would tag only these fallbacks with `+00:00`.
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def _iso(ts: datetime | str | None) -> str | None:
@@ -188,7 +198,7 @@ class DatabricksSink:
                 "author":        it.get("author"),
                 "content":       it.get("content"),
                 "published_at":  _iso(it.get("published_at")),
-                "ingested_at":   _iso(it.get("ingested_at")) or _iso(datetime.utcnow()),
+                "ingested_at":   _iso(it.get("ingested_at")) or _iso(_utcnow()),
                 "metadata_json": json.dumps(it.get("metadata") or {}, default=str),
                 "topic_hint":    (it.get("metadata") or {}).get("topic_hint"),
             })
@@ -216,7 +226,7 @@ class DatabricksSink:
             return
         row = {
             "item_hash":        item_hash(source, source_id),
-            "triaged_at":       _iso(verdict.get("triaged_at")) or _iso(datetime.utcnow()),
+            "triaged_at":       _iso(verdict.get("triaged_at")) or _iso(_utcnow()),
             "decision":         verdict.get("decision"),
             "score":            verdict.get("score"),
             "topic":            verdict.get("topic"),
@@ -242,7 +252,7 @@ class DatabricksSink:
         domain's DDL declares its own column set; unknown keys are simply None."""
         return {
             "item_hash":        item_hash(source, source_id),
-            "computed_at":      _iso(score_row.get("computed_at")) or _iso(datetime.utcnow()),
+            "computed_at":      _iso(score_row.get("computed_at")) or _iso(_utcnow()),
             "score":            score_row.get("score"),
             "source_mult":      score_row.get("source_mult"),
             "regime_mult":      score_row.get("regime_mult"),
@@ -281,7 +291,7 @@ class DatabricksSink:
             return
         row = {
             "item_hash":      item_hash(source, source_id),
-            "summarized_at":  _iso(summary.get("summarized_at")) or _iso(datetime.utcnow()),
+            "summarized_at":  _iso(summary.get("summarized_at")) or _iso(_utcnow()),
             "summary":        summary.get("summary"),
             "why_it_matters": summary.get("why_it_matters"),
             "see_also":       summary.get("see_also"),
@@ -305,7 +315,7 @@ class DatabricksSink:
             "model":       emb.get("model"),
             "dim":         emb.get("dim"),
             "vector_json": emb.get("vector_json"),
-            "computed_at": _iso(emb.get("computed_at")) or _iso(datetime.utcnow()),
+            "computed_at": _iso(emb.get("computed_at")) or _iso(_utcnow()),
         }
         self._insert("bronze.item_embeddings", [row])
 
@@ -316,7 +326,7 @@ class DatabricksSink:
             return
         row = {
             "item_hash":   item_hash(source, source_id),
-            "rated_at":    _iso(rating.get("rated_at")) or _iso(datetime.utcnow()),
+            "rated_at":    _iso(rating.get("rated_at")) or _iso(_utcnow()),
             "user_rating": rating.get("user_rating"),
             "note":        rating.get("note"),
         }
@@ -331,7 +341,7 @@ class DatabricksSink:
             "insurer":           sig.get("insurer"),
             "lob":               sig.get("lob"),
             "metric":            sig.get("metric"),
-            "as_of":             _iso(sig.get("as_of")) or _iso(datetime.utcnow()),
+            "as_of":             _iso(sig.get("as_of")) or _iso(_utcnow()),
             "ultimate":          sig.get("ultimate"),
             "latest":            sig.get("latest"),
             "ibnr":              sig.get("ibnr"),
@@ -350,7 +360,7 @@ class DatabricksSink:
             "item_hash":     item_hash(source, source_id),
             "model_id":      ls.get("model_id"),
             "learned_score": ls.get("learned_score"),
-            "scored_at":     _iso(ls.get("scored_at")) or _iso(datetime.utcnow()),
+            "scored_at":     _iso(ls.get("scored_at")) or _iso(_utcnow()),
         }
         self._insert("silver.learned_scores", [row])
 
@@ -363,7 +373,7 @@ class DatabricksSink:
         row = {
             "item_hash":       item_hash(source, source_id),
             "horizon_days":    outcome.get("horizon_days"),
-            "checked_at":      _iso(outcome.get("checked_at")) or _iso(datetime.utcnow()),
+            "checked_at":      _iso(outcome.get("checked_at")) or _iso(_utcnow()),
             "corroborated":    bool(outcome.get("corroborated")),
             "signals":         signals if isinstance(signals, list) else [signals],
             "followon_count":  outcome.get("followon_count"),
@@ -417,7 +427,7 @@ class DatabricksSink:
             return
         row = {
             "item_hash":  item_hash(source, source_id),
-            "as_of":      _iso(flow.get("as_of")) or _iso(datetime.utcnow()),
+            "as_of":      _iso(flow.get("as_of")) or _iso(_utcnow()),
             "deal_type":  flow.get("deal_type"),
             "amount_usd": flow.get("amount_usd"),
             "stage":      flow.get("stage"),

@@ -1,7 +1,7 @@
 """Option 1b — outcome backtest: matcher, σ bands, stock-move math, run job."""
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from digest import db, outcomes
 
@@ -65,7 +65,7 @@ def _matured_item(make_item, source, sid, title, days_ago, *, topic=None,
     db.upsert_items([make_item(source=source, source_id=sid, title=title, content="c")])
     with db.get_conn() as conn:
         iid = conn.execute("SELECT id FROM items WHERE source_id=?", (sid,)).fetchone()["id"]
-        ingested = (datetime.utcnow() - timedelta(days=days_ago)).strftime("%Y-%m-%d %H:%M:%S")
+        ingested = (datetime.now(timezone.utc) - timedelta(days=days_ago)).strftime("%Y-%m-%d %H:%M:%S")
         conn.execute(
             "UPDATE items SET triage_decision='keep', ingested_at=?, topic=?, summary=? WHERE id=?",
             (ingested, topic, summary, iid))

@@ -70,4 +70,4 @@ live in the repo-root `MAC_MINI_TASKS.md`.
 - **(PC) `hackernews.QUERIES`** still macro AI/semis terms — retune to P&C.
 - **Dead branch (PC):** edgar `is_fund → 'fed_markets'` (macro residue; never fires).
 - **Pre-existing lint:** ~23 ruff nits in PC viz/collision/health/serff, ~8 in macro — not bugs; sweep opportunistically.
-- **Pre-existing deprecation:** `datetime.utcnow()` in the core sink (4 call sites) — harmless; swap to `datetime.now(UTC)` when convenient.
+- ~~**Pre-existing deprecation:** `datetime.utcnow()` in the core sink~~ FIXED 2026-06-02: a naive-UTC `_utcnow()` helper replaces all 10 sink call sites + the test, preserving the 19-char suffix-free `_iso` output.
