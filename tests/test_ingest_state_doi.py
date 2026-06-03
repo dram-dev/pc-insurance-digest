@@ -101,3 +101,30 @@ def test_fl_title_selector_and_url_path_date(monkeypatch, ingestor):
 def test_missing_selector_returns_nothing(monkeypatch, ingestor):
     monkeypatch.setattr("digest.ingest.state_doi.requests.get", lambda *a, **k: _Resp("<div>no matches</div>"))
     assert ingestor._scrape_state("CA", "x", "https://x/", {"selector": ".nope"}) == []
+
+
+# TX year-index shape (validated live 2026-06-02): <h2 class="news-list-title">
+# wrapping the article anchor with a relative href.
+_TX_HTML = """
+<h2 class="news-list-title"><a href="tdi05282026.html">Insurance tips for hurricane season</a></h2>
+<h2 class="news-list-title"><a href="tdi04162026.html">Insurance tips for spring storms</a></h2>
+"""
+
+
+def test_render_branch_routes_through_fetch_rendered(monkeypatch, ingestor):
+    # render:true must use the headless-fetch path, not requests.get.
+    monkeypatch.setattr("digest.ingest.render.fetch_rendered", lambda url, **k: _TX_HTML)
+    monkeypatch.setattr("digest.ingest.state_doi.requests.get",
+                        lambda *a, **k: pytest.fail("requests.get used despite render:true"))
+    entry = {"selector": ".news-list-title", "render": True}
+    items = ingestor._scrape_state("TX", "Texas DOI",
+                                   "https://www.tdi.texas.gov/news/2026/index.html", entry)
+    assert len(items) == 2
+    assert items[0].title == "[TX DOI] Insurance tips for hurricane season"
+    assert items[0].url.endswith("/news/2026/tdi05282026.html")
+
+
+def test_render_unavailable_skips_state(monkeypatch, ingestor):
+    monkeypatch.setattr("digest.ingest.render.fetch_rendered", lambda url, **k: None)
+    entry = {"selector": ".news-list-title", "render": True}
+    assert ingestor._scrape_state("TX", "x", "https://x/", entry) == []

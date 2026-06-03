@@ -11,18 +11,23 @@ sources:
     vendor: LexisNexis Risk Solutions
     url: "https://risk.lexisnexis.com/insights-resources"
     title_filter: "auto insurance"
-    selector: "article, .insight-card, .resource-item, .content-card"
-    # 2026-06-02: page returns 200 but the resource feed is JS-rendered
-    # (Algolia "masonry-resource-listing" hits load client-side); static HTML
-    # holds only nav chrome (.highlight-card = Careers/News Room/…). Needs a
-    # rendered fetch or the site's search API — not a selector fix. Stay off.
-    enabled: false
+    selector: ".masonry-resource-listing-item"
+    title_selector: ".masonry-resource-listing-item-title"
+    # Validated live 2026-06-02 via the render path: the resource feed is an
+    # Algolia/JS "masonry-resource-listing" (static HTML is only nav chrome) —
+    # 24 cards after rendering; title in .masonry-resource-listing-item-title,
+    # link is the card anchor. The "auto insurance" filter gates to P&C content.
+    render: true
+    enabled: true
 
   - name: jdpower_auto
     vendor: JD Power
     url: "https://www.jdpower.com/business/press-releases"
     title_filter: "auto insurance"
-    selector: ".press-release-item, article.press, .pr-list li, table.press-releases tr"
-    # 2026-06-02: returns 403 (WAF/bot-blocked) even on a real browser UA. Needs
-    # a different fetch strategy before the selector can be validated. Stay off.
-    enabled: false
+    selector: ".result"
+    # Validated live 2026-06-02 via the render path (a plain GET 403s — WAF; a
+    # real headless browser gets 200). 12 .result press-release cards; the
+    # "auto insurance" filter gates to JD Power's periodic auto-insurance studies
+    # (0 items on days without one — expected, not a failure).
+    render: true
+    enabled: true

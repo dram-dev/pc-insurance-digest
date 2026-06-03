@@ -22,6 +22,12 @@ dependencies = [
     "digest-core",
 ]
 
+[project.optional-dependencies]
+# Headless-browser fetch for JS-rendered / WAF-blocked sources (see
+# src/digest/ingest/render.py). Opt-in because it also needs a one-time browser
+# download: `uv sync --extra render && uv run playwright install chromium`.
+render = ["playwright>=1.49"]
+
 [project.scripts]
 digest = "digest.cli:main"
 
