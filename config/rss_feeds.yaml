@@ -192,6 +192,23 @@ feeds:
     topic_hint: personal_lines
     limit: 15
 
+  # ── Top personal-lines carriers (name-scoped) ────────────────
+  # State Farm and Allstate are the #1/#2 US personal auto + homeowners
+  # writers. State Farm is a mutual with NO SEC filings, so it is invisible
+  # to the EDGAR ingestor — these proxies are its primary entry point (and
+  # catch Allstate's rate/market coverage beyond its 8-Ks). Each pairs the
+  # carrier name with a P&C-action qualifier to keep out generic brand noise.
+
+  - name: google_news_state_farm
+    url: 'https://news.google.com/rss/search?q=when:14d+(%22State+Farm%22)+(rate+OR+%22auto+insurance%22+OR+homeowners+OR+premium+OR+non-renewal+OR+%22market+exit%22+OR+catastrophe+OR+lawsuit+OR+earnings)&hl=en-US&gl=US&ceid=US:en'
+    topic_hint: personal_lines
+    limit: 15
+
+  - name: google_news_allstate
+    url: 'https://news.google.com/rss/search?q=when:14d+(%22Allstate%22)+(rate+OR+%22auto+insurance%22+OR+homeowners+OR+premium+OR+non-renewal+OR+catastrophe+OR+earnings+OR+%22combined+ratio%22)&hl=en-US&gl=US&ceid=US:en'
+    topic_hint: personal_lines
+    limit: 15
+
   # ── Trade-body advocacy + research ───────────────────────────
   # APCIA / NAMIC / NCOIL / III statements on regulatory and market
   # conditions. Feeds regulatory_rate + commercial_specialty.
