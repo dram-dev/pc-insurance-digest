@@ -288,7 +288,7 @@ burden AS (
 )
 SELECT 1 AS lead, 'Reinsurance Pulse'            AS lead_name, 'market_cycle' AS hardens,
        value AS latest_value, zscore_12m AS zscore,
-       CASE WHEN mom_pct_change > 0 THEN 'up' WHEN mom_pct_change < 0 THEN 'down' ELSE 'flat' END AS trend,
+       CASE WHEN trend = 'firming' THEN 'up' WHEN trend = 'softening' THEN 'down' ELSE 'flat' END AS trend,
        CAST(observation_date AS TIMESTAMP) AS as_of,
        observation_date < CURRENT_DATE - INTERVAL 120 DAYS AS is_stale
 FROM reins WHERE rn = 1

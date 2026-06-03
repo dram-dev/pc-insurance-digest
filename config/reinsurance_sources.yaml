@@ -10,11 +10,14 @@
 indices:
   - index_name: guycarp_us_property_cat_rol
     segment: us_property_cat
-    source: guycarp
-    # Guy Carpenter Global Property Catastrophe Rate-on-Line Index — published in
-    # renewal commentary (1/1, 4/1, 7/1). Annual + renewal cadence.
-    url: "https://www.guycarp.com/insights.html"
-    enabled: false
+    source: artemis_rol
+    # Guy Carpenter U.S. Property-Cat Rate-on-Line index (base 100 = 1990),
+    # republished by Artemis with the full annual series in the page's inline
+    # Highcharts config (static — no render). Validated live 2026-06-02: 37
+    # points (1990–2026*). Other artemis_rol pages with the same shape:
+    #   /global-property-cat-rate-on-line-index/  ·  /regional-...-index/
+    url: "https://www.artemis.bm/us-property-cat-rate-on-line-index/"
+    enabled: true
 
   - index_name: artemis_ils_spread
     segment: ils

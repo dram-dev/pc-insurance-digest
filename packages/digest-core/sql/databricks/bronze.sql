@@ -112,9 +112,8 @@ CREATE TABLE IF NOT EXISTS pc_bronze.reinsurance_pricing (
     index_name        STRING NOT NULL,            -- 'guycarp_us_property_cat_rol' | 'artemis_ils_spread' | …
     observation_date  DATE   NOT NULL,
     value             DOUBLE,                       -- ROL index level or spread (bps)
-    mom_pct_change    DOUBLE,
-    yoy_pct_change    DOUBLE,
-    zscore_12m        DOUBLE,
+    zscore_12m        DOUBLE,                        -- latest vs trailing baseline
+    trend             STRING,                        -- 'firming' | 'softening' | 'flat' (reduce_series)
     is_anomaly        BOOLEAN,
     segment           STRING,                       -- 'us_property_cat' | 'retro' | 'casualty' | …
     source            STRING,                       -- 'guycarp' | 'artemis' | 'lane'

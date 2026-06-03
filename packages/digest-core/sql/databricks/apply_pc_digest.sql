@@ -117,9 +117,8 @@ CREATE TABLE IF NOT EXISTS bronze.reinsurance_pricing (
     index_name        STRING NOT NULL,            -- 'guycarp_us_property_cat_rol' | 'artemis_ils_spread' | …
     observation_date  DATE   NOT NULL,
     value             DOUBLE,                       -- ROL index level or spread (bps)
-    mom_pct_change    DOUBLE,
-    yoy_pct_change    DOUBLE,
-    zscore_12m        DOUBLE,
+    zscore_12m        DOUBLE,                        -- latest vs trailing baseline
+    trend             STRING,                        -- 'firming' | 'softening' | 'flat' (reduce_series)
     is_anomaly        BOOLEAN,
     segment           STRING,                       -- 'us_property_cat' | 'retro' | 'casualty' | …
     source            STRING,                       -- 'guycarp' | 'artemis' | 'lane'
@@ -667,7 +666,7 @@ burden AS (
 )
 SELECT 1 AS lead, 'Reinsurance Pulse'            AS lead_name, 'market_cycle' AS hardens,
        value AS latest_value, zscore_12m AS zscore,
-       CASE WHEN mom_pct_change > 0 THEN 'up' WHEN mom_pct_change < 0 THEN 'down' ELSE 'flat' END AS trend,
+       CASE WHEN trend = 'firming' THEN 'up' WHEN trend = 'softening' THEN 'down' ELSE 'flat' END AS trend,
        CAST(observation_date AS TIMESTAMP) AS as_of,
        observation_date < CURRENT_DATE - INTERVAL 120 DAYS AS is_stale
 FROM reins WHERE rn = 1
