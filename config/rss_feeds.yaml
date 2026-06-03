@@ -121,7 +121,7 @@ feeds:
     topic_hint: regulatory_rate
     limit: 15
 
-  # ── State DOI specifics (top-5 P&C states) ───────────────────
+  # ── State DOI specifics (big-6 P&C states) ───────────────────
   # Added 2026-05-24 from Score Higher review — Personal Lines volume gap.
   # Each pulls bulletins / press releases from a single-state regulator;
   # narrower queries than google_news_state_doi above so we catch CA
@@ -149,6 +149,26 @@ feeds:
 
   - name: google_news_la_ldi
     url: 'https://news.google.com/rss/search?q=when:14d+(%22Louisiana+Department+of+Insurance%22+OR+%22LDI+rate%22+OR+%22Louisiana+Citizens%22+OR+%22Tim+Temple%22+insurance)&hl=en-US&gl=US&ceid=US:en'
+    topic_hint: regulatory_rate
+    limit: 15
+
+  - name: google_news_il_idoi
+    url: 'https://news.google.com/rss/search?q=when:14d+(%22Illinois+Department+of+Insurance%22+OR+%22IDOI%22+OR+%22Illinois+insurance+director%22)+(rate+OR+auto+OR+homeowners+OR+property)&hl=en-US&gl=US&ceid=US:en'
+    topic_hint: regulatory_rate
+    limit: 15
+
+  - name: google_news_nj_dobi
+    url: 'https://news.google.com/rss/search?q=when:14d+(%22New+Jersey+Department+of+Banking+and+Insurance%22+OR+%22NJ+DOBI%22+OR+%22New+Jersey+insurance+commissioner%22)+(rate+OR+auto+OR+homeowners+OR+property)&hl=en-US&gl=US&ceid=US:en'
+    topic_hint: regulatory_rate
+    limit: 15
+
+  - name: google_news_mi_difs
+    url: 'https://news.google.com/rss/search?q=when:14d+(%22Michigan+Department+of+Insurance+and+Financial+Services%22+OR+%22Michigan+DIFS%22+OR+%22Michigan+no-fault%22)+(rate+OR+auto+OR+homeowners+OR+property)&hl=en-US&gl=US&ceid=US:en'
+    topic_hint: regulatory_rate
+    limit: 15
+
+  - name: google_news_nv_doi
+    url: 'https://news.google.com/rss/search?q=when:14d+(%22Nevada+Division+of+Insurance%22+OR+%22Nevada+insurance+commissioner%22)+(rate+OR+auto+OR+homeowners+OR+property)&hl=en-US&gl=US&ceid=US:en'
     topic_hint: regulatory_rate
     limit: 15
 

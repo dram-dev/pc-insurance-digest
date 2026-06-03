@@ -17,8 +17,11 @@ def ingestor() -> StateDOIIngestor:
 
 
 class _Resp:
-    def __init__(self, html: str):
+    def __init__(self, html: str, payload: dict | None = None):
         self.text = html
+        self._payload = payload
+    def json(self):
+        return self._payload
     def raise_for_status(self):
         pass
 
@@ -163,3 +166,191 @@ def test_la_title_from_node_date_selector_and_max_items(monkeypatch, ingestor):
     assert (items[0].published_at.year, items[0].published_at.month, items[0].published_at.day) == (2026, 6, 1)
     assert items[1].title.startswith("[LA DOI] May 27, 2026")
     assert items[0].url.endswith("/news/press-releases/6-1-26-media-advisory")
+
+
+# IL IDOI shape (validated live 2026-06-03): a Sling model JSON whose
+# newsFeedItemList carries title/type/date/year/description/url. The feed is
+# mostly ACA/health ("Get Covered Illinois") so a pc_keywords allowlist must
+# keep only the P&C-relevant releases.
+_IL_FEED = {
+    "newsFeedItemList": [
+        {"title": "Get Covered Illinois Extends Open Enrollment Deadline",
+         "type": "Press Release", "date": "Monday, December 15", "year": "2025",
+         "description": "residents now have until December 31 to enroll in health insurance coverage.",
+         "url": "https://www.illinois.gov/news/press-release.32010.html"},
+        {"title": "IDOI Calls on Insurance Companies to Provide Policyholders Relief",
+         "type": "Press Release", "date": "Thursday, October 16", "year": "2025",
+         "description": "IDOI is calling on insurance companies to give homeowners relief during the disaster.",
+         "url": "https://www.illinois.gov/news/press-release.31888.html"},
+        {"title": "IDOI Kicks Off Its Annual Mental Health Parity Campaign",
+         "type": "Press Release", "date": "Monday, May 05", "year": "2025",
+         "description": "consumer education campaign highlighting mental health parity.",
+         "url": "https://www.illinois.gov/news/press-release.31000.html"},
+        {"title": "Department Approves Personal Auto Rate Filing for Carrier",
+         "type": "Press Release", "date": "Monday, March 10", "year": "2025",
+         "description": "a rate filing affecting automobile premiums statewide.",
+         "url": "https://www.illinois.gov/news/press-release.30777.html"},
+    ]
+}
+
+
+def test_il_json_feed_filters_health_parses_date(monkeypatch, ingestor):
+    monkeypatch.setattr("digest.ingest.state_doi.requests.get",
+                        lambda *a, **k: _Resp("", payload=_IL_FEED))
+    # pc_allowlist pulls the shared defaults.pc_keywords from the loaded config.
+    entry = {"json_feed": True, "pc_allowlist": True, "max_items": 20}
+    items = ingestor._scrape_state("IL", "Illinois DOI",
+                                   "https://idoi.illinois.gov/x/news_feed.model.json", entry)
+    titles = [it.title for it in items]
+    # The disaster-relief (policyholder/homeowners) and the auto rate-filing items
+    # are kept; the ACA-enrollment and mental-health-parity items are dropped.
+    assert titles == [
+        "[IL DOI] IDOI Calls on Insurance Companies to Provide Policyholders Relief",
+        "[IL DOI] Department Approves Personal Auto Rate Filing for Carrier",
+    ]
+    it = items[0]
+    assert it.metadata == {"topic_hint": "regulatory_rate", "state": "IL", "agency": "Illinois DOI"}
+    # "Thursday, October 16" + year "2025" → strptime-parseable October 16, 2025.
+    assert (it.published_at.year, it.published_at.month, it.published_at.day) == (2025, 10, 16)
+    assert it.source_id == "IL:/news/press-release.31888.html"
+
+
+def test_il_json_feed_health_dropped_even_without_allowlist(monkeypatch, ingestor):
+    # No P&C allowlist, but the no-health rule still drops the ACA + mental-health
+    # items; only the two non-health releases survive.
+    monkeypatch.setattr("digest.ingest.state_doi.requests.get",
+                        lambda *a, **k: _Resp("", payload=_IL_FEED))
+    items = ingestor._scrape_state("IL", "Illinois DOI", "https://x/feed.json",
+                                   {"json_feed": True})
+    assert len(items) == 2
+
+
+def test_il_json_feed_drop_health_opt_out_keeps_all(monkeypatch, ingestor):
+    # drop_health:false disables the no-health rule → all four pass.
+    monkeypatch.setattr("digest.ingest.state_doi.requests.get",
+                        lambda *a, **k: _Resp("", payload=_IL_FEED))
+    items = ingestor._scrape_state("IL", "Illinois DOI", "https://x/feed.json",
+                                   {"json_feed": True, "drop_health": False})
+    assert len(items) == 4
+
+
+def test_il_json_feed_respects_max_items(monkeypatch, ingestor):
+    monkeypatch.setattr("digest.ingest.state_doi.requests.get",
+                        lambda *a, **k: _Resp("", payload=_IL_FEED))
+    items = ingestor._scrape_state("IL", "Illinois DOI", "https://x/feed.json",
+                                   {"json_feed": True, "max_items": 1})
+    assert len(items) == 1
+
+
+# ── NJ DOBI: per-year static index (td + pr<YYMMDD>.html, date in cell text) ──
+# Validated live 2026-06-03. NJ DOBI also runs Get Covered NJ → health-heavy.
+_NJ_HTML = """
+<table><tr>
+  <td>May 12, 2026 - <a href="pr260512.html">DOBI Approves Homeowners Rate Filing for Coastal Carriers</a></td>
+  <td>April 21, 2026 - <a href="pr260421.html">Residents Encouraged to Enroll in Get Covered New Jersey</a></td>
+  <td>March 02, 2026 - <a href="pr260302.html">Commissioner Statement on Auto Insurance Reforms</a></td>
+</tr></table>
+"""
+
+
+def test_nj_td_index_date_from_text_and_health_allowlist(monkeypatch, ingestor):
+    monkeypatch.setattr("digest.ingest.state_doi.requests.get", lambda *a, **k: _Resp(_NJ_HTML))
+    entry = {"selector": "td:has(a[href^='pr'])", "date_from_text": True,
+             "pc_allowlist": True, "max_items": 20}
+    items = ingestor._scrape_state("NJ", "New Jersey DOBI",
+                                   "https://www.nj.gov/dobi/pressreleases/2026.html", entry)
+    titles = [it.title for it in items]
+    # Get-Covered-NJ (health) dropped; the homeowners rate filing + auto reforms kept.
+    assert titles == [
+        "[NJ DOI] DOBI Approves Homeowners Rate Filing for Coastal Carriers",
+        "[NJ DOI] Commissioner Statement on Auto Insurance Reforms",
+    ]
+    # title is the anchor text (no date prefix — NJ's date is sibling cell text);
+    # date_from_text read "May 12, 2026" out of the cell.
+    it = items[0]
+    assert (it.published_at.year, it.published_at.month, it.published_at.day) == (2026, 5, 12)
+    assert it.url.endswith("/dobi/pressreleases/pr260512.html")
+
+
+# ── MI DIFS: Sitecore SXA results JSON (Html fragment title, URL-path date) ──
+# Validated live 2026-06-03. DIFS regulates insurance + banking → mixed feed.
+def _mi(url, title):
+    return {"Url": url, "Html": f'<a class="content-title-link" href="{url}">{title}</a>'}
+
+_MI_JSON = {"Results": [
+    _mi("/difs/news-and-outreach/press-releases/2026/06/01/difs-mortgage-tips",
+        "DIFS Shares Key Mortgage Tips for National Homeownership Month"),
+    _mi("/difs/news-and-outreach/press-releases/2026/05/13/difs-shop-health",
+        "DIFS to Michiganders: Shop Smart for Health Insurance"),
+    _mi("/difs/news-and-outreach/press-releases/2026/04/09/difs-home-inventory",
+        "DIFS Encourages Michiganders to Complete a Home Inventory"),
+    _mi("/difs/news-and-outreach/press-releases/2026/03/02/difs-no-fault",
+        "DIFS Issues Guidance on Auto No-Fault Reforms"),
+]}
+
+
+def test_mi_sxa_json_html_title_urlpath_date_and_filters(monkeypatch, ingestor):
+    monkeypatch.setattr("digest.ingest.state_doi.requests.get",
+                        lambda *a, **k: _Resp("", payload=_MI_JSON))
+    entry = {"json_feed": True, "json_list_key": "Results", "json_url_field": "Url",
+             "json_html_field": "Html", "json_html_title_selector": ".content-title-link",
+             "pc_allowlist": True, "pc_keywords_extra": ["no-fault", "auto"], "max_items": 20}
+    items = ingestor._scrape_state(
+        "MI", "Michigan DIFS",
+        "https://www.michigan.gov/difs/sxa/search/results/?p=30", entry)
+    titles = [it.title for it in items]
+    # Mortgage/banking dropped (word-boundary: "Homeownership" ≠ "homeowners"),
+    # "Health Insurance" dropped (no-health); "Home Inventory" + "Auto No-Fault" kept.
+    assert titles == [
+        "[MI DOI] DIFS Encourages Michiganders to Complete a Home Inventory",
+        "[MI DOI] DIFS Issues Guidance on Auto No-Fault Reforms",
+    ]
+    it = items[0]
+    # date came from the /2026/04/09/ URL path; href resolved against the domain.
+    assert (it.published_at.year, it.published_at.month, it.published_at.day) == (2026, 4, 9)
+    assert it.url == ("https://www.michigan.gov/difs/news-and-outreach/"
+                      "press-releases/2026/04/09/difs-home-inventory")
+
+
+# ── NV DOI: static div.article, date baked into the title text ──
+# Validated live 2026-06-03. NV is insurance-only → no P&C allowlist, just no-health.
+_NV_HTML = """
+<div class="article"><a href="/News_Notices/Press_Releases/May_13,_2026_-_Fraud/">May 13, 2026 - 2026 Annual Fraud Assessment</a></div>
+<div class="teaser"><a href="/News_Notices/Press_Releases/May_13,_2026_-_Fraud/">Read More</a></div>
+<div class="article"><a href="/News_Notices/Press_Releases/April_28,_2026_-_Medicare/">April 28, 2026 - Commissioner presents at Medicare conference</a></div>
+<div class="article"><a href="/News_Notices/Press_Releases/March_04,_2026_-_Dividend/">March 04, 2026 - Nevada Auto Policyholders to Receive Dividend</a></div>
+"""
+
+
+def test_nv_article_strip_date_prefix_and_health_drop(monkeypatch, ingestor):
+    monkeypatch.setattr("digest.ingest.state_doi.requests.get", lambda *a, **k: _Resp(_NV_HTML))
+    entry = {"selector": "div.article:has(a[href*='Press_Releases'])",
+             "date_from_text": True, "strip_date_prefix": True, "max_items": 20}
+    items = ingestor._scrape_state("NV", "Nevada DOI",
+                                   "https://doi.nv.gov/News-Notices/Press-Releases/", entry)
+    titles = [it.title for it in items]
+    # Medicare item dropped (no-health); the date prefix is stripped off the rest.
+    assert titles == [
+        "[NV DOI] 2026 Annual Fraud Assessment",
+        "[NV DOI] Nevada Auto Policyholders to Receive Dividend",
+    ]
+    assert (items[0].published_at.year, items[0].published_at.month, items[0].published_at.day) == (2026, 5, 13)
+
+
+# ── filter primitives ──
+
+def test_health_denylist_word_boundary():
+    from digest.ingest.state_doi import _kw_hit, _HEALTH_DENYLIST
+    assert _kw_hit("shop smart for health insurance", _HEALTH_DENYLIST)
+    assert _kw_hit("Get Covered New Jersey enrollment", _HEALTH_DENYLIST)
+    assert _kw_hit("Medicare fraud prevention week", _HEALTH_DENYLIST)
+    # P&C headlines must NOT trip the health filter.
+    assert not _kw_hit("homeowners rate filing approved", _HEALTH_DENYLIST)
+    assert not _kw_hit("national homeownership month mortgage tips", _HEALTH_DENYLIST)
+
+
+def test_pc_allowlist_word_boundary_excludes_homeownership(ingestor):
+    # "homeowners" must not match inside "homeownership" (mortgage/banking noise).
+    entry = {"pc_allowlist": True}
+    assert ingestor._passes_filters("DIFS approves homeowners rate filing", entry)
+    assert not ingestor._passes_filters("Tips for National Homeownership Month", entry)
