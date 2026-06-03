@@ -195,11 +195,17 @@ across the pipeline:
   applied alongside four additional cross-cutting factors (Wave 2.x + Wave 3 Phase 2):
 
   ```python
-  insurer_priority_boost = {   # EDGAR items only, keyed on metadata.ticker
+  insurer_priority_boost = {   # max of a ticker boost AND a carrier-name boost
       "PGR": 1.5, "ALL": 1.5, "BRK": 1.5,   # personal-auto big-3 (BRK = GEICO parent)
       "TRV": 1.3, "CB": 1.3,
       "HIG": 1.2, "AIG": 1.2,
   }
+  # The ticker boost above only fires on source=edgar. A parallel carrier-NAME
+  # boost (PRIORITY_INSURER_NAMES / weights `insurer_names`) scans the title +
+  # summary on ANY source — {"state farm": 1.5, "allstate": 1.5} — so the
+  # largest personal-auto/home carriers outrank generic press even off-EDGAR.
+  # This is the only carrier weighting State Farm can get: it is a MUTUAL with
+  # no SEC filings, hence no ticker. Combined per-item as max(ticker, name).
   inflation_keyword_boost = 1.2  # title/summary names an inflation driver: auto
                                  # parts, construction cost, labor cost/supply,
                                  # verdict/judgement/settlement, tort reform,

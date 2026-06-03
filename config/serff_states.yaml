@@ -52,9 +52,12 @@ states:
     # area=1 (Property & Casualty — NOT 2=Life/Health) rate filings per priority
     # carrier (coNmSt=4 contains) and keeps the most-recent N. Validated live
     # 2026-06-03 (Progressive 968 / GEICO 819 / Liberty 1359 P&C rate filings).
-    # Per the user's focus, FL is scoped to the personal-auto big-3 carriers.
+    # Scoped to the personal-auto/home big carriers: the original big-3 plus
+    # State Farm and Allstate (the #1/#2 writers, added per user focus 2026-06-03).
     url_template: "https://irfssearch.floir.gov/"
     companies:
+      - State Farm
+      - Allstate
       - Progressive
       - GEICO
       - Liberty Mutual
