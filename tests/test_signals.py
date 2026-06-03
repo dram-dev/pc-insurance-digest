@@ -62,6 +62,52 @@ def test_default_weights_includes_signal_tiers():
     assert signals._DEFAULT_WEIGHTS["signal_tiers"] == {"high": 1.6, "medium": 0.9}
 
 
+def test_default_weights_includes_insurer_names():
+    assert signals._DEFAULT_WEIGHTS["insurer_names"]["state farm"] == 1.5
+    assert signals._DEFAULT_WEIGHTS["insurer_names"]["allstate"] == 1.5
+
+
+def test_insurer_name_boost_fires_for_state_farm_on_any_source():
+    # State Farm is a mutual — no EDGAR ticker ever — so the name path is its
+    # only route to a carrier-priority weighting.
+    b = signals._insurer_priority_boost(
+        "insurance_journal", None, blob="State Farm Mutual seeks 12% auto rate hike in CA")
+    assert b == 1.5
+
+
+def test_insurer_name_boost_fires_for_allstate_trade_press():
+    # Allstate's ticker boost only covers its 8-Ks; the name path covers the rest.
+    b = signals._insurer_priority_boost(
+        "reinsurance_news", None, blob="Allstate reports higher catastrophe losses")
+    assert b == 1.5
+
+
+def test_insurer_ticker_and_name_combine_as_max_not_product():
+    # An Allstate 8-K whose summary also says "Allstate" must not double-count.
+    b = signals._insurer_priority_boost(
+        "edgar", '{"ticker": "ALL"}', blob="Allstate 8-K: quarterly results")
+    assert b == 1.5
+
+
+def test_insurer_name_boost_neutral_without_carrier():
+    assert signals._insurer_priority_boost("hackernews", None, blob="generic insurtech news") == 1.0
+    # No blob (older 3-arg callers) → name path is a no-op, ticker path unchanged.
+    assert signals._insurer_priority_boost("edgar", '{"ticker": "PGR"}') == 1.5
+
+
+def test_insurer_names_overridable_via_vault(tmp_path, monkeypatch):
+    vault = tmp_path / "vault"
+    meta = vault / "81 P&C Digest" / "_meta"
+    meta.mkdir(parents=True)
+    (meta / "Scoring Weights.md").write_text(
+        "---\ninsurer_names:\n  state farm: 1.8\n---\nbody\n", encoding="utf-8")
+    monkeypatch.setattr(signals.settings, "obsidian_vault_path", str(vault))
+    monkeypatch.setattr(signals.settings, "obsidian_digest_dir", "81 P&C Digest")
+    w = signals._load_scoring_weights()
+    assert w["insurer_names"]["state farm"] == 1.8      # overridden
+    assert w["insurer_names"]["allstate"] == 1.5         # default preserved
+
+
 def test_score_item_assigns_tier_consistent_with_score():
     class _Row(dict):
         def keys(self):

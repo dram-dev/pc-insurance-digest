@@ -23,9 +23,11 @@ Components, in plain English:
                          commercial specialty, reserving, supply chain) > 1.0.
   burden_intensity_boost Regulatory Sonar lite — burden_intensity classification on
                          regulatory_rate items only.
-  insurer_priority_boost EDGAR items keyed on ticker: PGR/ALL/BRK = 1.5, TRV = 1.3, etc.
-                         (User priority: largest personal-auto carriers must outrank
-                          generic press.) Only fires for source=edgar.
+  insurer_priority_boost Carrier weighting: max of an EDGAR ticker boost (PGR/ALL/BRK =
+                         1.5, TRV = 1.3, …) and a carrier-NAME boost scanned over the
+                         text (State Farm / Allstate = 1.5) so the largest personal-auto
+                         carriers — including mutuals with no SEC filings, like State
+                         Farm — outrank generic press on any source, not just EDGAR.
   inflation_keyword_boost  Title/summary keyword scan for the user's tracked inflation
                            drivers (auto parts, construction cost, labor cost/supply,
                            verdict/judgement, severity, loss cost). 1.2× on hit, else 1.0.
@@ -148,6 +150,23 @@ PRIORITY_INSURERS_BOOST: dict[str, float] = {
 }
 
 
+# ── Carrier-NAME priority boost (carrier weighting beyond EDGAR) ──────
+#
+# The ticker boost above only fires on source=='edgar' items, so it misses
+# (a) trade-press / rate-filing coverage of public carriers and (b) mutuals
+# entirely. State Farm — the #1 US personal-auto + homeowners writer — is a
+# mutual with NO SEC filings, so it could never be weighted by ticker. This
+# name map fires when the title/summary names a priority carrier, on ANY
+# source, and is combined with the ticker boost as a max (no double-count).
+# Keys are matched on word boundaries (case-insensitive); user-overridable
+# via the `insurer_names` section of Scoring Weights.md.
+
+PRIORITY_INSURER_NAMES: dict[str, float] = {
+    "state farm": 1.5,   # #1 personal auto + home; mutual → never had an EDGAR path
+    "allstate":   1.5,   # extends ALL's ticker boost to its non-filing coverage
+}
+
+
 # ── Inflation keyword boost (user-tracked cost drivers) ───────────────
 #
 # Cross-topic boost for items naming the loss-cost inflation drivers the
@@ -224,6 +243,7 @@ _DEFAULT_WEIGHTS: dict[str, dict[str, float]] = {
     "sources":          dict(SOURCE_MULT),
     "topics":           dict(TOPIC_PRIORITY_BOOST),
     "insurer_priority": dict(PRIORITY_INSURERS_BOOST),
+    "insurer_names":    dict(PRIORITY_INSURER_NAMES),
     "keyword_boosts":   {"inflation": 1.2, "regulatory": 1.2, "tplf": 1.3},
     "burden_intensity": dict(BURDEN_INTENSITY_BOOST),
     "signal_tiers":     dict(SIGNAL_TIER_DEFAULTS),
@@ -450,25 +470,43 @@ def _insurer_priority_boost(
     source: str,
     metadata_json: Any,
     insurer_map: dict[str, float] | None = None,
+    blob: str = "",
+    name_map: dict[str, float] | None = None,
 ) -> float:
-    """Returns per-ticker boost for EDGAR items; 1.0 otherwise.
+    """Carrier-priority boost: the max of a per-ticker boost (EDGAR items) and a
+    carrier-name boost (any source, scanned over `blob`).
 
-    `insurer_map` defaults to the module-level PRIORITY_INSURERS_BOOST so
-    older external callers (tests, scripts) continue to work; production
-    callers pass the user-overridable map from _load_scoring_weights().
+    The ticker path weights filings from public carriers; the name path extends
+    that to trade-press / rate coverage AND to carriers with no EDGAR ticker at
+    all (State Farm, a mutual). Combined as a max so an EDGAR item that also
+    names its carrier isn't double-counted. `insurer_map`/`name_map` default to
+    the module-level tables so older 3-arg callers (tests, scripts) are
+    unchanged; production passes the user-overridable maps from
+    _load_scoring_weights().
     """
-    if source != "edgar" or not metadata_json:
-        return 1.0
-    try:
-        meta = json.loads(metadata_json)
-    except (TypeError, ValueError):
-        return 1.0
-    ticker = (meta.get("ticker") or "").upper().strip()
-    # Normalize BRK.A / BRK.B / BRK-B → BRK for matching
-    if ticker.startswith("BRK"):
-        ticker = "BRK"
-    table = insurer_map if insurer_map is not None else PRIORITY_INSURERS_BOOST
-    return table.get(ticker, 1.0)
+    ticker_boost = 1.0
+    if source == "edgar" and metadata_json:
+        try:
+            meta = json.loads(metadata_json)
+        except (TypeError, ValueError):
+            meta = {}
+        ticker = (meta.get("ticker") or "").upper().strip()
+        # Normalize BRK.A / BRK.B / BRK-B → BRK for matching
+        if ticker.startswith("BRK"):
+            ticker = "BRK"
+        table = insurer_map if insurer_map is not None else PRIORITY_INSURERS_BOOST
+        ticker_boost = table.get(ticker, 1.0)
+
+    name_boost = 1.0
+    names = name_map if name_map is not None else PRIORITY_INSURER_NAMES
+    if blob and names:
+        for name, boost in names.items():
+            if boost > name_boost and re.search(
+                rf"\b{re.escape(name)}\b", blob, re.IGNORECASE
+            ):
+                name_boost = boost
+
+    return max(ticker_boost, name_boost)
 
 
 def _reserve_deterioration_boost(blob: str, reserve_map: dict[str, float]) -> float:
@@ -619,7 +657,8 @@ def score_item(
     kw = weights["keyword_boosts"]
     metadata_json = row["metadata_json"] if "metadata_json" in row.keys() else None
     blob = _text_blob(row)   # build once, reuse across the three keyword helpers
-    insurer_boost    = _insurer_priority_boost(source, metadata_json, weights["insurer_priority"])
+    insurer_boost    = _insurer_priority_boost(
+        source, metadata_json, weights["insurer_priority"], blob, weights["insurer_names"])
     inflation_boost  = _inflation_keyword_boost(blob,      kw.get("inflation",  1.2), severity_z)
     regulatory_boost = _regulatory_action_boost(blob,      kw.get("regulatory", 1.2))
     tplf_boost       = _litigation_tplf_boost(row, blob,   kw.get("tplf",       1.3), litigation_pressure)
