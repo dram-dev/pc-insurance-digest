@@ -47,16 +47,18 @@ states:
   - state: FL
     agency: Florida Office of Insurance Regulation
     portal: floir_irfa
-    # 2026-06-03 recon: current search = irfssearch.floir.gov (the old
-    # irfssearch.fldfs.com redirects here; apps.fldfs.com/iportal 404s). The form
-    # HAS the data we want — a `fileTypeRates` filter, file/close date ranges, and
-    # rate-change requested/approved fields — but it's a complex tabbed JS app
-    # (Quick/Advanced Search) whose search flow resisted automation in this pass
-    # (no data-file shortcut like CA's xlsx; the search submit didn't yield a
-    # results grid). BUILD DEFERRED to a focused follow-up; the other 4 SERFF
-    # states (TX/NY/LA standard + CA xlsx) are live.
+    # FLOIR IRFS (irfssearch.floir.gov) is a Knockout SPA, but its search is a
+    # clean JSON API: POST /api/search/advanced. serff._scrape_floir queries
+    # area=1 (Property & Casualty — NOT 2=Life/Health) rate filings per priority
+    # carrier (coNmSt=4 contains) and keeps the most-recent N. Validated live
+    # 2026-06-03 (Progressive 968 / GEICO 819 / Liberty 1359 P&C rate filings).
+    # Per the user's focus, FL is scoped to the personal-auto big-3 carriers.
     url_template: "https://irfssearch.floir.gov/"
-    enabled: false
+    companies:
+      - Progressive
+      - GEICO
+      - Liberty Mutual
+    enabled: true
 
   # ── TX — Standard SERFF Filing Access ──
   - state: TX

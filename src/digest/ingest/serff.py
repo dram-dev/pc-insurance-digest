@@ -29,6 +29,7 @@ Wave 3 Phase 2 — Liability + regulatory parallel track.
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 from datetime import datetime, timedelta, timezone
@@ -153,14 +154,10 @@ class SerffIngestor(IngestorBase):
         elif portal == "cdi_prior_approval":
             return self._scrape_ca_xlsx(state, agency, url)
         elif portal == "floir_irfa":
-            html = self._fetch_floir_irfa(state, url)
+            return self._scrape_floir(state, agency, entry.get("companies") or [])
         else:
             logger.warning("serff: %s — unknown portal %r; skipping", state, portal)
             return []
-
-        if not html:
-            return []
-        return self._parse_filings(state, agency, url, html, selectors)
 
     def _fetch_serff_standard(self, state: str, url: str) -> list[str]:
         """Standard SERFF Filing Access — a stateful PrimeFaces/JSF app.
@@ -385,12 +382,75 @@ class SerffIngestor(IngestorBase):
                     state, len(items), self.min_pct)
         return items
 
-    def _fetch_floir_irfa(self, state: str, url: str) -> str:
-        """FLOIR iRFA. TODO: ASP.NET form with viewstate + event target.
-        Stays disabled until captured properly."""
-        r = requests.get(url, headers={"User-Agent": self.user_agent}, timeout=self.timeout)
-        r.raise_for_status()
-        return r.text
+    def _scrape_floir(self, state: str, agency: str, companies: list[str]) -> list[IngestedItem]:
+        """FL FLOIR IRFS — the search is a clean JSON API behind the Knockout UI:
+        POST /api/search/advanced with a `criteria` payload. For each priority
+        carrier (per the user's PGR/GEICO/Liberty focus) we query **area=1
+        (Property & Casualty)** rate filings (`fileTypeRates`+`Both`, `coNmSt=4`
+        contains) and keep the most-recent N (the list is newest-first by file-log
+        number). The summary rows carry company + file-log # + filing type but not
+        LOB/date/% (those need a per-filing detail call), so those are left unset.
+        Best-effort: any failure logs and returns []."""
+        if not companies:
+            logger.info("serff: %s — no priority companies configured; skipping", state)
+            return []
+        session = requests.Session()
+        session.headers.update({"User-Agent": self.user_agent,
+                                "Referer": "https://irfssearch.floir.gov/"})
+        per_company = max(self.max_per_state // len(companies), 5)
+        items: list[IngestedItem] = []
+        seen: set[str] = set()
+        for company in companies:
+            criteria = {
+                "area": 1,                       # 1 = Property & Casualty (NOT 2 = Life/Health)
+                "coNmSh": True, "coNm": company, "coNmSt": "4",  # company-name contains
+                "fileTypeSh": True, "fileTypeRates": True,
+                "fileTypeForms": False, "fileTypeBoth": True,    # rate (or rate+form) filings
+            }
+            try:
+                r = session.post("https://irfssearch.floir.gov/api/search/advanced",
+                                 data={"criteria": json.dumps(criteria)}, timeout=self.timeout)
+                r.raise_for_status()
+                data = r.json().get("Data", []) or []
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("serff: FL %s query failed: %s", company, exc)
+                continue
+            kept = 0
+            for row in data:
+                flog = str(row.get("FileLogNumber") or "").strip()
+                if not flog or flog in seen:
+                    continue
+                seen.add(flog)
+                co = str(row.get("CoNm") or "").strip()
+                ftype = str(row.get("FilingType") or "Rate").strip()
+                fid = row.get("FilingId")
+                detail = (f"https://irfssearch.floir.gov/Home/ViewFilingExternal?id={fid}"
+                          if fid else "https://irfssearch.floir.gov/")
+                items.append(
+                    IngestedItem(
+                        source=self.name,
+                        source_id=f"{state}:{flog}",
+                        title=f"[{state} DOI] {co} — {ftype} filing ({flog})",
+                        url=detail,
+                        author=agency,
+                        published_at=None,
+                        metadata={
+                            "topic_hint":       "regulatory_rate",
+                            "state":            state,
+                            "agency":           agency,
+                            "company":          co,
+                            "filing_id":        flog,
+                            "filing_type":      ftype,
+                            "priority_carrier": company,
+                        },
+                    )
+                )
+                kept += 1
+                if kept >= per_company:
+                    break
+        logger.info("serff: %s — %d recent rate filings across %d priority carriers",
+                    state, len(items), len(companies))
+        return items
 
     # ── HTML → IngestedItem ───────────────────────────────────────────────
 

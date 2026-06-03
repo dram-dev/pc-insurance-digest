@@ -6,6 +6,8 @@ TX 2026-06-02) and assert the rate/LOB filter, cross-page dedup, and cap.
 """
 from __future__ import annotations
 
+import json
+
 from digest.ingest.serff import SerffIngestor, _parse_rate_change
 
 
@@ -115,6 +117,43 @@ def test_ca_xlsx_no_link_returns_empty(monkeypatch):
                         lambda u, **k: type("R", (), {"content": b"", "text": "<p>no files</p>",
                                                       "raise_for_status": lambda self: None})())
     assert serff.SerffIngestor()._scrape_ca_xlsx("CA", "x", "https://x/") == []
+
+
+# ── FL: FLOIR IRFS JSON API ───────────────────────────────────────────────────
+
+def test_floir_scrapes_pc_rate_filings_per_carrier(monkeypatch):
+    class _FakeSession:
+        def __init__(self):
+            self.headers = {}
+
+        def post(self, url, data=None, timeout=None):
+            crit = json.loads(data["criteria"])
+            assert crit["area"] == 1            # Property & Casualty, NOT 2 = Life/Health
+            assert crit["fileTypeRates"] is True
+            co = crit["coNm"]
+            rows = [{"FileLogNumber": f"26-{co[:3]}-{i}", "CoNm": f"{co.upper()} INS CO",
+                     "FilingType": "Rates", "FilingId": 1000 + i} for i in range(10)]
+            return type("R", (), {"json": lambda self: {"Data": rows},
+                                  "raise_for_status": lambda self: None})()
+
+    monkeypatch.setattr(serff.requests, "Session", _FakeSession)
+    items = serff.SerffIngestor()._scrape_floir(
+        "FL", "FL DOI", ["Progressive", "GEICO", "Liberty Mutual"])
+    from collections import Counter
+    # max_filings_per_state 25 // 3 carriers → 8 each.
+    assert Counter(it.metadata["priority_carrier"] for it in items) == \
+        {"Progressive": 8, "GEICO": 8, "Liberty Mutual": 8}
+    it = items[0]
+    assert it.metadata["topic_hint"] == "regulatory_rate" and it.metadata["state"] == "FL"
+    assert it.title.startswith("[FL DOI] PROGRESSIVE INS CO — Rates filing (26-Pro-0)")
+    assert it.url == "https://irfssearch.floir.gov/Home/ViewFilingExternal?id=1000"
+
+
+def test_floir_no_companies_is_empty(monkeypatch):
+    # Should never even hit the network without a configured carrier list.
+    monkeypatch.setattr(serff.requests, "Session",
+                        lambda: (_ for _ in ()).throw(AssertionError("should not connect")))
+    assert serff.SerffIngestor()._scrape_floir("FL", "x", []) == []
 
 
 def test_parse_pct_value_handles_bare_numbers_and_blanks():
