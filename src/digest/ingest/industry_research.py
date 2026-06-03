@@ -45,15 +45,31 @@ def _scrape_source(entry: dict) -> list[IngestedItem]:
     url          = entry["url"]
     title_filter = entry.get("title_filter", "").lower()
     selector     = entry.get("selector", "")
+    title_sel    = entry.get("title_selector") or "h1, h2, h3, h4, .title, .headline, a"
 
-    try:
-        r = requests.get(url, headers={"User-Agent": _UA}, timeout=_REQUEST_TIMEOUT)
-        r.raise_for_status()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("industry_research: %s fetch failed: %s", name, exc)
-        return []
+    # JS-rendered (LexisNexis' Algolia feed) or WAF-blocked (JD Power 403) sources
+    # set `render: true` to fetch the final DOM via a headless browser. A missing
+    # render extra returns None → skip this source (logged), don't crash the run.
+    if entry.get("render"):
+        from digest.ingest.render import fetch_rendered
+        html = fetch_rendered(url, wait_selector=selector or None)
+        if html is None:
+            logger.warning(
+                "industry_research: %s — rendered fetch unavailable (install the "
+                "render extra: `uv sync --extra render && uv run playwright install "
+                "chromium`); skipping", name,
+            )
+            return []
+    else:
+        try:
+            r = requests.get(url, headers={"User-Agent": _UA}, timeout=_REQUEST_TIMEOUT)
+            r.raise_for_status()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("industry_research: %s fetch failed: %s", name, exc)
+            return []
+        html = r.text
 
-    soup  = BeautifulSoup(r.text, "html.parser")
+    soup  = BeautifulSoup(html, "html.parser")
     nodes = soup.select(selector) if selector else []
     if not nodes:
         logger.warning(
@@ -66,7 +82,7 @@ def _scrape_source(entry: dict) -> list[IngestedItem]:
     items: list[IngestedItem] = []
     seen_urls: set[str] = set()
     for node in nodes:
-        title_el = node.select_one("h1, h2, h3, h4, .title, .headline, a")
+        title_el = node.select_one(title_sel)
         title = title_el.get_text(strip=True) if title_el else node.get_text(strip=True)[:200]
         if not title:
             continue

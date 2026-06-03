@@ -30,11 +30,13 @@ states:
 
   - state: TX
     agency: Texas Department of Insurance
-    url_template: "https://www.tdi.texas.gov/news/"
-    selector: ".news-listing li"   # TODO: confirm
-    # 2026-05-30: page loads (200) but the news list isn't in the static HTML
-    # (only ~2 anchors) — appears JS-rendered. Needs a rendered fetch or a feed.
-    enabled: false
+    url_template: "https://www.tdi.texas.gov/news/{year}/index.html"
+    # Validated live 2026-06-02: the old /news/ landing page is a GovDelivery
+    # subscribe widget (no list) — the real news list is the per-year index,
+    # which IS static HTML. Items are <h2 class="news-list-title"> wrapping the
+    # article anchor (title + relative href). No render needed — just the URL.
+    selector: ".news-list-title"
+    enabled: true
 
   - state: NY
     agency: New York Department of Financial Services
@@ -46,8 +48,12 @@ states:
 
   - state: LA
     agency: Louisiana Department of Insurance
-    url_template: "https://www.ldi.la.gov/news"
-    selector: ".views-row"   # TODO: confirm
-    # 2026-05-30: returns 403 (WAF/bot-blocked on a normal browser UA). Needs a
-    # different fetch strategy before it can be validated.
+    url_template: "https://www.ldi.la.gov/news/press-releases"
+    selector: ".views-row"   # TODO: finalize — see note
+    # 2026-06-02: the WAF 403 (plain GET) IS bypassed by the render path (headless
+    # browser → 200), and the press list lives at /news/press-releases. But that
+    # page renders the full ~149-item archive as date-link + title-link pairs;
+    # needs a row-container selector + a recency cap before enabling. render:true
+    # is set so it's ready the moment the selector is finalized.
+    render: true
     enabled: false

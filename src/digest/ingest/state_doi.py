@@ -81,9 +81,25 @@ class StateDOIIngestor(IngestorBase):
         url: str,
         entry: dict,
     ) -> list[IngestedItem]:
-        r = requests.get(url, headers={"User-Agent": _UA}, timeout=_REQUEST_TIMEOUT)
-        r.raise_for_status()
-        soup = BeautifulSoup(r.text, "html.parser")
+        # JS-rendered or WAF-blocked states (e.g. TX year index, LA behind a
+        # WAF) set `render: true` to fetch the final DOM via a headless browser;
+        # everything else takes the plain requests path. A missing render extra
+        # returns None → skip this state (logged), don't crash the run.
+        if entry.get("render"):
+            from digest.ingest.render import fetch_rendered
+            html = fetch_rendered(url, wait_selector=entry.get("selector") or None)
+            if html is None:
+                logger.warning(
+                    "state_doi: %s — rendered fetch unavailable (install the render "
+                    "extra: `uv sync --extra render && uv run playwright install "
+                    "chromium`); skipping", state,
+                )
+                return []
+        else:
+            r = requests.get(url, headers={"User-Agent": _UA}, timeout=_REQUEST_TIMEOUT)
+            r.raise_for_status()
+            html = r.text
+        soup = BeautifulSoup(html, "html.parser")
 
         selector = entry.get("selector", "")
         nodes = soup.select(selector) if selector else []
