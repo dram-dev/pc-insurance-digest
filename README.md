@@ -7,10 +7,12 @@ the same Obsidian vault (lands in `81 P&C Digest` next to `80 Digest`).
 For the full design context (locked decisions, scoring formula, regime axes,
 Regulatory Sonar, etc.), see [CLAUDE.md](CLAUDE.md).
 
-## Status (Waves 1–3 shipped · digest-core extraction underway)
+## Status (Waves 1–4 shipped · all sources live · digest-core foundation extracted)
 
 **Pipeline:** `ingest → triage (Ollama Qwen2.5:14b) → summarize (MLX Qwen3.5-27B
-local) → score (signals leaderboard) → publish (Obsidian)`
+local) → score (signals leaderboard) → publish (Obsidian)`. Every stage's LLM is
+config-swappable through a backend registry — `digest models` prints the
+backend/model/endpoint per stage and pings each for reachability.
 
 **Ingestors (live):**
 - **EDGAR** — 15-insurer universe (TRV, ALL, PGR, CB, HIG, AIG, MET, PRU, RNR,
@@ -21,29 +23,63 @@ local) → score (signals leaderboard) → publish (Obsidian)`
 - **Cat events** — NHC tropical cyclone (U.S./Caribbean threat filter), USGS
   M≥5.0 earthquakes (M≥6.0 U.S./territory auto-keep), SPC severe-weather
   outlooks, NIFC active wildfires ≥1000 ac
+- **State DOI** — direct press-release scrapers for all 5 priority states
+  (CA/FL/TX/NY/LA); the JS-rendered / WAF-blocked ones (TX year index, LA LDI)
+  go through the headless-browser render path
+- **SERFF rate filings** — all 5 states, three portal types: TX/NY/LA via the
+  standard SERFF Filing Access portal (headless PrimeFaces search flow), **CA**
+  via CDI's YTD approvals **Excel** (carries the requested/approved rate %, so it
+  honours the ≥5% threshold), **FL** via FLOIR's IRFS **JSON API** (scoped to the
+  personal-auto big-3: Progressive / GEICO / Liberty Mutual)
+- **Collision claims** — CCC *Crash Course* + Mitchell/Enlyte industry-trend
+  reports (severity / repair-cost / parts signal → `supply_chain`)
+- **Industry research** — LexisNexis Risk Solutions + JD Power (render path;
+  WAF-bypassed)
 - **FRED** — 7 P&C cost-driver CPI/PPI series with ±1.5σ anomaly gate
 - **CourtListener** — federal MDL docket tracker (tier-1 + emerging
   jurisdictions, P&C NOS filter, MDL keyword auto-keep)
+- **LegiScan** — state insurance-bill velocity, feeding the per-state burden
+  barometer (`digest burden`)
+- **Reinsurance pricing (EKG Lead 1)** — Guy Carpenter U.S. Property-Cat
+  Rate-on-Line index (via Artemis), nudging the regime market-cycle axis
+- **Investor supplements** — per-insurer 10-K ASC-944 loss-development triangles
+  (PGR live → chain-ladder reserving quant)
 - **Reddit / Substack / Hacker News** — r/Insurance, r/Actuary, r/CFP,
-  weather/EQ subreddits; Insurance Insider, Coverager; HN ≥100 points
-- **Scaffolded, selector-validation pending on Mac mini:** state DOI direct
-  scrapers (CA/FL/TX/NY/LA), SERFF rate filings ≥5%, CCC/Mitchell collision
-  data, LexisNexis Risk + JD Power industry research, NAIC Schedule P,
-  per-insurer investor supplements
+  weather/EQ subreddits (Reddit via the public `.rss` feed — no API key);
+  Insurance Insider, Coverager; HN ≥100 points
+- **Still scaffolded:** NAIC Schedule P reserve triangles
+
+**Headless-browser render** (optional `render` extra): JS-rendered or WAF-blocked
+sources — the SERFF standard portal, state DOI TX·LA, LexisNexis, JD Power — are
+fetched with Playwright (`digest/ingest/render.py`: a lazy, graceful
+`fetch_rendered` / `fetch_rendered_interactive` / `fetch_rendered_paginated`).
+One-time setup: `uv sync --extra render && uv run playwright install chromium`.
+When it's absent, those sources skip cleanly; everything else is plain `requests`.
+
+**Insurance EKG leads** (quantitative vital-signs that harden the regime detector
+and the leaderboard, rather than new architecture): reinsurance ROL · CAT-load
+nowcast (`digest cat-nowcast`) · severity tape (`severity-tape`) · litigation /
+TPLF docket pressure (`litigation`) · capital flows · chain-ladder reserving
+(`reserving`) · disclosure sentiment (`disclosure`) · per-state burden barometer
+(`burden`). Each wires into an existing scoring factor and is behaviour-preserving
+until its data flows.
 
 **Triage / summarize / score:**
 - 17-topic P&C taxonomy + `litigation_tplf` sub-tag (canonical list in
   [src/digest/triage.py](src/digest/triage.py))
 - Hybrid auto-keep — Python enforces material categories (insurer 8-K/10-Q/10-K,
   NHC advisories, U.S. M≥6.0 quakes, FRED anomalies, CourtListener MDLs, state
-  DOI bulletins, SERFF ≥5%, investor supplements, NAIC Schedule P); model
-  handles the rest
+  DOI bulletins, SERFF rate filings, LegiScan bills, investor supplements, NAIC
+  Schedule P); model handles the rest
 - Two-axis regime detector — `market_cycle × cat_load`, 72h cadence with
   override file
-- Signal leaderboard — 11-factor score `source × regime × topic_relevance ×
+- Signal leaderboard — 12-factor score `source × regime × topic_relevance ×
   recency × llm_judgment × topic_priority × burden_intensity × insurer_priority
-  × inflation_keyword × regulatory_action × litigation_tplf`. All boost values
-  are user-editable from the Obsidian vault — see _meta/Scoring Weights.md_
+  × inflation_keyword × regulatory_action × litigation_tplf ×
+  reserve_deterioration`. All boost values are user-editable from the Obsidian
+  vault — see _meta/Scoring Weights.md_. A trained `learned_score` (numpy
+  logistic regression, `digest learn`) rides alongside each row for A/B; the
+  heuristic stays authoritative.
 - Conviction tier — each scored item is tagged 🔴 high / 🟡 medium / 🔵 low by
   leaderboard score (thresholds in _meta/Scoring Weights.md → `signal_tiers`)
   and shown as a badge on the daily + weekly leaderboards; persisted to
@@ -54,7 +90,14 @@ local) → score (signals leaderboard) → publish (Obsidian)`
 
 **Publish:** Daily + weekly notes + per-topic archives in
 `{vault}/81 P&C Digest/{Daily,Topics,Weekly}/`, plus a `_meta/` folder for
-operations log, scoring weights, and feedback files.
+operations log, scoring weights, and feedback files. Each daily note opens with a
+**Market EKG** vital-signs panel (regime quadrant · gauges · severity drivers ·
+litigation velocity · burden bars · reserve heat-grid). `digest dashboard`
+generates two standalone cockpit notes — **Signal Desk** (live DataviewJS
+regime/vitals timeline + reserve Sankey + cat-season heatmap + calibration
+heatmap) and **Home** (status strip + pipeline buttons) — refreshed automatically
+by the weekly job. `digest viz --lab` renders a side-by-side eval harness of the
+candidate Markdown-viz techniques.
 
 **Optional Databricks medallion sink** — bronze / silver / gold DDL ships in
 `packages/digest-core/sql/databricks/`. `DatabricksSink` (implemented in
@@ -103,30 +146,37 @@ Staggered with macro digest to avoid MLX contention:
 - Ollama running locally with `qwen2.5:14b` pulled
 - MLX server (managed by macro digest's `com.dr.mlx.server` launchd job)
 - EDGAR user agent string (your email, per SEC policy)
-- Optional: Reddit script-type app credentials, COURTLISTENER_TOKEN,
-  ANTHROPIC_API_KEY / GEMINI_API_KEY for fallback summarizer backends,
-  Databricks workspace credentials if enabling the medallion sink
+- Optional: the `render` extra + Playwright Chromium (`uv sync --extra render &&
+  uv run playwright install chromium`) for JS/WAF-blocked sources;
+  COURTLISTENER_TOKEN and LEGISCAN_API_KEY for those ingestors; ANTHROPIC_API_KEY
+  / GEMINI_API_KEY for fallback summarizer backends; Databricks workspace
+  credentials if enabling the medallion sink (Reddit needs no key — it uses the
+  public `.rss` feed)
 
 ## Getting started
 
 ```bash
 cd ~/Projects/pc-insurance-digest
 uv sync
+# JS-rendered / WAF-blocked sources (SERFF standard portal, state DOI TX·LA,
+# LexisNexis, JD Power) need the headless browser — opt in once:
+uv sync --extra render && uv run playwright install chromium
 cp .env.example .env       # fill in EDGAR_USER_AGENT, OBSIDIAN_VAULT_PATH,
                            # REDDIT_* and any optional keys
 uv run digest init-db
 uv run digest ingest all
 uv run digest sources     # live catalog: every source + 7-day ingest pulse
+uv run digest models      # backend/model/endpoint per stage + reachability
 uv run digest brief       # regime + top signals + alert watchlist (offline)
 uv run digest stats
 uv run digest pipeline --run-type manual
 ```
 
-CLI commands: `ingest`, `sources`, `brief`, `rate`, `calibration`, `embed`,
-`related`, `ask`, `outcomes`, `learn`, `reserving`, `disclosure`, `cat-nowcast`,
-`severity-tape`, `litigation`, `burden`, `triage`, `summarize`, `regime`,
-`signals`, `pipeline`, `publish`, `weekly`, `stats`, `recent`, `health`, `viz`,
-`init-db`.
+CLI commands: `ingest`, `sources`, `models`, `brief`, `rate`, `calibration`,
+`embed`, `related`, `ask`, `outcomes`, `learn`, `reserving`, `disclosure`,
+`cat-nowcast`, `severity-tape`, `litigation`, `burden`, `triage`, `summarize`,
+`regime`, `signals`, `pipeline`, `publish`, `weekly`, `stats`, `recent`,
+`health`, `viz`, `dashboard`, `init-db`.
 
 **Scoring feedback loop.** `digest rate <id> <1-5>` records what you thought an
 item was worth; `digest calibration` shows system-vs-you deltas; `digest
@@ -193,11 +243,12 @@ pc-insurance-digest/
 │   ├── substack_feeds.yaml
 │   ├── fred_series.yaml               # P&C cost-driver CPI/PPI series
 │   ├── courtlistener_courts.yaml      # tier-1 / emerging / tier-3 jurisdictions
-│   ├── state_doi_sources.yaml         # CA/FL/TX/NY/LA press scrapers
-│   ├── serff_states.yaml              # SERFF rate filings + portal dispatch
-│   ├── industry_research_sources.yaml # LexisNexis Risk, JD Power
-│   ├── investor_supplements.yaml      # per-insurer 10-Q supplement URLs
-│   └── naic_schedp_sources.yaml       # reserve-triangle data source
+│   ├── state_doi_sources.yaml         # CA/FL/TX/NY/LA press scrapers (live)
+│   ├── serff_states.yaml              # SERFF rate filings — 5 states, 3 portals
+│   ├── reinsurance_sources.yaml       # Artemis ROL index (EKG Lead 1)
+│   ├── industry_research_sources.yaml # LexisNexis Risk, JD Power (render)
+│   ├── investor_supplements.yaml      # per-insurer 10-K triangle URLs (PGR live)
+│   └── naic_schedp_sources.yaml       # reserve-triangle data source (scaffold)
 ├── launchd/                           # am / pm / weekly plists
 ├── packages/digest-core/              # shared framework core (PC + macro plug in)
 │   ├── EXTRACTION_PLAN.md             # what-moves-where map
@@ -213,7 +264,8 @@ pc-insurance-digest/
     ├── triage.py                      # Ollama prompt + 17-topic taxonomy
     ├── summarize.py                   # P&C prompt + caps (backends/runner in digest_core)
     ├── regime.py                      # market_cycle × cat_load detector
-    ├── signals.py                     # 11-factor leaderboard + conviction tier
+    ├── reinsurance.py                 # EKG Lead 1 — ROL pricing → market_cycle
+    ├── signals.py                     # 12-factor leaderboard + conviction tier
     ├── obsidian.py                    # daily / weekly / topic-archive writer (primitives in digest_core)
     ├── weekly.py                      # weekly synthesis (themes / must-reads)
     ├── health.py
@@ -224,27 +276,37 @@ pc-insurance-digest/
     │   └── databricks.py              # medallion sink, no-op by default
     └── ingest/                        # rss/substack/hn/reddit/edgar delegate to digest_core
         ├── base.py                    # binds digest_core IngestorBase → db (store)
+        ├── render.py                  # Playwright headless fetch (JS/WAF sources)
         ├── edgar.py, rss.py, reddit.py, substack.py, hackernews.py
         ├── nhc.py, usgs.py, spc.py, nifc.py
         ├── fred.py
-        ├── courtlistener.py
-        ├── state_doi.py, serff.py
+        ├── courtlistener.py, legiscan.py
+        ├── state_doi.py, serff.py     # SERFF: TX/NY/LA portal · CA xlsx · FL API
         ├── industry_research.py, collision_data.py
         ├── investor_supp.py, naic_schedp.py
 ```
 
-## Wave 4 roadmap
+## Roadmap
 
-- **Regulatory Sonar full detector** — periodic per-state burden-pressure
-  index, LegiScan integration, weekly note section
+Wave 4's insurance-EKG leads, the Obsidian viz/dashboard surface, the LLM
+plug-and-play registry, and all source build-out (collision + all 5 SERFF states)
+have shipped. Still open:
+
+- **Regulatory Sonar full detector** — the LegiScan ingestor is live; the
+  periodic per-state burden-pressure detector + weekly note section is pending
+- **SERFF / FL detail enrichment** — the SERFF standard portal and the FL API
+  list views omit the rate-% / LOB / closed-date (those live on each filing's
+  detail page); a per-filing detail fetch would add them
+- **NAIC Schedule P** — the last scaffolded source (reserve triangles)
 - **Score Higher / Updates feedback automation** — parse the `_meta/` notes
   into `silver.manual_ratings`, auto-suggest boost adjustments
-- **Databricks dashboards + Genie space** — daily / weekly leaderboards,
-  source quality, boost-factor heat-map
-- **Cross-feed dedup** — title-normalize hash pass at triage entry
-- **digest-core Phase 2** — the code-moving extraction is done (shared mechanics
-  now live in `digest_core`); next is the design seams (regime axes, score-factor
-  composition, triage engine) + porting macro-ai-digest onto the core. See
+- **Databricks Genie + AI/BI dashboards** — the sink + medallion DDL are live;
+  the Genie space and warehouse dashboards over the gold views are user-side
+- **Cross-feed dedup** — swap triage's title-fuzz dedup for the semantic
+  `near_duplicates()` pass
+- **digest-core seams** — the foundation is extracted and macro-ai-digest runs on
+  the same core; the remaining design seams (score-factor registry, triage
+  engine, daily-note hooks; regime deferred) are reactive. See
   [SEAMS_PLAN.md](packages/digest-core/SEAMS_PLAN.md)
 
 See [_meta/To-Do.md](https://github.com/dram-dev/pc-insurance-digest) (in the
