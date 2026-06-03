@@ -28,6 +28,7 @@ defaults:
     - umbrella
   user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
   request_timeout: 25                # SERFF is slower than state press pages
+  max_filings_per_state: 25          # cap (the results list has no rate-% to threshold on)
 
 states:
   # ── CA — CDI Prior Approval (custom front-end, not SERFF Filing Access) ──
@@ -65,42 +66,23 @@ states:
     agency: Texas Department of Insurance
     portal: serff_standard
     url_template: "https://filingaccess.serff.com/sfa/home/TX"
-    selectors:
-      row:         "table.filing-results tr.filing-row"   # TODO: validate
-      company:     "td.company-name"
-      rate_change: "td.requested-rate-change"
-      lob:         "td.line-of-business"
-      filing_id:   "td.serff-tracking-number"
-      status:      "td.filing-status"
-      filed_at:    "td.filed-date"
-    enabled: false
+    # serff_standard drives the PrimeFaces search flow in serff.py and parses the
+    # filingTable positionally (Company · NAIC · Product · Sub Type · Filing Type ·
+    # Status · Tracking #) — no per-state selectors needed. Validated live 2026-06-02.
+    enabled: true
 
   # ── NY — Standard SERFF Filing Access (via DFS) ──
   - state: NY
     agency: New York Department of Financial Services
     portal: serff_standard
     url_template: "https://filingaccess.serff.com/sfa/home/NY"
-    selectors:
-      row:         "table.filing-results tr.filing-row"   # TODO: validate
-      company:     "td.company-name"
-      rate_change: "td.requested-rate-change"
-      lob:         "td.line-of-business"
-      filing_id:   "td.serff-tracking-number"
-      status:      "td.filing-status"
-      filed_at:    "td.filed-date"
-    enabled: false
+    # Shares the TX-validated serff_standard flow (positional filingTable parse).
+    enabled: true
 
   # ── LA — Standard SERFF Filing Access ──
   - state: LA
     agency: Louisiana Department of Insurance
     portal: serff_standard
     url_template: "https://filingaccess.serff.com/sfa/home/LA"
-    selectors:
-      row:         "table.filing-results tr.filing-row"   # TODO: validate
-      company:     "td.company-name"
-      rate_change: "td.requested-rate-change"
-      lob:         "td.line-of-business"
-      filing_id:   "td.serff-tracking-number"
-      status:      "td.filing-status"
-      filed_at:    "td.filed-date"
-    enabled: false
+    # Shares the TX-validated serff_standard flow (positional filingTable parse).
+    enabled: true

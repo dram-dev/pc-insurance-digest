@@ -95,6 +95,10 @@ class SerffIngestor(IngestorBase):
         self.lobs: list[str] = list(self.defaults.get("lines_of_business") or [])
         self.user_agent: str = self.defaults.get("user_agent") or "Mozilla/5.0"
         self.timeout: int = int(self.defaults.get("request_timeout", 25))
+        # Cap per state — SERFF results are newest-first; the list carries no
+        # rate-% or date column (those live on each filing's detail page), so we
+        # bound volume rather than threshold on rate change.
+        self.max_per_state: int = int(self.defaults.get("max_filings_per_state", 25))
 
     def fetch(self) -> list[IngestedItem]:
         items: list[IngestedItem] = []
@@ -125,9 +129,14 @@ class SerffIngestor(IngestorBase):
         selectors = entry.get("selectors") or {}
         agency = entry.get("agency", "")
 
-        # Portal-specific fetch (some need POST + search params).
+        # Portal-specific fetch + parse. The standard SERFF portal is a stateful
+        # PrimeFaces app driven via the headless browser → positional results
+        # table; the custom CA/FL portals stay on the selector-based parser.
         if portal == "serff_standard":
-            html = self._fetch_serff_standard(state, url)
+            pages = self._fetch_serff_standard(state, url)
+            if not pages:
+                return []
+            return self._parse_serff_standard(state, agency, url, pages)
         elif portal == "cdi_prior_approval":
             html = self._fetch_cdi_prior_approval(state, url)
         elif portal == "floir_irfa":
@@ -140,14 +149,119 @@ class SerffIngestor(IngestorBase):
             return []
         return self._parse_filings(state, agency, url, html, selectors)
 
-    def _fetch_serff_standard(self, state: str, url: str) -> str:
-        """Standard SERFF Filing Access. TODO: switch to POST + search criteria
-        (closure_status=Closed-Approved, filed_after=<lookback>, filing_type=Rate).
-        Naive GET returns the landing page; state stays disabled until this is
-        replaced with the form POST and validated."""
-        r = requests.get(url, headers={"User-Agent": self.user_agent}, timeout=self.timeout)
-        r.raise_for_status()
-        return r.text
+    def _fetch_serff_standard(self, state: str, url: str) -> list[str]:
+        """Standard SERFF Filing Access — a stateful PrimeFaces/JSF app.
+
+        Drive the search flow with a headless browser (validated live on TX,
+        2026-06-02): Begin Search → accept the user agreement → select the
+        Property & Casualty business type → type the submission start date
+        (lookback) → Search → bump rows-per-page to 100 → walk the result pages.
+        The list is sorted alphabetically by company with no date column, so we
+        page through ALL results (at 100/page, ≤4 pages covers a month) rather
+        than biasing toward A-companies. Returns [] when the render extra is
+        unavailable (logged), so the state simply yields nothing.
+        """
+        from digest.ingest.render import fetch_rendered_paginated
+
+        start = (datetime.now(tz=timezone.utc) - timedelta(days=self.lookback_days)).strftime("%m/%d/%Y")
+        date_input = "input[name='simpleSearch:submissionStartDate_input']"
+        table_rows = "[id$=':filingTable'] tbody tr"
+        actions = [
+            ("wait_for", "text=Begin Search"),
+            ("click",    "text=Begin Search"),
+            ("wait_for", "button:has-text('Accept')"),
+            ("click",    "button:has-text('Accept')"),
+            ("wait_for", r"#simpleSearch\:businessType"),
+            ("click",    r"#simpleSearch\:businessType"),        # open the LOB dropdown
+            ("wait",     400),
+            ("click",    "li:has-text('Property & Casualty')"),  # pick P&C
+            ("wait",     400),
+            ("type",     date_input, start),                     # calendar input — type, don't fill+Esc
+            ("press",    "Tab"),
+            ("click",    r"#simpleSearch\:saveBtn"),             # Search
+            ("wait_for", f"{table_rows}, .ui-datatable-empty-message"),
+            ("select",   ".ui-paginator-rpp-options >> nth=0", "100"),   # 100 rows/page
+            ("wait",     2500),
+            ("wait_for", table_rows),
+        ]
+        pages = fetch_rendered_paginated(
+            url, actions,
+            next_selector=".ui-paginator-next",
+            ready_selector=table_rows,
+            max_pages=4,
+        )
+        if not pages:
+            logger.warning(
+                "serff: %s — interactive SERFF fetch unavailable/failed (needs the "
+                "render extra: `uv sync --extra render && uv run playwright install "
+                "chromium`); skipping", state,
+            )
+        return pages
+
+    def _parse_serff_standard(
+        self, state: str, agency: str, base_url: str, pages: list[str],
+    ) -> list[IngestedItem]:
+        """Parse the SERFF Filing Access results `filingTable` across result pages
+        (positional cols: Company · NAIC · Insurance Product · Sub Type · Filing
+        Type · Status · SERFF Tracking #). Keep Filing-Type='Rate*' rows whose LOB
+        matches the watchlist, deduped by tracking #, capped at `max_per_state`.
+        The list has no rate-% or filed date (those live on each filing's detail
+        page), so neither is set."""
+        items: list[IngestedItem] = []
+        seen: set[str] = set()
+        for html in pages:
+            soup = BeautifulSoup(html, "html.parser")
+            table = soup.select_one("[id$=':filingTable']") or soup.select_one(".ui-datatable table")
+            if table is None:
+                continue
+            for tr in table.select("tbody tr"):
+                tds = tr.select("td")
+                if len(tds) < 7:
+                    continue
+                cells = [td.get_text(" ", strip=True) for td in tds]
+                company, naic, product, subtype, filing_type, status, tracking = cells[:7]
+                # Rate filings only (skip Form / Endorsement / Rule-only filings).
+                if "rate" not in filing_type.lower():
+                    continue
+                lob_text = f"{product} {subtype}".strip()
+                if self.lobs and not _lob_matches(lob_text, self.lobs):
+                    continue
+                if not tracking or tracking in seen:
+                    continue
+                seen.add(tracking)
+                a = tds[6].select_one("a[href]")
+                href = a.get("href") if a else ""
+                if href and not href.startswith("http"):
+                    href = urljoin(base_url, href)
+                title = f"[{state} DOI] {company} — {filing_type} on {product or lob_text}"
+                items.append(
+                    IngestedItem(
+                        source=self.name,
+                        source_id=f"{state}:{tracking}",
+                        title=title,
+                        url=href or base_url,
+                        author=agency,
+                        published_at=None,
+                        metadata={
+                            "topic_hint":  "regulatory_rate",
+                            "state":       state,
+                            "agency":      agency,
+                            "company":     company,
+                            "naic":        naic,
+                            "lob":         lob_text,
+                            "filing_id":   tracking,
+                            "filing_type": filing_type,
+                            "status":      status,
+                        },
+                    )
+                )
+                if len(items) >= self.max_per_state:
+                    break
+            if len(items) >= self.max_per_state:
+                break
+        logger.info("serff: %s — %d P&C rate filings (LOB-matched, %d pages, capped %d)",
+                    state, len(items), len(pages), self.max_per_state)
+        return items
 
     def _fetch_cdi_prior_approval(self, state: str, url: str) -> str:
         """CA CDI Prior Approval search. TODO: this is an Oracle Apex form;
