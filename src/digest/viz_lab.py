@@ -226,13 +226,16 @@ def render_burden_bars() -> str:
         return _no_data("digest burden")
     top = rows[:8]
     wmax = max(int(r["weighted_burden"] or 0) for r in top) or 1
-    light = {3: "🟥", 2: "🟧", 1: "🟨"}   # by avg weight bucket
+    light = {3: "🟥", 2: "🟧", 1: "🟨"}   # by avg intensity-weight bucket
     lines = ["| State | Pressure | Net dir | Items |", "|---|---|---|---|"]
     for r in top:
         wb = int(r["weighted_burden"] or 0)
         bar = "█" * max(1, round(wb / wmax * 12))
         avg = wb / max(1, int(r["n"] or 1))
-        chip = light.get(round(avg), "🟩")
+        # No rated intensity (weighted_burden 0) → neutral ⬜ "unrated", NOT a
+        # misleading green "all-clear". The weight scale floors at low=1 → 🟨, so
+        # 🟩 was only ever the null fallback; items with some intensity floor at 🟨.
+        chip = "⬜" if wb == 0 else light.get(round(avg), "🟨")
         lines.append(f"| {r['state']} {chip} | `{bar}` {wb} | "
                      f"{_dir_arrow(r['net_direction'])} | {r['n']} |")
     return "\n".join(lines)

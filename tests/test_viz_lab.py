@@ -84,6 +84,29 @@ def test_burden_bars_render_state(fresh_db, make_item):
     assert "CA" in out and "█" in out
 
 
+def test_burden_bars_unrated_intensity_is_neutral_not_green(fresh_db, make_item):
+    """A state whose items have no burden_intensity must read ⬜ (unrated), not
+    a misleading 🟩 'all-clear'."""
+    db.upsert_items([make_item(source="legiscan", source_id="b1", title="CA bill",
+                               metadata={"topic_hint": "regulatory_rate", "state": "CA"})])
+    db.auto_keep_legiscan()
+    out = viz_lab.render_burden_bars()
+    assert "CA ⬜" in out
+    assert "🟩" not in out
+
+
+def test_burden_bars_high_intensity_is_red(fresh_db, make_item):
+    """A high-intensity regulatory item drives the state's chip to 🟥."""
+    db.upsert_items([make_item(source="state_doi", source_id="tx1", title="TX rate suppression",
+                               metadata={"topic_hint": "regulatory_rate", "state": "TX"})])
+    with db.get_conn() as c:
+        c.execute("UPDATE items SET triage_decision='keep', topic='regulatory_rate', "
+                  "state='TX', burden_intensity='high', burden_direction='increasing' "
+                  "WHERE source_id='tx1'")
+    out = viz_lab.render_burden_bars()
+    assert "TX 🟥" in out
+
+
 def test_write_viz_lab_writes_meta_note(fresh_db, tmp_path, monkeypatch):
     # Point the vault at a temp dir so the note lands somewhere writable.
     monkeypatch.setattr(viz_lab.settings, "obsidian_vault_path", str(tmp_path))
