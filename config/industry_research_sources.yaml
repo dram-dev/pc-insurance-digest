@@ -11,16 +11,18 @@ sources:
     vendor: LexisNexis Risk Solutions
     url: "https://risk.lexisnexis.com/insights-resources"
     title_filter: "auto insurance"
-    # Common patterns for insight-hub pages; verify before enabling.
-    # TODO: curl https://risk.lexisnexis.com/insights-resources and check structure.
     selector: "article, .insight-card, .resource-item, .content-card"
+    # 2026-06-02: page returns 200 but the resource feed is JS-rendered
+    # (Algolia "masonry-resource-listing" hits load client-side); static HTML
+    # holds only nav chrome (.highlight-card = Careers/News Room/…). Needs a
+    # rendered fetch or the site's search API — not a selector fix. Stay off.
     enabled: false
 
   - name: jdpower_auto
     vendor: JD Power
     url: "https://www.jdpower.com/business/press-releases"
     title_filter: "auto insurance"
-    # JD Power press releases listing; likely table or list of PR entries.
-    # TODO: curl https://www.jdpower.com/business/press-releases and confirm selector.
     selector: ".press-release-item, article.press, .pr-list li, table.press-releases tr"
+    # 2026-06-02: returns 403 (WAF/bot-blocked) even on a real browser UA. Needs
+    # a different fetch strategy before the selector can be validated. Stay off.
     enabled: false

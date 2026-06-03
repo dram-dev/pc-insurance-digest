@@ -19,11 +19,14 @@ states:
 
   - state: FL
     agency: Florida Office of Insurance Regulation
-    url_template: "https://floir.com/News"
-    selector: ".news-item"   # TODO: confirm
-    # 2026-05-30: this URL 404s — FLOIR moved its newsroom. Needs the new URL
-    # rediscovered before the selector can be validated.
-    enabled: false
+    url_template: "https://floir.gov/newsroom"
+    # Validated live 2026-06-02: FLOIR moved floir.com → floir.gov. Newsroom
+    # items are <li> in ul.list-unstyled; the headline is span.newsSummary.h-3
+    # and the only anchor is the "Full story" button carrying the item-details
+    # URL (date lives in its /YYYY/MM/DD/ path → URL-path date fallback).
+    selector: "ul.list-unstyled li:has(a[href*='item-details'])"
+    title_selector: "span.newsSummary.h-3"
+    enabled: true
 
   - state: TX
     agency: Texas Department of Insurance
