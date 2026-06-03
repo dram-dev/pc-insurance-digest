@@ -59,3 +59,68 @@ def test_rate_change_parser_handles_pct_and_bps():
     assert _parse_rate_change("-3%") == -3.0
     assert _parse_rate_change("1250 bps") == 12.5
     assert _parse_rate_change("no number here") is None
+
+
+# ── CA: YTD approvals workbook (.xlsx) ────────────────────────────────────────
+
+from datetime import datetime
+
+import openpyxl
+
+from digest.ingest import serff
+
+
+def _make_ca_xlsx(rows: list[list]) -> bytes:
+    import io
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["FILE", "NAME", "GRP #", "NAIC #", "LINE TYPE", "LINE CODE", "PROGRAM",
+               "FILING TYPE", "% RATE CHNG REQ", "% RATE CHNG APPVD", "STATUS", "CLOSED DATE"])
+    for r in rows:
+        ws.append(r)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+_CA_PAGE = '<a href="/x/Approval-Closed-List-YTD-4-30-26.xlsx">Approval and Closed List YTD 4/30/26</a>'
+
+
+def test_ca_xlsx_filters_sorts_and_caps(monkeypatch):
+    xlsx = _make_ca_xlsx([
+        ["26-1", "ACME INS", "1", "111", "PERSONAL", "HOMEOWNERS", "HO PROG", "RATE", "12.5", "11.0", "APPROVED", datetime(2026, 4, 30)],
+        ["26-2", "BETA CO",  "2", "222", "COMMERCIAL", "AUTO", "CA PROG", "RATE", "2.0", "2.0", "APPROVED", datetime(2026, 4, 29)],   # <5% → drop
+        ["26-3", "GAMMA",    "3", "333", "PERSONAL", "FIRE", "F PROG", "RATE", "", "", "APPROVED", datetime(2026, 4, 28)],            # blank → drop
+        ["26-4", "DELTA INS","4", "444", "COMMERCIAL", "OTHER LIABILITY", "X", "RATE", "-32.2", "-32.2", "CLOSED", datetime(2026, 5, 1)],
+    ])
+
+    def fake_get(u, **k):
+        if u.lower().endswith((".xlsx", ".xls")):
+            return type("R", (), {"content": xlsx, "text": "", "raise_for_status": lambda self: None})()
+        return type("R", (), {"content": b"", "text": _CA_PAGE, "raise_for_status": lambda self: None})()
+
+    monkeypatch.setattr(serff.requests, "get", fake_get)
+    items = serff.SerffIngestor()._scrape_ca_xlsx("CA", "CA DOI", "https://x/approvals/")
+    # 26-1 (12.5%) + 26-4 (-32.2%) kept; 26-2 (<5%) + 26-3 (blank) dropped; sorted by
+    # Closed Date desc → 26-4 (May 1) before 26-1 (Apr 30).
+    assert [it.source_id for it in items] == ["CA:26-4", "CA:26-1"]
+    assert items[0].metadata["rate_change_pct"] == -32.2
+    assert items[0].published_at.month == 5
+    assert items[1].title == "[CA DOI] ACME INS — +12.5% on HOMEOWNERS"
+    assert items[1].metadata["rate_change_approved_pct"] == 11.0
+
+
+def test_ca_xlsx_no_link_returns_empty(monkeypatch):
+    monkeypatch.setattr(serff.requests, "get",
+                        lambda u, **k: type("R", (), {"content": b"", "text": "<p>no files</p>",
+                                                      "raise_for_status": lambda self: None})())
+    assert serff.SerffIngestor()._scrape_ca_xlsx("CA", "x", "https://x/") == []
+
+
+def test_parse_pct_value_handles_bare_numbers_and_blanks():
+    assert serff._parse_pct_value("2.7") == 2.7
+    assert serff._parse_pct_value("-32.2") == -32.2
+    assert serff._parse_pct_value("1,234") == 1234.0
+    assert serff._parse_pct_value("-") is None
+    assert serff._parse_pct_value("") is None
+    assert serff._parse_pct_value("12.5%") == 12.5     # falls back to the %/bps parser

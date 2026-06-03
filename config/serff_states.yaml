@@ -35,12 +35,13 @@ states:
   - state: CA
     agency: California Department of Insurance
     portal: cdi_prior_approval
-    # 2026-06-03 recon: the old f?p=400 is the LOGIN-gated Apex app. The PUBLIC
-    # "Insurance Company Rate Filing Search" is f?p=186 (no login; 1 Apex form,
-    # 4 selects). Build pending — needs the interactive-render search flow +
-    # results parse (Phase 2), like serff_standard.
-    url_template: "https://interactive.web.insurance.ca.gov/apex_extprd/f?p=186"
-    enabled: false
+    # CDI publishes a YTD Excel of every approved/closed P&C rate filing on this
+    # public "Rate Filing Approvals" page — cleaner than the Apex search app: a
+    # static .xlsx with the rate % AND a real Closed Date. serff.py finds the
+    # latest workbook, downloads it, and keeps ≥min_rate_change_pct filings.
+    # Validated live 2026-06-03 (no render needed).
+    url_template: "https://www.insurance.ca.gov/0250-insurers/0800-rate-filings/0100-rate-filing-lists/rate-filing-approvals/index.cfm"
+    enabled: true
 
   # ── FL — FLOIR iRFA (Internet Rate File Access; custom) ──
   - state: FL
