@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from digest import dashboard, db, obsidian, viz_lab
+from click.testing import CliRunner
+
+from digest import cli, dashboard, db, obsidian, viz_lab
 
 
 def _put_regime():
@@ -68,6 +70,45 @@ def test_write_dashboard_writes_two_meta_notes(fresh_db, tmp_path, monkeypatch):
     names = {p.name for p in paths}
     assert names == {"Signal Desk.md", "Home.md"}
     assert all(p.exists() and p.parent.name == "_meta" for p in paths)
+
+
+# ── Weekly-job wiring ────────────────────────────────────────────────────────
+
+def _patch_weekly(monkeypatch, calls):
+    """Stub the weekly command's heavy collaborators so we can assert wiring."""
+    monkeypatch.setattr(obsidian, "publish_weekly",
+                        lambda date_iso=None: {"week": "2026-W22", "item_count": 0,
+                                               "theme_count": 0, "path": "x"})
+    monkeypatch.setattr(dashboard, "write_dashboard",
+                        lambda *a, **k: calls.append("dashboard") or [])
+
+
+def test_weekly_refreshes_dashboard_even_without_calibration(fresh_db, monkeypatch):
+    """The dashboard refresh must NOT be gated behind --calibration."""
+    calls: list[str] = []
+    _patch_weekly(monkeypatch, calls)
+
+    res = CliRunner().invoke(cli.main, ["weekly", "--no-calibration"])
+    assert res.exit_code == 0
+    assert calls == ["dashboard"]               # ran despite --no-calibration
+    assert "dashboard refresh" in res.output
+    assert "calibration loop" not in res.output  # calibration correctly skipped
+
+
+def test_weekly_runs_calibration_then_dashboard(fresh_db, monkeypatch):
+    """Default weekly run does the calibration loop AND the dashboard refresh."""
+    calls: list[str] = []
+    _patch_weekly(monkeypatch, calls)
+    from digest import learn as learn_mod
+    from digest import outcomes
+    monkeypatch.setattr(outcomes, "run_outcomes",
+                        lambda *a, **k: calls.append("outcomes") or {})
+    monkeypatch.setattr(learn_mod, "run", lambda *a, **k: calls.append("learn") or {})
+
+    res = CliRunner().invoke(cli.main, ["weekly"])
+    assert res.exit_code == 0
+    # dashboard runs last, after the calibration collaborators
+    assert calls == ["outcomes", "learn", "dashboard"]
 
 
 # ── Frontmatter enrichment ───────────────────────────────────────────────────
