@@ -24,6 +24,7 @@ Current selector status (all TODO — validate with curl on Mac mini):
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
@@ -97,8 +98,12 @@ class StateDOIIngestor(IngestorBase):
         items: list[IngestedItem] = []
         seen_urls: set[str] = set()
         for node in nodes:
-            # Title: prefer explicit heading or anchor text
-            title_el = node.select_one("a, h2, h3, h4, .title, .headline")
+            # Title: a per-state `title_selector` override (some sites put the
+            # headline in an idiosyncratic element — FL FLOIR uses
+            # span.newsSummary.h-3, with the only anchor being a "Full story"
+            # button), falling back to the common heading/anchor patterns.
+            title_sel = entry.get("title_selector") or "a, h2, h3, h4, .title, .headline"
+            title_el = node.select_one(title_sel)
             title = title_el.get_text(strip=True) if title_el else node.get_text(strip=True)[:200]
             if not title:
                 continue
@@ -121,6 +126,14 @@ class StateDOIIngestor(IngestorBase):
             date_el = node.select_one(date_sel)
             date_text = (date_el.get("datetime") or date_el.get_text(strip=True)) if date_el else ""
             pub = parse_date(date_text)
+            if pub is None:
+                # Many newsrooms encode the date only in the URL path (FL FLOIR:
+                # /newsroom/archives/item-details/2026/05/20/slug). Fall back to a
+                # YYYY/MM/DD found in the href so items aren't left undated.
+                m = re.search(r"/(\d{4})/(\d{1,2})/(\d{1,2})(?:/|$)", href)
+                if m:
+                    y, mo, d = (int(g) for g in m.groups())
+                    pub = parse_date(f"{y:04d}-{mo:02d}-{d:02d}")
 
             source_id = f"{state}:{urlparse(href).path}"
             items.append(
