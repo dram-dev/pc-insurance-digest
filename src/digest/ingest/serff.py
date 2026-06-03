@@ -74,6 +74,19 @@ def _parse_rate_change(text: str) -> float | None:
     return None
 
 
+def _parse_pct_value(text: str) -> float | None:
+    """Parse a bare percentage cell ("2.7", "12.5", "-", "0", "1,234"). Returns
+    None for blank / "-" / non-numeric. Falls back to the %/bps parser if the
+    cell carries a unit (some columns render "2.7%")."""
+    t = (text or "").strip().replace(",", "")
+    if t in ("", "-", "N/A", "n/a"):
+        return None
+    try:
+        return float(t)
+    except ValueError:
+        return _parse_rate_change(t)
+
+
 def _lob_matches(text: str, watched: list[str]) -> bool:
     if not text or not watched:
         return False
@@ -138,7 +151,7 @@ class SerffIngestor(IngestorBase):
                 return []
             return self._parse_serff_standard(state, agency, url, pages)
         elif portal == "cdi_prior_approval":
-            html = self._fetch_cdi_prior_approval(state, url)
+            return self._scrape_ca_xlsx(state, agency, url)
         elif portal == "floir_irfa":
             html = self._fetch_floir_irfa(state, url)
         else:
@@ -263,13 +276,114 @@ class SerffIngestor(IngestorBase):
                     state, len(items), len(pages), self.max_per_state)
         return items
 
-    def _fetch_cdi_prior_approval(self, state: str, url: str) -> str:
-        """CA CDI Prior Approval search. TODO: this is an Oracle Apex form;
-        likely needs session bootstrapping + POST. Stays disabled until
-        captured properly."""
-        r = requests.get(url, headers={"User-Agent": self.user_agent}, timeout=self.timeout)
-        r.raise_for_status()
-        return r.text
+    def _scrape_ca_xlsx(self, state: str, agency: str, url: str) -> list[IngestedItem]:
+        """CA: the public "Rate Filing Approvals" page links a YTD Excel of every
+        approved/closed P&C rate filing — far cleaner than the Apex search app
+        (static download, and it carries the rate % AND a real Closed Date).
+
+        Columns: FILE · NAME · GRP# · NAIC# · LINE TYPE · LINE CODE · PROGRAM ·
+        FILING TYPE · % RATE CHNG REQ · % RATE CHNG APPVD · STATUS · CLOSED DATE.
+        Keep filings whose |% requested| ≥ `min_pct`, newest Closed Date first,
+        deduped by FILE #, capped at `max_per_state`. Best-effort: any failure
+        (page/xlsx fetch, missing openpyxl) logs and returns []."""
+        import io
+        try:
+            import openpyxl
+        except ImportError:
+            logger.warning("serff: %s — openpyxl not installed; skipping", state)
+            return []
+
+        # 1. Find the newest "Approval-Closed-List-YTD" workbook on the page.
+        try:
+            r = requests.get(url, headers={"User-Agent": self.user_agent}, timeout=self.timeout)
+            r.raise_for_status()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("serff: %s page fetch failed: %s", state, exc)
+            return []
+        link = None
+        for a in BeautifulSoup(r.text, "html.parser").select("a[href]"):
+            href = a.get("href", "")
+            if "Approval-Closed-List-YTD" in href and href.lower().endswith((".xlsx", ".xls")):
+                link = href if href.startswith("http") else urljoin(url, href)
+                break  # the page lists the current-year YTD file first
+        if not link:
+            logger.warning("serff: %s — no YTD approvals workbook link found on %s", state, url)
+            return []
+
+        # 2. Download + open the workbook.
+        try:
+            xr = requests.get(link, headers={"User-Agent": self.user_agent}, timeout=max(self.timeout, 45))
+            xr.raise_for_status()
+            wb = openpyxl.load_workbook(io.BytesIO(xr.content), read_only=True, data_only=True)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("serff: %s xlsx download/parse failed: %s", state, exc)
+            return []
+
+        rows = wb.active.iter_rows(values_only=True)
+        header = next(rows, None) or ()
+        idx = {str(h).strip().upper(): i for i, h in enumerate(header) if h is not None}
+        ci_file, ci_req = idx.get("FILE"), idx.get("% RATE CHNG REQ")
+        if ci_file is None or ci_req is None:
+            logger.warning("serff: %s — unexpected workbook columns %s", state, list(idx))
+            return []
+
+        def cell(row, name):
+            i = idx.get(name)
+            return row[i] if i is not None and i < len(row) else None
+
+        # 3. Keep ≥min_pct requested changes, then newest Closed Date first.
+        kept = []
+        for row in rows:
+            req = _parse_pct_value(str(cell(row, "% RATE CHNG REQ") or ""))
+            if req is None or abs(req) < self.min_pct:
+                continue
+            kept.append((row, req))
+        kept.sort(key=lambda rr: rr[0][idx["CLOSED DATE"]] if "CLOSED DATE" in idx
+                  and rr[0][idx["CLOSED DATE"]] is not None else datetime.min, reverse=True)
+
+        items: list[IngestedItem] = []
+        seen: set[str] = set()
+        for row, req in kept:
+            file_num = str(cell(row, "FILE") or "").strip()
+            if not file_num or file_num in seen:
+                continue
+            seen.add(file_num)
+            company  = str(cell(row, "NAME") or "").strip()
+            lcode    = str(cell(row, "LINE CODE") or "").strip()
+            program  = str(cell(row, "PROGRAM") or "").strip()
+            closed   = cell(row, "CLOSED DATE")
+            pub      = closed if isinstance(closed, datetime) else parse_date(str(closed or ""))
+            appvd    = _parse_pct_value(str(cell(row, "% RATE CHNG APPVD") or ""))
+            lob_text = f"{lcode} {program}".strip()
+            items.append(
+                IngestedItem(
+                    source=self.name,
+                    source_id=f"{state}:{file_num}",
+                    title=f"[{state} DOI] {company} — {req:+.1f}% on {lcode or lob_text}",
+                    url=url,
+                    author=agency,
+                    published_at=pub,
+                    metadata={
+                        "topic_hint":               "regulatory_rate",
+                        "state":                    state,
+                        "agency":                   agency,
+                        "company":                  company,
+                        "naic":                     str(cell(row, "NAIC #") or "").strip(),
+                        "lob":                      lob_text,
+                        "line_type":                str(cell(row, "LINE TYPE") or "").strip(),
+                        "filing_id":                file_num,
+                        "filing_type":              str(cell(row, "FILING TYPE") or "").strip(),
+                        "status":                   str(cell(row, "STATUS") or "").strip(),
+                        "rate_change_pct":          req,
+                        "rate_change_approved_pct": appvd,
+                    },
+                )
+            )
+            if len(items) >= self.max_per_state:
+                break
+        logger.info("serff: %s — %d approved rate filings ≥%.1f%% from YTD workbook",
+                    state, len(items), self.min_pct)
+        return items
 
     def _fetch_floir_irfa(self, state: str, url: str) -> str:
         """FLOIR iRFA. TODO: ASP.NET form with viewstate + event target.
