@@ -100,3 +100,93 @@ def test_fetch_rendered_returns_none_on_launch_error(monkeypatch):
     _install_fake_playwright(monkeypatch, "<html/>", [], launch_error=True)
     # A missing browser binary surfaces as a launch RuntimeError → graceful None.
     assert render.fetch_rendered("https://x.test/") is None
+
+
+# ── paginated fetch ───────────────────────────────────────────────────────────
+
+class _PagedNext:
+    def __init__(self, page):
+        self._page = page
+
+    def get_attribute(self, name):
+        if name == "class":
+            last = self._page.idx >= len(self._page.pages) - 1
+            return "ui-paginator-next" + (" ui-state-disabled" if last else "")
+        return None
+
+    def click(self, timeout=None):
+        self._page.idx += 1
+
+
+class _PagedPage:
+    def __init__(self, pages):
+        self.pages, self.idx = pages, 0
+        self.actions: list = []
+
+    def goto(self, *a, **k): pass
+    def content(self): return self.pages[self.idx]
+    def query_selector(self, sel): return _PagedNext(self)
+    def click(self, sel, **k): self.actions.append(("click", sel))
+    def type(self, sel, text, **k): self.actions.append(("type", sel, text))
+    def fill(self, sel, text, **k): self.actions.append(("fill", sel, text))
+    def select_option(self, sel, **k): self.actions.append(("select", sel, k))
+    def wait_for_selector(self, *a, **k): pass
+    def wait_for_timeout(self, *a, **k): pass
+
+    @property
+    def keyboard(self):
+        page = self
+        class _K:
+            def press(self, key): page.actions.append(("press", key))
+        return _K()
+
+
+def _install_paged(monkeypatch, pages):
+    page = _PagedPage(pages)
+    mod = types.ModuleType("playwright.sync_api")
+
+    class _Br:
+        def new_page(self, **k): return page
+        def close(self): pass
+
+    class _Ch:
+        def launch(self, headless=True): return _Br()
+
+    class _Ctx:
+        chromium = _Ch()
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    mod.sync_playwright = lambda: _Ctx()
+    monkeypatch.setitem(sys.modules, "playwright", types.ModuleType("playwright"))
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", mod)
+    return page
+
+
+def test_paginated_walks_until_next_disabled(monkeypatch):
+    page = _install_paged(monkeypatch, ["<p>1</p>", "<p>2</p>", "<p>3</p>"])
+    out = render.fetch_rendered_paginated(
+        "https://x/", [("click", "#go"), ("select", "sel", "100")],
+        next_selector=".ui-paginator-next", ready_selector="tbody tr",
+        max_pages=10, page_settle_ms=0, settle_ms=0,
+    )
+    assert out == ["<p>1</p>", "<p>2</p>", "<p>3</p>"]      # stops on the disabled next
+    # setup actions ran, incl. the new 'select' verb.
+    assert ("click", "#go") in page.actions
+    assert any(a[0] == "select" for a in page.actions)
+
+
+def test_paginated_respects_max_pages(monkeypatch):
+    _install_paged(monkeypatch, ["<p>1</p>", "<p>2</p>", "<p>3</p>", "<p>4</p>"])
+    out = render.fetch_rendered_paginated(
+        "https://x/", [], next_selector=".ui-paginator-next",
+        ready_selector="tbody tr", max_pages=2, page_settle_ms=0, settle_ms=0,
+    )
+    assert out == ["<p>1</p>", "<p>2</p>"]                  # capped before the last page
+
+
+def test_paginated_returns_empty_without_playwright(monkeypatch):
+    monkeypatch.delitem(sys.modules, "playwright.sync_api", raising=False)
+    monkeypatch.setitem(sys.modules, "playwright", None)
+    assert render.fetch_rendered_paginated("https://x/", [], next_selector=".n",
+                                           ready_selector="tbody tr") == []
