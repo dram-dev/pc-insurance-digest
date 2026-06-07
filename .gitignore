@@ -8,6 +8,7 @@ secrets/*
 !secrets/README.md
 *.json
 !config/*.json
+!.mcp.json
 
 # Data
 data/
@@ -30,10 +31,13 @@ build/
 # Logs
 logs/
 
-# Claude Code session files (keep custom commands)
-.claude/
+# Claude Code files. Ignore session cruft + local settings (via .claude/*, which
+# lets git descend), but keep the version-controlled, durable project assets:
+# custom commands, subagents, and skills.
+.claude/*
 !.claude/commands/
-!.claude/commands/**
+!.claude/agents/
+!.claude/skills/
 
 # OS
 .DS_Store
