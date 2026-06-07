@@ -110,8 +110,15 @@ def fetch_8k_content(
     accession: str,
     headers: dict,
     delay_sec: float = EDGAR_FETCH_DELAY,
+    max_chars: int = 5000,
 ) -> str | None:
-    """Fetch EX-99.1 press-release content for an 8-K filing (None if absent)."""
+    """Fetch EX-99.1 press-release content for an 8-K filing (None if absent).
+
+    `max_chars` caps the extracted text; the default of 5000 preserves prior
+    behavior, but carriers (e.g. Progressive) put their combined-ratio and
+    reserve-development tables deeper in the release, so callers wanting those
+    figures should pass a larger cap.
+    """
     accession_nodashes = accession.replace("-", "")
     index_url = (
         f"https://www.sec.gov/Archives/edgar/data/{cik_int}/{accession_nodashes}/"
@@ -125,7 +132,7 @@ def fetch_8k_content(
         if not exhibit_url:
             # Fallback: caller fetches the primary document itself.
             return None
-        return fetch_html_text(exhibit_url, headers, max_chars=5000, delay_sec=delay_sec)
+        return fetch_html_text(exhibit_url, headers, max_chars=max_chars, delay_sec=delay_sec)
     except Exception as exc:  # noqa: BLE001
         logger.debug("edgar: 8-K index fetch failed (%s): %s", accession, exc)
         return None

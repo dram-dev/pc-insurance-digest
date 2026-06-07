@@ -106,3 +106,102 @@ def test_reserve_excerpt_capped_across_many_matches():
     text = ("IBNR reserves for unpaid claims. " * 500)
     out = _reserve_excerpt(text)
     assert 0 < len(out) <= 3000
+
+
+# ── Wave 4 fix: financial excerpt + per-form coverage + content-age policy ─────
+from datetime import datetime, timezone  # noqa: E402
+
+from digest.ingest.edgar import (  # noqa: E402
+    _financial_excerpt,
+    _select_filings,
+    _content_age_ok,
+    _MAX_PER_FORM,
+)
+
+
+def test_financial_excerpt_pulls_results_with_digits():
+    text = (
+        "Item 1. Business. " + ("filler " * 300)
+        + "Our combined ratio was 96.0 for 2025, net premiums written rose to "
+        + "$62.1 billion, and net income was $8.5 billion. " + ("tail " * 100)
+    )
+    out = _financial_excerpt(text)
+    assert "combined ratio" in out and "96.0" in out
+    assert "net premiums written" in out
+
+
+def test_financial_excerpt_skips_label_only_and_empty():
+    # markers present but no nearby digit → nothing captured
+    assert _financial_excerpt(
+        "We discuss our combined ratio philosophy and underwriting margin goals."
+    ) == ""
+    assert _financial_excerpt("") == ""
+
+
+def _recent(rows):
+    """Build an EDGAR filings.recent-shaped dict from (form,date,acc,doc) rows."""
+    return {
+        "form": [r[0] for r in rows],
+        "filingDate": [r[1] for r in rows],
+        "accessionNumber": [r[2] for r in rows],
+        "primaryDocument": [r[3] for r in rows],
+    }
+
+
+def test_select_filings_keeps_latest_10k_even_when_buried():
+    # 50 Form 4s (irrelevant) bury the 10-K well past any flat top-N window.
+    rows = [("4", f"2026-05-{d % 28 + 1:02d}", f"acc4-{d}", "d.htm") for d in range(50)]
+    rows += [
+        ("8-K", "2026-04-15", "acc8k", "p8.htm"),
+        ("10-K", "2026-03-02", "acc10k", "p10k.htm"),
+        ("10-Q", "2026-05-04", "acc10q", "p10q.htm"),
+    ]
+    sel = _select_filings(_recent(rows), is_fund=False)
+    forms = {s["form"] for s in sel}
+    assert "10-K" in forms and "10-Q" in forms and "8-K" in forms
+    assert "4" not in forms  # Form 4 is not a relevant form
+    assert any(s["accession"] == "acc10k" for s in sel)
+
+
+def test_select_filings_caps_per_form_and_takes_most_recent():
+    rows = [("8-K", f"2026-{m:02d}-15", f"acc-{m}", "p.htm") for m in range(1, 13)]
+    eightk = [s for s in _select_filings(_recent(rows), is_fund=False) if s["form"] == "8-K"]
+    assert len(eightk) == _MAX_PER_FORM["8-K"]            # capped at 8 of 12
+    assert all(s["filing_date"] >= "2026-05-15" for s in eightk)  # the most-recent 8
+
+
+def test_select_filings_13f_only_for_funds():
+    rows = [("13F-HR", "2026-02-14", "acc13f", "x.htm")]
+    assert _select_filings(_recent(rows), is_fund=False) == []
+    fund = _select_filings(_recent(rows), is_fund=True)
+    assert len(fund) == 1 and fund[0]["form"] == "13F-HR"
+
+
+def test_content_age_ok_per_form_caps():
+    now = datetime(2026, 6, 7, tzinfo=timezone.utc)
+    d = lambda s: datetime.fromisoformat(s).replace(tzinfo=timezone.utc)
+    assert _content_age_ok("10-K", d("2026-03-02"), now) is True    # ~97d ≤ 400
+    assert _content_age_ok("10-K", d("2025-01-01"), now) is False   # >400d
+    assert _content_age_ok("8-K", d("2026-05-20"), now) is True     # ~18d ≤ 31
+    assert _content_age_ok("8-K", d("2026-03-02"), now) is False    # ~97d > 31
+    assert _content_age_ok("10-K", None, now) is False
+    assert _content_age_ok("13F-HR", d("2026-06-01"), now) is False  # no content for 13F
+
+
+def test_fetch_8k_content_respects_max_chars(monkeypatch):
+    index_html = '<tr><td>EX-99.1</td><td><a href="/Archives/x/ex991.htm">ex</a></td></tr>'
+    exhibit_html = "<p>" + ("Z" * 5000) + "</p>"
+
+    def fake_get(url, headers=None, timeout=None):
+        class _R:
+            def raise_for_status(self):
+                pass
+        r = _R()
+        r.text = exhibit_html if url.endswith("ex991.htm") else index_html
+        return r
+
+    monkeypatch.setattr(core_edgar.requests, "get", fake_get)
+    out = core_edgar.fetch_8k_content(
+        "320193", "0000320193-26-000001", {}, delay_sec=0, max_chars=100
+    )
+    assert out is not None and len(out) == 100
