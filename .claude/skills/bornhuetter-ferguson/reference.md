@@ -54,10 +54,10 @@ CDF(2)=1.02857, CDF(3)=1.0`. So **% unreported** `= 1 − 1/CDF`:
 | 2022 | 1,950 | 44.4% | 867 | 2,167 | 2,340 |
 
 Totals: latest 6,850 · **CL ult 8,280 (IBNR 1,430)** · **BF ult 8,047 (IBNR 1,197)** —
-BF IBNR is **16% lower** than CL, and the entire difference is AY2022 (CL 2,340 vs BF
-2,167 = 173, plus 55 from 2021's smaller gap). Mature AY2019 is identical; the green
-years are where BF acts. This is the point: BF refuses to let a 1,300 diagonal × 1.8
-CDF dictate the whole 2022 ultimate.
+BF IBNR is **16% lower** than CL. The ~233 IBNR gap is concentrated in the green years:
+AY2022 ≈173 (CL 2,340 vs BF 2,167), AY2021 55, AY2020 5 — summing to the 233 total.
+Mature AY2019 is identical; the green years are where BF acts. This is the point: BF
+refuses to let a 1,300 diagonal × 1.8 CDF dictate the whole 2022 ultimate.
 
 ## 3. Cape Cod (Stanard-Bühlmann) — let the data pick the ELR
 
