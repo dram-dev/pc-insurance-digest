@@ -132,6 +132,8 @@ feed's behaviour — with the rigor of a P&C actuary. Three pieces:
   | Skill | Does |
   |---|---|
   | `reserving-chain-ladder` | loss triangles → LDF/CDF → per-AY ultimate & IBNR, adverse vs favorable development (reconciles to `reserving_signals`) |
+  | `bornhuetter-ferguson` | BF + Cape Cod reserving — blend an a-priori expected loss with development for green/low-credibility AYs; shows BF vs chain-ladder |
+  | `combined-ratio-bridge` | decompose a combined ratio into loss/LAE/expense, strip cats + prior-year development → **underlying** margin; GAAP vs statutory; period-over-period bridge |
   | `ratemaking-indication` | indicated rate change — loss-ratio & pure-premium methods |
   | `credibility-weighting` | classical + Bühlmann / empirical-Bayes credibility |
   | `glm-pricing` | Poisson / Gamma / Tweedie IRLS → multiplicative rating relativities |
