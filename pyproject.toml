@@ -28,9 +28,14 @@ dependencies = [
 # src/digest/ingest/render.py). Opt-in because it also needs a one-time browser
 # download: `uv sync --extra render && uv run playwright install chromium`.
 render = ["playwright>=1.49"]
+# Local FastMCP data-analyst server (src/digest/mcp_server.py). Opt-in so the
+# core install stays lean: `uv run --extra mcp digest-mcp` (also how .mcp.json
+# launches it for Claude Code).
+mcp = ["mcp>=1.2"]
 
 [project.scripts]
 digest = "digest.cli:main"
+digest-mcp = "digest.mcp_server:main"
 
 [build-system]
 requires = ["hatchling"]
