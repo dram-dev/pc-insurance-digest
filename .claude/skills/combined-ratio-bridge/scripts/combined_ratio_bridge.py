@@ -51,10 +51,14 @@ import sys
 def decompose(p: dict, basis: str) -> dict:
     """Turn one period's $ figures into the ratio bridge. Ratios are decimals
     (0.93 = 93%). See module docstring for the sign convention + bases."""
+    if "earned_premium" not in p:
+        sys.exit("combined-ratio: 'earned_premium' is required.")
     nep = float(p["earned_premium"])
     if nep <= 0:
-        sys.exit("earned_premium must be > 0.")
+        sys.exit("combined-ratio: earned_premium must be > 0.")
     nwp = float(p["written_premium"]) if p.get("written_premium") is not None else None
+    if nwp is not None and nwp <= 0:
+        nwp = None   # non-positive written premium is unusable → treat like missing
     pyd = float(p.get("prior_year_development", 0.0))   # + adverse, − favorable
     cat = float(p.get("cat_losses", 0.0))
     uw_exp = float(p.get("underwriting_expense", 0.0))
@@ -65,16 +69,19 @@ def decompose(p: dict, basis: str) -> dict:
     if p.get("loss_lae") is not None:
         loss_lae = float(p["loss_lae"])
         losses = lae = None
-    else:
+    elif p.get("incurred_loss") is not None:
         losses = float(p["incurred_loss"])
         lae = float(p.get("lae", 0.0))
         loss_lae = losses + lae
+    else:
+        sys.exit("combined-ratio: provide 'incurred_loss' (+ optional 'lae') or 'loss_lae'.")
 
     # Expense ratio basis.
     if basis in ("statutory", "trade"):
         if nwp is None:
-            warnings.append("statutory/trade basis requested but no written_premium — "
-                            "expense ratio fell back to earned premium (GAAP basis).")
+            warnings.append("statutory/trade basis requested but written_premium is "
+                            "missing or non-positive — expense ratio fell back to earned "
+                            "premium (GAAP basis).")
             exp_denom, exp_basis = nep, "earned (fallback)"
         else:
             exp_denom, exp_basis = nwp, "written"
@@ -133,7 +140,13 @@ def bridge(curr: dict, prior: dict) -> dict:
 
 
 def _pct(x: float | None) -> str:
-    return "   n/a" if x is None else f"{x * 100:6.2f}"
+    # round-then-+0.0 normalizes -0.0 / tiny-negatives so they don't render as "-0.00".
+    return "   n/a" if x is None else f"{round(x * 100, 2) + 0.0:6.2f}"
+
+
+def _dpct(x: float, width: int = 6) -> str:
+    """Signed percentage for the bridge, normalizing -0.0 / tiny-negative to +0.00."""
+    return f"{round(x * 100, 2) + 0.0:+{width}.2f}"
 
 
 def render_single(r: dict, label: str) -> str:
@@ -176,19 +189,19 @@ def render_bridge(curr: dict, prior: dict, d: dict, label: str) -> str:
     out = [f"Combined-ratio change bridge — {label}", "=" * 58,
            f"  prior combined    {_pct(prior['combined_ratio'])}%",
            f"  current combined  {_pct(curr['combined_ratio'])}%",
-           f"  change            {d['combined_ratio']*100:+6.2f} pts", "",
+           f"  change            {_dpct(d['combined_ratio'])} pts", "",
            "  Attribution of the change (pts of combined ratio):",
-           f"    Δ underlying (curr-AY ex-cat margin)  {d['underlying_combined']*100:+6.2f}",
-           f"      of which Δ underlying loss & LAE    {d['underlying_loss_lae_ratio']*100:+6.2f}",
-           f"               Δ expense                  {d['expense_ratio']*100:+6.2f}",
-           f"    Δ cat load                            {d['cat_ratio']*100:+6.2f}",
-           f"    Δ prior-year development              {d['pyd_ratio']*100:+6.2f}",
+           f"    Δ underlying (curr-AY ex-cat margin)  {_dpct(d['underlying_combined'])}",
+           f"      of which Δ underlying loss & LAE    {_dpct(d['underlying_loss_lae_ratio'])}",
+           f"               Δ expense                  {_dpct(d['expense_ratio'])}",
+           f"    Δ cat load                            {_dpct(d['cat_ratio'])}",
+           f"    Δ prior-year development              {_dpct(d['pyd_ratio'])}",
            f"    ────────────────────────────────────────────",
-           f"    Δ combined (check)                    {d['combined_ratio']*100:+6.2f}",
+           f"    Δ combined (check)                    {_dpct(d['combined_ratio'])}",
            "",
-           f"  Memo — calendar-year Δ loss & LAE       {d['loss_lae_ratio']*100:+6.2f}  "
-           f"(underlying {d['underlying_loss_lae_ratio']*100:+.2f} + cat "
-           f"{d['cat_ratio']*100:+.2f} + dev {d['pyd_ratio']*100:+.2f})"]
+           f"  Memo — calendar-year Δ loss & LAE       {_dpct(d['loss_lae_ratio'])}  "
+           f"(underlying {_dpct(d['underlying_loss_lae_ratio'], 0)} + cat "
+           f"{_dpct(d['cat_ratio'], 0)} + dev {_dpct(d['pyd_ratio'], 0)})"]
     if abs(d["check_identity"]) > 1e-6:
         out.append(f"    ⚠ identity off by {d['check_identity']:.2e} — check inputs")
     out += ["", "  Note: the two 'of which' lines sum to Δunderlying; the calendar-year",
@@ -244,14 +257,15 @@ def main() -> None:
             return
         period = payload
     else:
-        period = {k.replace("-", "_"): v for k, v in vars(args).items()
+        basis = args.basis
+        # argparse already yields single-underscore dest names (earned_premium, …).
+        period = {k: v for k, v in vars(args).items()
                   if v is not None and k not in ("basis", "stdin", "demo", "format")}
-        # argparse turns --earned-premium into earned_premium already; normalize names:
-        period = {k.replace("__", "_"): v for k, v in period.items()}
+        if "earned_premium" not in period:
+            ap.error("provide --earned-premium and the loss/expense figures "
+                     "(or --stdin / --demo).")
 
-    if "earned_premium" not in period:
-        ap.error("provide --earned-premium and the loss/expense figures (or --stdin / --demo).")
-    r = decompose(period, args.basis)
+    r = decompose(period, basis)
     print(json.dumps(r, indent=2) if args.format == "json" else render_single(r, "single period"))
 
 

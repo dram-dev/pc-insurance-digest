@@ -108,8 +108,10 @@ component you had to assume (e.g. cat = 0 if not disclosed).
 
 ## Output discipline
 
-Lead with underlying vs headline and the reason for the gap. E.g. *"PGR Q1 combined
-86.2 — but underlying (current-AY ex-cat) was ~88.5: the quarter booked ~$445M (≈2 pts)
-of favorable personal-auto development and ran a light ~1.7-pt cat load. Underlying
-held roughly flat QoQ, so the headline improvement is reserve-release + cat luck, not a
-step-change in current pricing margin."*
+Lead with underlying vs headline and the reason for the gap, and keep the identity
+honest (underlying = reported − cat − development). E.g. *"PGR Q1 combined 86.2 — but
+underlying (current-AY ex-cat) was ~87.6: the quarter booked ~$445M (≈2 pts) of
+favorable personal-auto development against a light ~0.6-pt cat load, so
+underlying = 86.2 − 0.6 + 2.0 ≈ 87.6. The ~1.4-pt headline flattery is the reserve
+release, not a step-change in current pricing margin — watch underlying, which held
+roughly flat QoQ."*

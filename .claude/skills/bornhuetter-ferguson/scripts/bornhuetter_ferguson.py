@@ -75,9 +75,12 @@ def cells_from_db(db_path: Path, insurer: str, lob: str, metric: str,
     return [dict(r) for r in rows], as_of
 
 
-def cells_from_stdin() -> tuple[list[dict], dict[int, float], float | None]:
-    """Accept {"cells":[{ay,dev,value}], "premiums":{ay:val}, "elr":x} (or a dense
-    {"accident_years","dev_periods","rows"} matrix). Returns (cells, premiums, elr)."""
+def cells_from_stdin() -> tuple[list[dict], dict[int, float], float | None,
+                                 dict[int, float] | None]:
+    """Accept {"cells":[{ay,dev,value}], "premiums":{ay:val}, "elr":x, "apriori":{ay:ult}}
+    (or a dense {"accident_years","dev_periods","rows"} matrix). Returns
+    (cells, premiums, elr, apriori) — apriori = directly-supplied a-priori ultimates
+    by AY (overrides premium×ELR), or None."""
     payload = json.load(sys.stdin)
     if "cells" in payload:
         cells = [{"ay": c["ay"], "dev": c["dev"], "value": c["value"]}
@@ -92,11 +95,13 @@ def cells_from_stdin() -> tuple[list[dict], dict[int, float], float | None]:
                     cells.append({"ay": ay, "dev": dev, "value": float(v)})
     premiums = {int(k): float(v) for k, v in payload.get("premiums", {}).items()}
     elr = float(payload["elr"]) if payload.get("elr") is not None else None
-    return cells, premiums, elr
+    apriori = {int(k): float(v) for k, v in payload.get("apriori", {}).items()} or None
+    return cells, premiums, elr, apriori
 
 
 def parse_premiums(spec: str | None) -> dict[int, float]:
-    """'2019:2400,2020:2640' → {2019: 2400.0, 2020: 2640.0}."""
+    """'2019:2400,2020:2640' → {2019: 2400.0, 2020: 2640.0}. Exits on a malformed
+    entry; warns (and keeps the last) on a duplicate accident year."""
     if not spec:
         return {}
     out: dict[int, float] = {}
@@ -104,8 +109,17 @@ def parse_premiums(spec: str | None) -> dict[int, float]:
         pair = pair.strip()
         if not pair:
             continue
-        ay, val = pair.split(":")
-        out[int(ay)] = float(val)
+        ay_s, sep, val_s = pair.partition(":")
+        if not sep:
+            sys.exit(f"--premiums: malformed entry {pair!r}, expected 'AY:premium'.")
+        try:
+            ay, val = int(ay_s), float(val_s)
+        except ValueError:
+            sys.exit(f"--premiums: malformed entry {pair!r}, expected 'AY:premium'.")
+        if ay in out:
+            print(f"warning: --premiums has a duplicate AY {ay}; keeping {val}.",
+                  file=sys.stderr)
+        out[ay] = val
     return out
 
 
@@ -137,12 +151,15 @@ def develop(cells: list[dict], tail: float = 1.0, min_credible: int = 3) -> dict
                 ratios.append(b / a)
         vw = (num / den) if den > 0 else 1.0
         n = len(ratios)
-        cv = (statistics.stdev(ratios) / statistics.fmean(ratios)
-              if n >= 2 and statistics.fmean(ratios) else None)
+        simple = statistics.fmean(ratios) if ratios else 0.0
+        cv = (statistics.stdev(ratios) / simple) if n >= 2 and simple else None
         if n < min_credible:
             warnings.append(f"factor dev {d0}->{d1} rests on {n} link ratio(s) "
                             f"(< {min_credible}) — low credibility; this is exactly "
                             f"where BF helps most.")
+        if vw < 1.0:
+            warnings.append(f"factor dev {d0}->{d1} = {vw:.4f} < 1.0 (downward "
+                            f"development — verify; salvage/subro or incurred releases).")
         factors.append({"from_dev": d0, "to_dev": d1, "factor": round(vw, 6),
                         "cv": round(cv, 4) if cv is not None else None, "n_ratios": n})
 
@@ -174,19 +191,23 @@ def develop(cells: list[dict], tail: float = 1.0, min_credible: int = 3) -> dict
 
 
 def cape_cod_elr(per_ay: list[dict], premiums: dict[int, float]) -> dict | None:
-    """Stanard-Bühlmann ELR = Σ latest actual / Σ (premium × pct_developed).
-    Needs a premium for every developed AY; returns None otherwise."""
+    """Stanard-Bühlmann ELR = Σ latest actual / Σ (premium × pct_developed), over the
+    AYs that have a premium and a defined CDF (AYs without a premium are skipped, not
+    fatal). None if no usable AY. The derived ELR is then applied only to AYs that have
+    a premium, so deriving over a subset is consistent with how apply_bf uses it."""
     loss_sum = used_up = 0.0
+    n_ay = 0
     for r in per_ay:
         prem = premiums.get(r["accident_year"])
         if prem is None or r["pct_developed"] is None:
-            return None
+            continue
         loss_sum += r["latest"]
         used_up += prem * r["pct_developed"]
-    if used_up <= 0:
+        n_ay += 1
+    if n_ay == 0 or used_up <= 0:
         return None
     return {"elr": loss_sum / used_up, "actual_total": round(loss_sum, 2),
-            "used_up_premium": round(used_up, 2)}
+            "used_up_premium": round(used_up, 2), "n_ay": n_ay}
 
 
 def apply_bf(per_ay: list[dict], premiums: dict[int, float], elr: float,
@@ -196,22 +217,28 @@ def apply_bf(per_ay: list[dict], premiums: dict[int, float], elr: float,
     rows = []
     for r in per_ay:
         ay = r["accident_year"]
-        cl_ult = r["latest"] * r["cdf"]
+        cl_ult = r["latest"] * r["cdf"] if r["cdf"] else r["latest"]
+        cl_ibnr = cl_ult - r["latest"]
         apriori = None
         if apriori_override and ay in apriori_override:
             apriori = apriori_override[ay]
         elif ay in premiums:
             apriori = premiums[ay] * elr
-        if apriori is None:
-            rows.append({**r, "apriori_ult": None, "cl_ult": round(cl_ult, 2),
-                         "cl_ibnr": round(cl_ult - r["latest"], 2),
-                         "bf_ult": None, "bf_ibnr": None,
-                         "note": "no premium/a-priori → CL only"})
+        # No a-priori (no premium) or an undefined CDF → fall back to chain-ladder for
+        # THIS AY, so the BF totals stay comparable to CL (never an ultimate below paid).
+        if apriori is None or r["pct_unreported"] is None:
+            note = ("no premium/a-priori → chain-ladder for this AY" if apriori is None
+                    else "undefined CDF → chain-ladder for this AY")
+            rows.append({**r,
+                         "apriori_ult": round(apriori, 2) if apriori is not None else None,
+                         "cl_ult": round(cl_ult, 2), "cl_ibnr": round(cl_ibnr, 2),
+                         "bf_ult": round(cl_ult, 2), "bf_ibnr": round(cl_ibnr, 2),
+                         "note": note})
             continue
         bf_ibnr = apriori * r["pct_unreported"]
         bf_ult = r["latest"] + bf_ibnr
         rows.append({**r, "apriori_ult": round(apriori, 2),
-                     "cl_ult": round(cl_ult, 2), "cl_ibnr": round(cl_ult - r["latest"], 2),
+                     "cl_ult": round(cl_ult, 2), "cl_ibnr": round(cl_ibnr, 2),
                      "bf_ult": round(bf_ult, 2), "bf_ibnr": round(bf_ibnr, 2)})
     return rows
 
@@ -253,10 +280,9 @@ def render_text(dev: dict, rows: list[dict], elr: float, elr_source: str,
             f"  latest (current diagonal): {t['latest']:>16,.0f}",
             f"  chain-ladder ultimate:     {t['cl_ult']:>16,.0f}   IBNR {t['cl_ibnr']:>14,.0f}",
             f"  Bornhuetter-Ferguson ult:  {t['bf_ult']:>16,.0f}   IBNR {t['bf_ibnr']:>14,.0f}"]
-    if t["cl_ibnr"]:
-        diff = t["bf_ibnr"] - t["cl_ibnr"]
-        out.append(f"  BF − CL IBNR:              {diff:>16,.0f}   "
-                   f"({diff / t['cl_ibnr'] * 100:+.1f}% vs CL)")
+    diff = t["bf_ibnr"] - t["cl_ibnr"]
+    pct = f"   ({diff / t['cl_ibnr'] * 100:+.1f}% vs CL)" if t["cl_ibnr"] else ""
+    out.append(f"  BF − CL IBNR:              {diff:>16,.0f}{pct}")
     if dev["warnings"]:
         out += ["", "⚠ Credibility / data warnings:"]
         out += [f"  - {w}" for w in dev["warnings"]]
@@ -299,6 +325,9 @@ def main() -> None:
     ap.add_argument("--format", choices=["text", "json"], default="text")
     args = ap.parse_args()
 
+    if args.tail <= 0:
+        ap.error("--tail must be positive (it is a CDF multiplier to ultimate).")
+
     apriori_override = None
     if args.demo:
         cells = [{"ay": c["ay"], "dev": c["dev"], "value": c["value"]} for c in _DEMO["cells"]]
@@ -306,7 +335,12 @@ def main() -> None:
         cli_elr = _DEMO["elr"]
         label = "DEMO (reference.md worked example)"
     elif args.stdin:
-        cells, premiums, cli_elr = cells_from_stdin()
+        cells, premiums, cli_elr, apriori_override = cells_from_stdin()
+        # CLI flags, when given, override values embedded in the stdin payload.
+        if args.premiums:
+            premiums = parse_premiums(args.premiums)
+        if args.elr is not None:
+            cli_elr = args.elr
         label = "stdin triangle"
     else:
         if not (args.insurer and args.lob and args.metric):
@@ -315,25 +349,26 @@ def main() -> None:
         premiums, cli_elr = parse_premiums(args.premiums), args.elr
         label = f"{args.insurer} / {args.lob} / {args.metric} @ {as_of}"
 
-    if args.premiums and not args.demo:
-        premiums = parse_premiums(args.premiums) or premiums
-    if args.elr is not None:
-        cli_elr = args.elr
-
     dev = develop(cells, tail=args.tail, min_credible=args.min_credible)
     cc = cape_cod_elr(dev["per_ay"], premiums) if premiums else None
 
-    # ELR selection: --cape-cod forces the derived ELR; else a supplied --elr;
-    # else fall back to Cape Cod if premiums are present; else there's no a-priori.
-    if args.cape_cod and cc is not None:
+    # ELR selection. --cape-cod must be able to derive (else fail loudly, don't silently
+    # fall back to --elr); then a supplied --elr; then an implicit Cape Cod when premiums
+    # exist but no --elr was given (labelled so it isn't mistaken for an explicit pick);
+    # finally, directly-supplied a-priori ultimates can stand in with no ELR at all.
+    if args.cape_cod:
+        if cc is None:
+            sys.exit("--cape-cod needs --premiums to derive an ELR, but none are usable.")
         elr, elr_source = cc["elr"], "Cape Cod (derived)"
     elif cli_elr is not None:
         elr, elr_source = cli_elr, "supplied a-priori ELR"
     elif cc is not None:
-        elr, elr_source = cc["elr"], "Cape Cod (derived)"
+        elr, elr_source = cc["elr"], "Cape Cod (derived; no --elr given)"
+    elif apriori_override:
+        elr, elr_source = 0.0, "directly-supplied a-priori ultimates"
     else:
-        sys.exit("Provide --elr, or --premiums (for --cape-cod), or a-priori ultimates. "
-                 "BF needs an a-priori expected loss for the undeveloped part.")
+        sys.exit("Provide --elr, --premiums (for --cape-cod), or stdin 'apriori' "
+                 "ultimates. BF needs an a-priori expected loss for the undeveloped part.")
 
     rows = apply_bf(dev["per_ay"], premiums, elr, apriori_override)
 
