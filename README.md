@@ -7,7 +7,7 @@ the same Obsidian vault (lands in `81 P&C Digest` next to `80 Digest`).
 For the full design context (locked decisions, scoring formula, regime axes,
 Regulatory Sonar, etc.), see [CLAUDE.md](CLAUDE.md).
 
-## Status (Waves 1–4 shipped · all sources live · digest-core foundation extracted)
+## Status (Waves 1–4 shipped · all sources live · digest-core foundation extracted · local Analyst MCP agent)
 
 **Pipeline:** `ingest → triage (Ollama Qwen2.5:14b) → summarize (MLX Qwen3.5-27B
 local) → score (signals leaderboard) → publish (Obsidian)`. Every stage's LLM is
@@ -16,7 +16,10 @@ backend/model/endpoint per stage and pings each for reachability.
 
 **Ingestors (live):**
 - **EDGAR** — 15-insurer universe (TRV, ALL, PGR, CB, HIG, AIG, MET, PRU, RNR,
-  EG, AXS, MMC, AON, WTW, BRK); 8-K/10-Q/10-K body fetch; Python auto-keep
+  EG, AXS, MMC, AON, WTW, BRK); per-form selection so the annual 10-K is never
+  buried behind monthly 8-Ks / Form 4s; age-aware body fetch (a fresh 10-K gets
+  its content even months late, fetched once) with MD&A combined-ratio /
+  reserve-development extraction; Python auto-keep
 - **Trade press** — Insurance Journal, Reinsurance News, Artemis, Carrier
   Management + Google News `site:` proxies for FT / Economist / WSJ /
   Bloomberg insurance desks
@@ -105,6 +108,38 @@ candidate Markdown-viz techniques.
 best-effort + lazy-connected and no-ops unless `DATABRICKS_ENABLED=true`;
 SQLite remains source of truth.
 
+## Analyst — local data-analyst agent (MCP)
+
+A read-only analytics agent over the warehouse, for asking *why* about the
+ingested data — root-cause a ranking, decompose a reserving signal, explain a
+feed's behaviour — with the rigor of a P&C actuary. Three pieces:
+
+- **Agent Server** ([src/digest/mcp_server.py](src/digest/mcp_server.py)) — a
+  FastMCP stdio server opened **read-only** (`mode=ro`), so no tool — including
+  arbitrary `run_sql` — can mutate the source of truth. Tools: `run_sql`,
+  `list_tables`, `describe_table`, `data_overview`, `score_breakdown` (decomposes
+  the 12-factor leaderboard for one item), `pipeline_health`, `source_quality`,
+  `top_signals`; plus `schema://overview` / `formula://scoring` resources and an
+  `analyst` prompt. Claude Code auto-discovers it via [.mcp.json](.mcp.json); run
+  standalone with `uv run --extra mcp digest-mcp`.
+- **Analyst subagent** ([.claude/agents/analyst.md](.claude/agents/analyst.md)) —
+  a senior P&C **actuary + data scientist** persona scoped to the Agent Server
+  tools and the method skills below.
+- **Method skills** ([.claude/skills/](.claude/skills/)) — modular, on-demand
+  actuarial techniques, each a `SKILL.md` + `reference.md` + a stdlib-only,
+  hand-calc-verified helper script:
+
+  | Skill | Does |
+  |---|---|
+  | `reserving-chain-ladder` | loss triangles → LDF/CDF → per-AY ultimate & IBNR, adverse vs favorable development (reconciles to `reserving_signals`) |
+  | `ratemaking-indication` | indicated rate change — loss-ratio & pure-premium methods |
+  | `credibility-weighting` | classical + Bühlmann / empirical-Bayes credibility |
+  | `glm-pricing` | Poisson / Gamma / Tweedie IRLS → multiplicative rating relativities |
+  | `severity-trend-decomposition` | log-linear loss-cost trend + frequency × severity split |
+
+Enable with the `mcp` extra (`uv sync --extra mcp`). The agent reads the live
+SQLite warehouse, so analytics work with no MLX / Databricks.
+
 ## Shared core (`digest-core`)
 
 The pipeline's domain-agnostic mechanics live in a uv-workspace package,
@@ -149,7 +184,8 @@ Staggered with macro digest to avoid MLX contention:
 - Optional: the `render` extra + Playwright Chromium (`uv sync --extra render &&
   uv run playwright install chromium`) for JS/WAF-blocked sources;
   COURTLISTENER_TOKEN and LEGISCAN_API_KEY for those ingestors; ANTHROPIC_API_KEY
-  / GEMINI_API_KEY for fallback summarizer backends; Databricks workspace
+  / GEMINI_API_KEY for fallback summarizer backends; the `mcp` extra
+  (`uv sync --extra mcp`) for the local Analyst agent; Databricks workspace
   credentials if enabling the medallion sink (Reddit needs no key — it uses the
   public `.rss` feed)
 
