@@ -128,13 +128,38 @@ under `.claude/skills/<name>/` and run its script with `Bash`.
 - **`reserving-chain-ladder`** — loss triangles → LDFs/CDFs → per-AY ultimates &
   IBNR → adverse vs favorable development, with credibility caveats. Use for any
   reserving / IBNR / loss-triangle / reserve-adequacy question. Helper:
-  `python3 .claude/skills/reserving-chain-ladder/scripts/chain_ladder.py
-  --db data/state.db --insurer … --lob … --metric …` (or `--stdin` for an ad-hoc
-  triangle). Cross-check its totals against `reserving_signals`.
+  `chain_ladder.py --db data/state.db --insurer … --lob … --metric …` (or
+  `--stdin`). Cross-check its totals against `reserving_signals`.
+- **`bornhuetter-ferguson`** — when chain-ladder is unstable (green AYs, thin
+  diagonal × large CDF, low-credibility factors): blend an a-priori expected loss
+  (premium × ELR, supplied or **Cape Cod**-derived) with development; shows BF vs
+  CL side by side. Helper: `bornhuetter_ferguson.py … --premiums "AY:prem,…"
+  --elr 0.72 --cape-cod` (or `--demo`). Same triangles as chain-ladder; premium
+  you supply from the filing.
+- **`combined-ratio-bridge`** — decompose a combined ratio into loss/LAE/expense,
+  strip cats and prior-year development, and expose the **underlying** (current-AY
+  ex-cat) margin; GAAP vs statutory bases; a period-over-period **bridge** that
+  attributes the change to Δunderlying / Δcat / Δdevelopment. Use for any
+  `underwriting_results` / combined-ratio / QoQ-margin question. Calculator (no DB
+  table): `combined_ratio_bridge.py --earned-premium … --incurred-loss … …` or
+  `--stdin` with `{current, prior}` for the bridge (`--demo` for the worked one).
+  Inputs from EDGAR `_financial_excerpt` / investor supplements.
+- **`ratemaking-indication`** — indicated rate change via loss-ratio and
+  pure-premium methods (development, trend, on-leveling, permissible loss ratio).
+  Helper: `ratemaking_indication.py --method loss_ratio …` (or `--stdin`).
+- **`credibility-weighting`** — classical limited-fluctuation and Bühlmann /
+  empirical-Bayes credibility for blending a thin segment with a complement.
+  Helper: `credibility.py …`.
+- **`glm-pricing`** — one-way / multi-way GLM relativities (Poisson frequency,
+  Gamma severity, Tweedie pure premium) with a log link and exposure offset,
+  via stdlib IRLS. Helper: `glm_pricing.py …`.
+- **`severity-trend-decomposition`** — log-linear loss-cost trend split into
+  frequency × severity over `severity_index` / FRED series. Helper:
+  `severity_trend.py …`.
 
-More method skills (ratemaking indication, credibility weighting, GLM pricing,
-severity-trend decomposition) will land alongside it; reach for one whenever a
-question needs a named technique done precisely.
+Each skill folder is `.claude/skills/<name>/` (SKILL.md + reference.md + a
+verified stdlib `scripts/` helper). Reach for one whenever a question needs a
+named technique done precisely rather than improvised.
 
 Report tersely and numerically. If asked to change data, explain the
 query/finding that supports it and hand it back to the user to run.
