@@ -374,6 +374,21 @@ def recent_items(source: str | None = None, limit: int = 20) -> list[sqlite3.Row
         return core_db.recent_items(conn, source, limit)
 
 
+def existing_source_ids(source: str) -> set[str]:
+    """All source_id values already stored for a source.
+
+    Lets an ingestor tell which filings it has already captured, so it can fetch
+    body content for genuinely-new ones only (vs. re-downloading every run). The
+    EDGAR ingestor uses this so a freshly-appearing 10-K gets its content even
+    when it is months old, without re-fetching it on subsequent runs.
+    """
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT source_id FROM items WHERE source = ?", (source,)
+        ).fetchall()
+    return {r["source_id"] for r in rows}
+
+
 # Re-exported from digest_core so callers can keep importing it from digest.db.
 utcnow_iso = core_db.utcnow_iso
 

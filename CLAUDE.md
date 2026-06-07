@@ -370,12 +370,20 @@ as `ai_insurtech`:
 | 10-K    | `underwriting_results` |
 | 13F-HR  | `ma_capital`           |
 
-`src/digest/ingest/edgar.py` fetches body content for 8-K (EX-99.1 press
-release) and 10-Q/10-K (primary doc head, 5K chars) within a 21-day
-cutoff. Older filings reach summarize.py with empty content; the
-`_maybe_stub_insurer_filing` short-circuit emits a deterministic stub
-(materiality 0.9, confidence low) instead of calling MLX — preventing
-the "...no body content..." hallucination pattern.
+`src/digest/ingest/edgar.py` selects the most recent filings **per form**
+(`_MAX_PER_FORM`: latest 10-K, 2× 10-Q, 8× 8-K, 2× 13F-HR) rather than a
+flat top-N — so a chatty filer's monthly 8-Ks + Form 4s can't bury the
+annual 10-K. Body content is fetched only for filings **not already in the
+DB** (`db.existing_source_ids`) and within a **per-form age cap**
+(`_CONTENT_MAX_AGE_DAYS`: 10-K 400d, 10-Q 150d, 8-K 31d), so a 10-K first
+seen months after filing still arrives with content but is never re-fetched.
+Content = 8-K EX-99.1 (20K chars) or, for 10-Q/10-K, the primary-doc head
+plus extracted MD&A windows — `_financial_excerpt` (combined ratio /
+premiums / net income, digit-gated) and `_reserve_excerpt` (loss-reserve
+note). A filing that still reaches summarize.py with empty content hits the
+`_maybe_stub_insurer_filing` short-circuit — a deterministic stub
+(materiality 0.9, confidence low) instead of an MLX call — preventing the
+"...no body content..." hallucination pattern.
 
 ### Obsidian output
 
