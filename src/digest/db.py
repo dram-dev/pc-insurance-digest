@@ -350,6 +350,11 @@ MIGRATIONS = [
         as_of         TEXT
     )""",
     "CREATE INDEX IF NOT EXISTS idx_statutory_insurer ON statutory_facts(insurer, dataset)",
+    # Canonical LOB taxonomy (digest.parse.lob_canonical) — unifies the messy,
+    # source-specific LOB strings across SEC-XBRL + statutory so cross-insurer
+    # rollups line up. Populated at upsert time; backfill via db.backfill_canonical_lob().
+    "ALTER TABLE loss_triangles ADD COLUMN canonical_lob TEXT",
+    "ALTER TABLE statutory_facts ADD COLUMN canonical_lob TEXT",
 ]
 
 
@@ -2107,18 +2112,54 @@ def upsert_learned_score(
 
 
 def upsert_triangle_cells(cells: list[dict]) -> int:
-    """Bulk-insert loss-triangle cells. Returns rows written."""
+    """Bulk-insert loss-triangle cells (canonical_lob derived here so every
+    triangle source — SEC-XBRL or NAIC — is canonicalized uniformly)."""
     if not cells:
         return 0
+    from digest.parse.lob_canonical import canonicalize_lob
+    rows = [{**c, "canonical_lob": c.get("canonical_lob") or canonicalize_lob(c["lob"])}
+            for c in cells]
     with get_conn() as conn:
         conn.executemany(
             """INSERT OR REPLACE INTO loss_triangles
-                 (insurer, lob, metric, accident_year, dev_period, cumulative_value, as_of)
+                 (insurer, lob, metric, accident_year, dev_period, cumulative_value,
+                  as_of, canonical_lob)
                VALUES (:insurer, :lob, :metric, :accident_year, :dev_period,
-                       :cumulative_value, :as_of)""",
-            cells,
+                       :cumulative_value, :as_of, :canonical_lob)""",
+            rows,
         )
-    return len(cells)
+    return len(rows)
+
+
+def canonical_lob_coverage() -> list[sqlite3.Row]:
+    """Per-canonical-LOB: how many insurers and distinct raw LOBs roll up to it."""
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT canonical_lob, COUNT(DISTINCT insurer) AS insurers,
+                      COUNT(DISTINCT lob) AS raw_lobs
+               FROM loss_triangles WHERE canonical_lob IS NOT NULL
+               GROUP BY canonical_lob ORDER BY insurers DESC, raw_lobs DESC"""
+        ).fetchall()
+
+
+def backfill_canonical_lob() -> dict[str, int]:
+    """Populate canonical_lob for existing loss_triangles + statutory_facts rows
+    (one UPDATE per distinct raw LOB). Idempotent."""
+    from digest.parse.lob_canonical import canonicalize_lob
+    counts: dict[str, int] = {}
+    with get_conn() as conn:
+        for table, col in (("loss_triangles", "lob"), ("statutory_facts", "line")):
+            raw = [r[0] for r in conn.execute(
+                f"SELECT DISTINCT {col} FROM {table} WHERE {col} IS NOT NULL")]
+            n = 0
+            for value in raw:
+                cur = conn.execute(
+                    f"UPDATE {table} SET canonical_lob=? WHERE {col}=?",
+                    (canonicalize_lob(value), value),
+                )
+                n += cur.rowcount
+            counts[table] = n
+    return counts
 
 
 _XBRL_FACT_COLUMNS = (
@@ -2161,6 +2202,7 @@ def _statutory_fact_key(f: dict) -> str:
 
 def upsert_statutory_facts(facts: list[dict]) -> int:
     """Bulk-upsert statutory high-level facts; idempotent on a derived fact_key."""
+    from digest.parse.lob_canonical import canonicalize_lob
     rows = []
     for f in facts:
         r = dict(f)
@@ -2171,6 +2213,7 @@ def upsert_statutory_facts(facts: list[dict]) -> int:
         r.setdefault("unit", None)
         r.setdefault("as_of", None)
         r["fact_key"] = f.get("fact_key") or _statutory_fact_key(f)
+        r["canonical_lob"] = canonicalize_lob(r["line"]) if r["line"] else None
         rows.append(r)
     if not rows:
         return 0
@@ -2178,9 +2221,9 @@ def upsert_statutory_facts(facts: list[dict]) -> int:
         conn.executemany(
             """INSERT OR REPLACE INTO statutory_facts
                  (fact_key, insurer, source, dataset, field, line, accident_year,
-                  period, value, unit, as_of)
+                  period, value, unit, as_of, canonical_lob)
                VALUES (:fact_key, :insurer, :source, :dataset, :field, :line,
-                       :accident_year, :period, :value, :unit, :as_of)""",
+                       :accident_year, :period, :value, :unit, :as_of, :canonical_lob)""",
             rows,
         )
     return len(rows)

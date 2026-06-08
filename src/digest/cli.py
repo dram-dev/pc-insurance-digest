@@ -333,6 +333,33 @@ def learn(horizon: int) -> None:
     console.print(f"  [green]✓[/green] learned_score written for {s.get('scored', 0)} items")
 
 
+@main.command()
+def canonicalize() -> None:
+    """Backfill canonical_lob across loss_triangles + statutory_facts.
+
+    Maps the messy source-specific LOB strings (SEC-XBRL member slugs, statutory
+    lines) onto one comparison taxonomy so cross-insurer rollups line up. Runs at
+    upsert time too; this backfills rows ingested before the column existed.
+    """
+    from digest.parse.lob_canonical import CANONICAL_LOBS
+
+    db.init_db()
+    console.rule("[bold cyan]LOB canonicalization")
+    counts = db.backfill_canonical_lob()
+    console.print(f"[green]✓[/green] loss_triangles={counts['loss_triangles']:,} rows, "
+                  f"statutory_facts={counts['statutory_facts']:,} rows")
+    rows = db.canonical_lob_coverage()
+    if rows:
+        table = Table(title="Canonical LOB coverage (loss_triangles)")
+        table.add_column("Canonical LOB", no_wrap=True)
+        table.add_column("Insurers", justify="right")
+        table.add_column("Raw LOBs", justify="right")
+        for r in rows:
+            table.add_row(r["canonical_lob"] or "—", str(r["insurers"]), str(r["raw_lobs"]))
+        console.print(table)
+    console.print(f"[dim]taxonomy: {', '.join(CANONICAL_LOBS)}[/dim]")
+
+
 @main.command(name="ingest-naic")
 def ingest_naic() -> None:
     """Load NAIC InsData Schedule P exports → loss_triangles + statutory_facts.
