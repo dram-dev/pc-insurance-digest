@@ -33,10 +33,15 @@ derivation, and when each method wins, read [reference.md](reference.md).
 ## Where the data lives
 
 - **`loss_triangles`** — `(insurer, lob, metric, accident_year, dev_period,
-  cumulative_value, as_of)`; `metric` is `'paid'` or `'incurred'`. Same table the
-  chain-ladder skill reads. The triangle gives you development; **premium does not
-  live here** — you supply it (from the filing, investor supplement, or a planned
-  loss ratio).
+  cumulative_value, as_of, canonical_lob)`; `metric` is `'paid'` or `'incurred'`.
+  Same table the chain-ladder skill reads; now spans the top-10 SEC insurers and
+  carries `canonical_lob` for cross-insurer comparison. The triangle gives
+  development; for the **premium a-priori**, `insurer_xbrl_facts` dataset=
+  `premiums` (field `premiums_earned_net`, by segment × fiscal year — calendar-year
+  earned ≈ accident-year earned for a steady book; see
+  `digest.fundamentals.earned_premium_by_segment`) or `statutory_facts` DPW for
+  the mutuals. Segment ≠ a single triangle LOB, so map with judgment, or supply
+  premium directly with `--premiums` / Cape Cod (`--cape-cod`).
 - **`reserving_signals`** — the pipeline's stored chain-ladder ultimate/IBNR per key.
   BF should bracket this: BF and CL agree on mature AYs and differ on green ones.
 - **`disclosure_sentiment`** — reserve tone (strengthening/releasing); cross-read the

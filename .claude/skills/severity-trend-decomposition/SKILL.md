@@ -67,9 +67,12 @@ echo '{"frequency":[...],"severity":[...]}' | python3 .../severity_trend.py --st
   loss-cost regime (cross-check via the `agent-server` tools).
 - **FRED series** also live in `items` (source='fred') as the cost-driver
   anomalies; pull a level series there if `severity_index` is sparse.
-- **Frequency** isn't directly in a single table — derive it from claim-count
-  exhibits (EDGAR/statutory) or proxy it; then decompose against the severity
-  tape. If you only have severity, say so and report severity trend alone.
+- **Frequency** is now in the warehouse: `insurer_xbrl_facts` dataset=
+  `claim_counts` (concept ShortdurationInsuranceContractsNumberOfReportedClaims)
+  is reported claim counts by `accident_year` × `product` for the top-10 SEC
+  insurers — the FREQUENCY series. Trend it and decompose against the severity
+  tape (`fundamentals(ticker)` or query directly). If you only have severity,
+  say so and report severity trend alone.
 
 ## Feeds the rest of the pipeline
 

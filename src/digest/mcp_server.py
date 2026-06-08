@@ -451,6 +451,22 @@ def top_signals(limit: int = 10, since_days: int | None = None, source: str | No
     return _json({"limit": capped, "since_days": since_days, "source": source, "items": out})
 
 
+@mcp.tool()
+def fundamentals(insurer: str) -> str:
+    """Insurer fundamentals from the 10-K XBRL concept-registry + statutory feeds.
+
+    Cross-dataset headline for one insurer (ticker, e.g. 'PGR'): which datasets
+    are populated (premiums, claim_counts=frequency, ibnr, reserve_development,
+    investments, combined_ratio, …), total net earned premium, loss-triangle
+    coverage by canonical LOB, and the largest prior-year reserve developments.
+    Drill into insurer_xbrl_facts via run_sql for the component breakdown, or use
+    statutory_facts for the mutuals (State Farm et al.) absent from SEC XBRL.
+    """
+    from digest import fundamentals as fmod
+
+    return _json(fmod.insurer_fundamentals(insurer))
+
+
 # ── Resources ─────────────────────────────────────────────────────────────
 
 
@@ -499,10 +515,25 @@ use most for insight + root-cause work:
 - **severity_index** — blended loss-cost severity tape (inflation boost).
 - **litigation_pressure** — per-state×sector verdict/TPLF/docket composite.
 - **loss_triangles** / **reserving_signals** — chain-ladder adverse-development.
+  loss_triangles now spans the top-10 SEC P&C insurers (was PGR-only) and carries
+  **canonical_lob** (unified taxonomy) so lines compare across insurers.
 - **disclosure_sentiment** — reserve tone read over EDGAR filings.
 - **capital_flows** — structured insurtech deal facts.
 - **fred_baseline** — FRED anomaly z-score baselines.
 - **item_embeddings** — per-item title+summary vectors (semantic neighbours).
+
+## Insurer fundamentals registry (10-K XBRL concept-registry + statutory)
+- **insurer_xbrl_facts** — component-level facts for the top-10 SEC P&C insurers,
+  one row per (concept × dimensional context). `dataset` ∈ premiums, claim_counts
+  (FREQUENCY by accident_year), ibnr, reserve_development, unpaid_claims,
+  reinsurance, investment_income/portfolio/gains, aoci, dac, segment_results,
+  combined_ratio, triangle. Dims: segment/product/subsegment/accident_year/
+  geography/investment_type. value in USD millions (counts raw). Prefer the
+  `fundamentals(insurer)` tool for a headline read.
+- **statutory_facts** — high-level facts for the big mutuals NOT in SEC XBRL
+  (State Farm, USAA, Liberty Mutual, Farmers, American Family): direct premiums
+  written + market share by line (free III feed, source='iii'), source-tagged.
+  Carries canonical_lob. This is the only window onto the #1 US insurer.
 
 ## Joins worth knowing
 - signal_scores.item_id → items.id (latest row = MAX(computed_at) per item_id).
@@ -614,7 +645,14 @@ Analytical discipline ON THIS WAREHOUSE:
   loss_triangles / reserving_signals through a chain-ladder lens and flag thin,
   low-credibility triangles instead of over-reading them.
 - Treat severity_index / FRED series as loss-cost TREND; decompose frequency vs
-  severity wherever the data lets you.
+  severity wherever the data lets you — `insurer_xbrl_facts` dataset='claim_counts'
+  is reported claim counts by accident year (the FREQUENCY half); dataset=
+  'combined_ratio'/'premiums' give the combined-ratio-bridge inputs.
+- Use the **fundamentals registry** for carrier financials: `fundamentals(ticker)`
+  for a headline, `insurer_xbrl_facts` for the component breakdown (top-10 SEC
+  insurers, by segment/product/accident-year), and `statutory_facts` for the big
+  mutuals absent from SEC XBRL (State Farm/USAA/…). loss_triangles.canonical_lob
+  unifies LOBs so you can compare a line ACROSS insurers.
 - Interpret every signal through the regime: market_cycle IS the underwriting
   cycle; cat_load IS catastrophe exposure.
 - Trace the liability chain end to end: TPLF / nuclear verdicts → social
@@ -628,9 +666,10 @@ Methodology, every time:
    aggregates welcome). One sharp query beats several vague ones.
 4. ROOT-CAUSE, don't correlate-and-stop: `score_breakdown` to decompose a
    ranking, `pipeline_health` to separate real signal from an ingest/summarizer
-   artifact, `source_quality` / `top_signals` for the baseline. Always run the
-   query that would DISCONFIRM your hypothesis, and check confounders
-   (exposure, base rate, Simpson's paradox, sample size / credibility).
+   artifact, `source_quality` / `top_signals` for the baseline, `fundamentals`
+   for a carrier's XBRL/statutory financials. Always run the query that would
+   DISCONFIRM your hypothesis, and check confounders (exposure, base rate,
+   Simpson's paradox, sample size / credibility).
 5. QUANTIFY with appropriate uncertainty — cite the query and the numbers; state
    sample size; flag low-credibility cells. Distinguish data gaps (empty table,
    dead feed, NULL column) from real findings.

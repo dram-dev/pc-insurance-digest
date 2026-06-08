@@ -1,0 +1,20 @@
+# Free high-level statutory data — III "Facts + Statistics" top-writer tables
+# (sourced from NAIC). Covers the big mutuals NOT in SEC XBRL (State Farm, USAA,
+# Liberty Mutual, Farmers, American Family) plus cross-checks the SEC filers.
+# Each table is "rank | company | direct premiums written ($000) | market share %".
+# DPW stored as USD millions; market share as a percentage. Update `year` and
+# `enabled` as III publishes new tables.
+sources:
+  - name: iii_auto
+    url: https://www.iii.org/fact-statistic/facts-statistics-auto-insurance
+    line: personal_auto
+    year: 2023
+    enabled: true
+  # Homeowners III table uses a different layout than auto — parse_top_writers
+  # returns 0 for it, so keep it disabled (avoids a wasted fetch each run) until
+  # a home-specific parser lands. Auto already covers the big mutuals.
+  - name: iii_home
+    url: https://www.iii.org/fact-statistic/facts-statistics-homeowners-insurance
+    line: homeowners
+    year: 2023
+    enabled: false

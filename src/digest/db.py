@@ -9,6 +9,7 @@ wrappers that default `db_path` from settings and fan out to the Databricks
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import sqlite3
@@ -305,6 +306,55 @@ MIGRATIONS = [
         PRIMARY KEY (insurer, period, as_of)
     )""",
     "CREATE INDEX IF NOT EXISTS idx_disclosure_insurer ON disclosure_sentiment(insurer)",
+    # Component-level XBRL facts from insurer 10-K instances — the concept-registry
+    # extractor (digest.parse.xbrl_facts) emits one row per (concept × dimensional
+    # context) across the 13 reviewed datasets. Values in USD millions (counts raw).
+    """CREATE TABLE IF NOT EXISTS insurer_xbrl_facts (
+        fact_key         TEXT PRIMARY KEY,        -- sha256(insurer|concept|period|dims)
+        insurer          TEXT NOT NULL,
+        dataset          TEXT NOT NULL,           -- premiums|claim_counts|ibnr|triangle|…
+        concept          TEXT NOT NULL,           -- us-gaap localname
+        field            TEXT,                    -- sub-metric label
+        period_end       TEXT,                    -- instant, or duration end date
+        period_type      TEXT,                    -- 'instant' | 'duration'
+        accident_year    INTEGER,
+        segment          TEXT,
+        product          TEXT,
+        subsegment       TEXT,                    -- e.g. agency/direct channel
+        geography        TEXT,
+        investment_type  TEXT,
+        instrument       TEXT,
+        fv_level         TEXT,
+        value            REAL NOT NULL,           -- USD millions (or raw count)
+        is_count         INTEGER DEFAULT 0,
+        as_of            TEXT                     -- filing reporting date
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_xbrl_facts_insurer ON insurer_xbrl_facts(insurer, dataset)",
+    "CREATE INDEX IF NOT EXISTS idx_xbrl_facts_dataset ON insurer_xbrl_facts(dataset)",
+    # Statutory high-level facts for insurers NOT in SEC XBRL (the big mutuals) —
+    # from NAIC InsData (Schedule P summary) and free annual-report / market-share
+    # sources. Triangles go to loss_triangles; this holds premiums / combined
+    # ratio / surplus / market share, source-tagged so canonicalization can unify
+    # statutory + SEC-XBRL facts later.
+    """CREATE TABLE IF NOT EXISTS statutory_facts (
+        fact_key      TEXT PRIMARY KEY,           -- sha256(insurer|source|dataset|field|line|ay|period)
+        insurer       TEXT NOT NULL,
+        source        TEXT NOT NULL,              -- 'naic_insdata'|'annual_report'|'iii'|…
+        dataset       TEXT NOT NULL,              -- premiums|combined_ratio|surplus|market_share
+        field         TEXT,
+        line          TEXT,                       -- statutory line / LOB (nullable)
+        accident_year INTEGER,
+        period        TEXT,                       -- statement year / period
+        value         REAL NOT NULL,
+        unit          TEXT,                       -- 'usd_millions'|'ratio'|'pct'
+        as_of         TEXT
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_statutory_insurer ON statutory_facts(insurer, dataset)",
+    # Canonical LOB taxonomy (digest.parse.lob_canonical) — unifies the messy,
+    # source-specific LOB strings across SEC-XBRL + statutory so cross-insurer
+    # rollups line up. Populated at upsert time; backfill via db.backfill_canonical_lob().
+    "ALTER TABLE loss_triangles ADD COLUMN canonical_lob TEXT",
+    "ALTER TABLE statutory_facts ADD COLUMN canonical_lob TEXT",
 ]
 
 
@@ -2062,18 +2112,124 @@ def upsert_learned_score(
 
 
 def upsert_triangle_cells(cells: list[dict]) -> int:
-    """Bulk-insert loss-triangle cells. Returns rows written."""
+    """Bulk-insert loss-triangle cells (canonical_lob derived here so every
+    triangle source — SEC-XBRL or NAIC — is canonicalized uniformly)."""
     if not cells:
         return 0
+    from digest.parse.lob_canonical import canonicalize_lob
+    rows = [{**c, "canonical_lob": c.get("canonical_lob") or canonicalize_lob(c["lob"])}
+            for c in cells]
     with get_conn() as conn:
         conn.executemany(
             """INSERT OR REPLACE INTO loss_triangles
-                 (insurer, lob, metric, accident_year, dev_period, cumulative_value, as_of)
+                 (insurer, lob, metric, accident_year, dev_period, cumulative_value,
+                  as_of, canonical_lob)
                VALUES (:insurer, :lob, :metric, :accident_year, :dev_period,
-                       :cumulative_value, :as_of)""",
-            cells,
+                       :cumulative_value, :as_of, :canonical_lob)""",
+            rows,
         )
-    return len(cells)
+    sink.write_triangle_cells(rows)
+    return len(rows)
+
+
+def canonical_lob_coverage() -> list[sqlite3.Row]:
+    """Per-canonical-LOB: how many insurers and distinct raw LOBs roll up to it."""
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT canonical_lob, COUNT(DISTINCT insurer) AS insurers,
+                      COUNT(DISTINCT lob) AS raw_lobs
+               FROM loss_triangles WHERE canonical_lob IS NOT NULL
+               GROUP BY canonical_lob ORDER BY insurers DESC, raw_lobs DESC"""
+        ).fetchall()
+
+
+def backfill_canonical_lob() -> dict[str, int]:
+    """Populate canonical_lob for existing loss_triangles + statutory_facts rows
+    (one UPDATE per distinct raw LOB). Idempotent."""
+    from digest.parse.lob_canonical import canonicalize_lob
+    counts: dict[str, int] = {}
+    with get_conn() as conn:
+        for table, col in (("loss_triangles", "lob"), ("statutory_facts", "line")):
+            raw = [r[0] for r in conn.execute(
+                f"SELECT DISTINCT {col} FROM {table} WHERE {col} IS NOT NULL")]
+            n = 0
+            for value in raw:
+                cur = conn.execute(
+                    f"UPDATE {table} SET canonical_lob=? WHERE {col}=?",
+                    (canonicalize_lob(value), value),
+                )
+                n += cur.rowcount
+            counts[table] = n
+    return counts
+
+
+_XBRL_FACT_COLUMNS = (
+    "fact_key", "insurer", "dataset", "concept", "field", "period_end", "period_type",
+    "accident_year", "segment", "product", "subsegment", "geography",
+    "investment_type", "instrument", "fv_level", "value", "is_count", "as_of",
+)
+
+
+def upsert_xbrl_facts(facts: list[dict]) -> int:
+    """Bulk-upsert component-level XBRL facts; idempotent on fact_key."""
+    if not facts:
+        return 0
+    cols = ", ".join(_XBRL_FACT_COLUMNS)
+    placeholders = ", ".join(f":{c}" for c in _XBRL_FACT_COLUMNS)
+    with get_conn() as conn:
+        conn.executemany(
+            f"INSERT OR REPLACE INTO insurer_xbrl_facts ({cols}) VALUES ({placeholders})",
+            facts,
+        )
+    sink.write_xbrl_facts(facts)
+    return len(facts)
+
+
+def xbrl_facts_coverage() -> list[sqlite3.Row]:
+    """Per-insurer × dataset fact counts (for the ingest coverage report)."""
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT insurer, dataset, COUNT(*) AS n,
+                      COUNT(DISTINCT field) AS fields
+               FROM insurer_xbrl_facts GROUP BY insurer, dataset
+               ORDER BY insurer, dataset"""
+        ).fetchall()
+
+
+def _statutory_fact_key(f: dict) -> str:
+    parts = (f["insurer"], f["source"], f["dataset"], f.get("field"),
+             f.get("line"), f.get("accident_year"), f.get("period"))
+    return hashlib.sha256("::".join(str(p) for p in parts).encode()).hexdigest()[:24]
+
+
+def upsert_statutory_facts(facts: list[dict]) -> int:
+    """Bulk-upsert statutory high-level facts; idempotent on a derived fact_key."""
+    from digest.parse.lob_canonical import canonicalize_lob
+    rows = []
+    for f in facts:
+        r = dict(f)
+        r.setdefault("field", None)
+        r.setdefault("line", None)
+        r.setdefault("accident_year", None)
+        r.setdefault("period", None)
+        r.setdefault("unit", None)
+        r.setdefault("as_of", None)
+        r["fact_key"] = f.get("fact_key") or _statutory_fact_key(f)
+        r["canonical_lob"] = canonicalize_lob(r["line"]) if r["line"] else None
+        rows.append(r)
+    if not rows:
+        return 0
+    with get_conn() as conn:
+        conn.executemany(
+            """INSERT OR REPLACE INTO statutory_facts
+                 (fact_key, insurer, source, dataset, field, line, accident_year,
+                  period, value, unit, as_of, canonical_lob)
+               VALUES (:fact_key, :insurer, :source, :dataset, :field, :line,
+                       :accident_year, :period, :value, :unit, :as_of, :canonical_lob)""",
+            rows,
+        )
+    sink.write_statutory_facts(rows)
+    return len(rows)
 
 
 def load_triangle(insurer: str, lob: str, metric: str,

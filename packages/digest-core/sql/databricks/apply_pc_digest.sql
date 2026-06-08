@@ -75,12 +75,13 @@ PARTITIONED BY (series_id);
 -- reserving estimates derived from these land in silver.reserving_signals.
 CREATE TABLE IF NOT EXISTS bronze.loss_triangles (
     insurer          STRING NOT NULL,
-    lob              STRING NOT NULL,           -- line of business
+    lob              STRING NOT NULL,           -- raw line of business (source-specific)
     metric           STRING NOT NULL,           -- 'paid' | 'incurred'
     accident_year    INT    NOT NULL,
     dev_period       INT    NOT NULL,
     cumulative_value DOUBLE NOT NULL,
     as_of            TIMESTAMP NOT NULL,
+    canonical_lob    STRING,                     -- unified taxonomy (digest.parse.lob_canonical)
     CONSTRAINT bronze_triangles_pk PRIMARY KEY (insurer, lob, metric, accident_year, dev_period, as_of)
 )
 USING DELTA
@@ -320,6 +321,48 @@ CREATE TABLE IF NOT EXISTS silver.reserving_signals (
     deterioration_pct DOUBLE,                    -- (ibnr - prior_ibnr) / prior_ibnr
     direction         STRING,                    -- 'adverse' | 'favorable' | 'flat'
     CONSTRAINT silver_reserving_pk PRIMARY KEY (insurer, lob, metric, as_of)
+)
+USING DELTA;
+
+-- Component-level insurer XBRL facts (concept registry — datasets 1-13).
+CREATE TABLE IF NOT EXISTS silver.insurer_xbrl_facts (
+    fact_key         STRING NOT NULL,
+    insurer          STRING NOT NULL,
+    dataset          STRING NOT NULL,
+    concept          STRING NOT NULL,
+    field            STRING,
+    period_end       STRING,
+    period_type      STRING,
+    accident_year    INT,
+    segment          STRING,
+    product          STRING,
+    subsegment       STRING,
+    geography        STRING,
+    investment_type  STRING,
+    instrument       STRING,
+    fv_level         STRING,
+    value            DOUBLE NOT NULL,
+    is_count         INT,
+    as_of            STRING,
+    CONSTRAINT silver_xbrl_facts_pk PRIMARY KEY (fact_key)
+)
+USING DELTA;
+
+-- Statutory high-level facts for the big mutuals (NAIC InsData + free III).
+CREATE TABLE IF NOT EXISTS silver.statutory_facts (
+    fact_key      STRING NOT NULL,
+    insurer       STRING NOT NULL,
+    source        STRING NOT NULL,
+    dataset       STRING NOT NULL,
+    field         STRING,
+    line          STRING,
+    accident_year INT,
+    period        STRING,
+    value         DOUBLE NOT NULL,
+    unit          STRING,
+    as_of         STRING,
+    canonical_lob STRING,
+    CONSTRAINT silver_statutory_pk PRIMARY KEY (fact_key)
 )
 USING DELTA;
 

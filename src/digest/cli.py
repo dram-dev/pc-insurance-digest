@@ -334,6 +334,162 @@ def learn(horizon: int) -> None:
 
 
 @main.command()
+def canonicalize() -> None:
+    """Backfill canonical_lob across loss_triangles + statutory_facts.
+
+    Maps the messy source-specific LOB strings (SEC-XBRL member slugs, statutory
+    lines) onto one comparison taxonomy so cross-insurer rollups line up. Runs at
+    upsert time too; this backfills rows ingested before the column existed.
+    """
+    from digest.parse.lob_canonical import CANONICAL_LOBS
+
+    db.init_db()
+    console.rule("[bold cyan]LOB canonicalization")
+    counts = db.backfill_canonical_lob()
+    console.print(f"[green]✓[/green] loss_triangles={counts['loss_triangles']:,} rows, "
+                  f"statutory_facts={counts['statutory_facts']:,} rows")
+    rows = db.canonical_lob_coverage()
+    if rows:
+        table = Table(title="Canonical LOB coverage (loss_triangles)")
+        table.add_column("Canonical LOB", no_wrap=True)
+        table.add_column("Insurers", justify="right")
+        table.add_column("Raw LOBs", justify="right")
+        for r in rows:
+            table.add_row(r["canonical_lob"] or "—", str(r["insurers"]), str(r["raw_lobs"]))
+        console.print(table)
+    console.print(f"[dim]taxonomy: {', '.join(CANONICAL_LOBS)}[/dim]")
+
+
+@main.command(name="ingest-naic")
+def ingest_naic() -> None:
+    """Load NAIC InsData Schedule P exports → loss_triangles + statutory_facts.
+
+    The only route to loss triangles for the big mutuals (State Farm, USAA,
+    Liberty Mutual, …) that file nothing with the SEC. Export Schedule P from the
+    InsData portal, drop the CSV(s) in $NAIC_INSDATA_DIR, map columns in
+    config/naic_insdata.yaml, then run this. Feeds the same reserving chain.
+    """
+    from digest.ingest import naic_insdata
+
+    db.init_db()
+    console.rule("[bold cyan]NAIC InsData Schedule P ingest")
+    r = naic_insdata.load_from_dir()
+    if r["files"] == 0:
+        console.print(f"[yellow]No export files found in {settings.naic_insdata_dir}.[/yellow]\n"
+                      "Export Schedule P from InsData and drop CSV(s) there "
+                      "(map columns in config/naic_insdata.yaml).")
+        return
+    console.print(f"[green]✓[/green] {r['files']} file(s) → {r['triangle_cells']:,} triangle cells, "
+                  f"{r['premium_facts']:,} premium facts across {r['insurers']} insurers")
+    if r.get("insurer_list"):
+        console.print(f"  [dim]{', '.join(r['insurer_list'])}[/dim]")
+
+
+@main.command(name="ingest-statutory")
+def ingest_statutory() -> None:
+    """Free high-level statutory data — top-writer DPW + market share from III.
+
+    Pulls the big mutuals' direct premiums written and market share (NAIC-sourced
+    III tables) into statutory_facts — so the warehouse isn't blind to State Farm
+    (#1) and peers. No credentials. Triangles still come from `digest ingest-naic`.
+    """
+    from digest.ingest import statutory_summary
+
+    db.init_db()
+    console.rule("[bold cyan]free statutory summary ingest")
+    r = statutory_summary.run_statutory_summary()
+    console.print(f"[green]✓[/green] {r['sources']} source(s) → {r['facts']:,} facts "
+                  f"across {r['insurers']} insurers")
+    if r.get("insurer_list"):
+        console.print(f"  [dim]{', '.join(r['insurer_list'][:14])}"
+                      f"{' …' if len(r['insurer_list']) > 14 else ''}[/dim]")
+
+
+@main.command(name="ingest-xbrl")
+@click.argument("tickers", nargs=-1)
+def ingest_xbrl(tickers: tuple[str, ...]) -> None:
+    """Ingest component-level insurer XBRL facts (datasets 1-13) → insurer_xbrl_facts.
+
+    One 10-K instance fetch per insurer yields every reviewed dataset (premiums,
+    claim counts, IBNR, reserve development, reinsurance, investments, DAC, …)
+    broken out by segment/product/accident-year/geography. Universe =
+    config/xbrl_pc_insurers.yaml (top-10 SEC-filing US P&C). Needs EDGAR_USER_AGENT.
+    """
+    from digest import edgar_xbrl_ingest as ing
+
+    db.init_db()
+    console.rule("[bold cyan]XBRL component-fact ingest")
+    results = ing.run_ingest(list(tickers) or None)
+
+    table = Table(title="Component facts per insurer")
+    table.add_column("Ticker", no_wrap=True)
+    table.add_column("Filed", style="dim", no_wrap=True)
+    table.add_column("Facts", justify="right")
+    table.add_column("Triangle cells", justify="right")
+    table.add_column("Datasets", justify="right")
+    for r in results:
+        if "error" in r:
+            table.add_row(r["ticker"], "[red]ERR[/red]", "—", "—", str(r["error"])[:48])
+        else:
+            table.add_row(r["ticker"], str(r["filed"]), f"{r['facts']:,}",
+                          f"{r['triangle_cells']:,}", str(len(r["datasets"])))
+    console.print(table)
+
+    cov = db.xbrl_facts_coverage()
+    if cov:
+        datasets = sorted({row["dataset"] for row in cov})
+        console.print(f"\n[dim]Datasets captured ({len(datasets)}):[/dim] {', '.join(datasets)}")
+        total = sum(row["n"] for row in cov)
+        console.print(f"[green]✓[/green] {total:,} component facts stored across "
+                      f"{len({row['insurer'] for row in cov})} insurers")
+
+
+@main.command(name="triangles-compare")
+@click.argument("tickers", nargs=-1)
+def triangles_compare(tickers: tuple[str, ...]) -> None:
+    """Cross-validate the two EDGAR triangle extractors (build-both-and-compare).
+
+    For each ticker's latest 10-K, runs the XBRL-instance parser and the rendered
+    R-file parser and reports whether their values agree. No DB writes — this is
+    the evaluation harness for picking the extraction path. Needs EDGAR_USER_AGENT.
+    """
+    from digest.edgar_triangle_extract import extract_and_compare, ticker_ciks
+
+    ciks = ticker_ciks()
+    targets = [t.upper() for t in tickers] or list(ciks)
+    console.rule("[bold cyan]EDGAR triangle extractor comparison")
+    table = Table(title="XBRL vs R-file — value cross-validation")
+    table.add_column("Ticker", no_wrap=True)
+    table.add_column("Filed", style="dim", no_wrap=True)
+    table.add_column("XBRL", justify="right")
+    table.add_column("R-file", justify="right")
+    table.add_column("Agree", justify="right")
+    table.add_column("Matched tri", justify="right")
+    table.add_column("Only X / R", justify="right")
+    table.add_column("Note", overflow="fold")
+    for tk in targets:
+        try:
+            res = extract_and_compare(tk, ciks[tk])
+            d = res["diff"]
+            agree = f"{d['value_agree_pct']:.0f}%"
+            colour = "green" if d["value_agree_pct"] >= 99 and d["rfile_cells"] else (
+                "yellow" if d["rfile_cells"] else "red")
+            note = ""
+            if not d["rfile_cells"]:
+                note = "no R-file parsed (XBRL only)"
+            elif d["only_xbrl_values"] or d["only_rfile_values"]:
+                note = f"{len(d['unmatched_xbrl'])} X / {len(d['unmatched_rfile'])} R unmatched tri"
+            table.add_row(
+                tk, str(res["filing_date"]), str(d["xbrl_cells"]), str(d["rfile_cells"]),
+                f"[{colour}]{agree}[/{colour}]", str(d["matched_triangles"]),
+                f"{d['only_xbrl_values']}/{d['only_rfile_values']}", note or "[green]✓ full agreement[/green]",
+            )
+        except Exception as exc:  # noqa: BLE001
+            table.add_row(tk, "—", "—", "—", "[red]ERR[/red]", "—", "—", str(exc)[:60])
+    console.print(table)
+
+
+@main.command()
 def reserving() -> None:
     """Chain-ladder reserving over stored loss triangles (Option 5).
 

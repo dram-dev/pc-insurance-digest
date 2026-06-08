@@ -70,12 +70,13 @@ PARTITIONED BY (series_id);
 -- reserving estimates derived from these land in pc_silver.reserving_signals.
 CREATE TABLE IF NOT EXISTS pc_bronze.loss_triangles (
     insurer          STRING NOT NULL,
-    lob              STRING NOT NULL,           -- line of business
+    lob              STRING NOT NULL,           -- raw line of business (source-specific)
     metric           STRING NOT NULL,           -- 'paid' | 'incurred'
     accident_year    INT    NOT NULL,
     dev_period       INT    NOT NULL,
     cumulative_value DOUBLE NOT NULL,
     as_of            TIMESTAMP NOT NULL,
+    canonical_lob    STRING,                     -- unified taxonomy (digest.parse.lob_canonical)
     CONSTRAINT pc_bronze_triangles_pk PRIMARY KEY (insurer, lob, metric, accident_year, dev_period, as_of)
 )
 USING DELTA
