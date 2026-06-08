@@ -26,11 +26,14 @@ accident-year combined = reported − prior-year-development      (ex-developmen
 underlying = reported − cat load − prior-year-development       (current-AY ex-cat)
 ```
 
-The inputs are dollar figures from a carrier's earnings release / investor
-supplement / MD&A — there is **no combined-ratio table in the warehouse**, so this is
-a calculator (like [[ratemaking-indication]]), not a DB reader. Pair it with the
-EDGAR content the pipeline already extracts (`_financial_excerpt` / `_reserve_excerpt`)
-and with [[bornhuetter-ferguson]] when the development line needs its own reserve view.
+The inputs are dollar figures — earned premium and incurred losses & LAE. The
+warehouse now carries them as structured XBRL facts: `insurer_xbrl_facts`
+dataset=`premiums` (field `premiums_earned_net`) and dataset=`combined_ratio`
+(field `losses_and_lae_incurred`), by segment × period, for the top-10 SEC
+insurers (`fundamentals(ticker)` or `digest.fundamentals.combined_ratio_components`).
+Cats and prior-year development still come from the EDGAR text the pipeline
+extracts (`_financial_excerpt` / `_reserve_excerpt`); pair with
+[[bornhuetter-ferguson]] when the development line needs its own reserve view.
 For the bases, the AY-vs-CY mechanics, and the YoY/QoQ bridge, see
 [reference.md](reference.md).
 
