@@ -333,6 +333,45 @@ def learn(horizon: int) -> None:
     console.print(f"  [green]✓[/green] learned_score written for {s.get('scored', 0)} items")
 
 
+@main.command(name="ingest-xbrl")
+@click.argument("tickers", nargs=-1)
+def ingest_xbrl(tickers: tuple[str, ...]) -> None:
+    """Ingest component-level insurer XBRL facts (datasets 1-13) → insurer_xbrl_facts.
+
+    One 10-K instance fetch per insurer yields every reviewed dataset (premiums,
+    claim counts, IBNR, reserve development, reinsurance, investments, DAC, …)
+    broken out by segment/product/accident-year/geography. Universe =
+    config/xbrl_pc_insurers.yaml (top-10 SEC-filing US P&C). Needs EDGAR_USER_AGENT.
+    """
+    from digest import edgar_xbrl_ingest as ing
+
+    db.init_db()
+    console.rule("[bold cyan]XBRL component-fact ingest")
+    results = ing.run_ingest(list(tickers) or None)
+
+    table = Table(title="Component facts per insurer")
+    table.add_column("Ticker", no_wrap=True)
+    table.add_column("Filed", style="dim", no_wrap=True)
+    table.add_column("Facts", justify="right")
+    table.add_column("Triangle cells", justify="right")
+    table.add_column("Datasets", justify="right")
+    for r in results:
+        if "error" in r:
+            table.add_row(r["ticker"], "[red]ERR[/red]", "—", "—", str(r["error"])[:48])
+        else:
+            table.add_row(r["ticker"], str(r["filed"]), f"{r['facts']:,}",
+                          f"{r['triangle_cells']:,}", str(len(r["datasets"])))
+    console.print(table)
+
+    cov = db.xbrl_facts_coverage()
+    if cov:
+        datasets = sorted({row["dataset"] for row in cov})
+        console.print(f"\n[dim]Datasets captured ({len(datasets)}):[/dim] {', '.join(datasets)}")
+        total = sum(row["n"] for row in cov)
+        console.print(f"[green]✓[/green] {total:,} component facts stored across "
+                      f"{len({row['insurer'] for row in cov})} insurers")
+
+
 @main.command(name="triangles-compare")
 @click.argument("tickers", nargs=-1)
 def triangles_compare(tickers: tuple[str, ...]) -> None:

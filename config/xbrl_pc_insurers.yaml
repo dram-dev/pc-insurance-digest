@@ -1,0 +1,46 @@
+# Top-10 largest US P&C insurers AVAILABLE via SEC XBRL — concept-registry ingest
+# (datasets 1-13 in digest.parse.xbrl_facts). One instance fetch per insurer
+# yields every dataset.
+#
+# Caveat — the very largest US P&C writers are mostly mutual / foreign-owned and
+# do NOT file SEC XBRL, so they are not reachable by this route and need the NAIC
+# statutory path instead:
+#   • State Farm   — #1 US P&C by DPW, pure mutual, no SEC filings
+#   • USAA         — reciprocal/private, no SEC filings
+#   • Liberty Mutual — files registered debt but no resolvable XBRL instance here
+#   • Farmers      — Zurich-owned; the Exchanges don't file separately
+#   • Nationwide   — went private 2009 (last 10-K 2010), no short-duration XBRL
+#
+# This is the largest SEC-filing P&C underwriters with confirmed short-duration
+# claims-development XBRL, in rough US direct-premium order.
+insurers:
+  - ticker: BRK
+    name: Berkshire Hathaway (GEICO + BH primary/reinsurance)
+    cik: "0001067983"
+  - ticker: PGR
+    name: The Progressive Corporation
+    cik: "0000080661"
+  - ticker: ALL
+    name: The Allstate Corporation
+    cik: "0000899051"
+  - ticker: TRV
+    name: The Travelers Companies, Inc.
+    cik: "0000086312"
+  - ticker: CB
+    name: Chubb Limited
+    cik: "0000896159"
+  - ticker: AIG
+    name: American International Group, Inc.
+    cik: "0000005272"
+  - ticker: HIG
+    name: The Hartford Financial Services Group, Inc.
+    cik: "0000874766"
+  - ticker: WRB
+    name: W. R. Berkley Corporation
+    cik: "0000011544"
+  - ticker: CINF
+    name: Cincinnati Financial Corporation
+    cik: "0000020286"
+  - ticker: MKL
+    name: Markel Group Inc.
+    cik: "0001096343"

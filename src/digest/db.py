@@ -305,6 +305,31 @@ MIGRATIONS = [
         PRIMARY KEY (insurer, period, as_of)
     )""",
     "CREATE INDEX IF NOT EXISTS idx_disclosure_insurer ON disclosure_sentiment(insurer)",
+    # Component-level XBRL facts from insurer 10-K instances — the concept-registry
+    # extractor (digest.parse.xbrl_facts) emits one row per (concept × dimensional
+    # context) across the 13 reviewed datasets. Values in USD millions (counts raw).
+    """CREATE TABLE IF NOT EXISTS insurer_xbrl_facts (
+        fact_key         TEXT PRIMARY KEY,        -- sha256(insurer|concept|period|dims)
+        insurer          TEXT NOT NULL,
+        dataset          TEXT NOT NULL,           -- premiums|claim_counts|ibnr|triangle|…
+        concept          TEXT NOT NULL,           -- us-gaap localname
+        field            TEXT,                    -- sub-metric label
+        period_end       TEXT,                    -- instant, or duration end date
+        period_type      TEXT,                    -- 'instant' | 'duration'
+        accident_year    INTEGER,
+        segment          TEXT,
+        product          TEXT,
+        subsegment       TEXT,                    -- e.g. agency/direct channel
+        geography        TEXT,
+        investment_type  TEXT,
+        instrument       TEXT,
+        fv_level         TEXT,
+        value            REAL NOT NULL,           -- USD millions (or raw count)
+        is_count         INTEGER DEFAULT 0,
+        as_of            TEXT                     -- filing reporting date
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_xbrl_facts_insurer ON insurer_xbrl_facts(insurer, dataset)",
+    "CREATE INDEX IF NOT EXISTS idx_xbrl_facts_dataset ON insurer_xbrl_facts(dataset)",
 ]
 
 
@@ -2074,6 +2099,38 @@ def upsert_triangle_cells(cells: list[dict]) -> int:
             cells,
         )
     return len(cells)
+
+
+_XBRL_FACT_COLUMNS = (
+    "fact_key", "insurer", "dataset", "concept", "field", "period_end", "period_type",
+    "accident_year", "segment", "product", "subsegment", "geography",
+    "investment_type", "instrument", "fv_level", "value", "is_count", "as_of",
+)
+
+
+def upsert_xbrl_facts(facts: list[dict]) -> int:
+    """Bulk-upsert component-level XBRL facts; idempotent on fact_key."""
+    if not facts:
+        return 0
+    cols = ", ".join(_XBRL_FACT_COLUMNS)
+    placeholders = ", ".join(f":{c}" for c in _XBRL_FACT_COLUMNS)
+    with get_conn() as conn:
+        conn.executemany(
+            f"INSERT OR REPLACE INTO insurer_xbrl_facts ({cols}) VALUES ({placeholders})",
+            facts,
+        )
+    return len(facts)
+
+
+def xbrl_facts_coverage() -> list[sqlite3.Row]:
+    """Per-insurer × dataset fact counts (for the ingest coverage report)."""
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT insurer, dataset, COUNT(*) AS n,
+                      COUNT(DISTINCT field) AS fields
+               FROM insurer_xbrl_facts GROUP BY insurer, dataset
+               ORDER BY insurer, dataset"""
+        ).fetchall()
 
 
 def load_triangle(insurer: str, lob: str, metric: str,

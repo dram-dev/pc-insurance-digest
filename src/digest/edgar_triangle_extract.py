@@ -81,6 +81,17 @@ def _rfile_candidates(base: str) -> list[tuple[str, str]]:
     return out
 
 
+def fetch_instance_xml(cik: str) -> tuple[str, str]:
+    """(XBRL instance XML, filing_date) for a CIK's latest 10-K — the lean fetch
+    the component-fact ingest needs (no R-files)."""
+    accession, primary, filing_date = _latest_10k(cik)
+    if not accession:
+        raise RuntimeError("no 10-K found")
+    base = f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{accession}"
+    instance = _get(f"{base}/{re.sub(r'.htm$', '_htm.xml', primary)}").text
+    return instance, filing_date
+
+
 def fetch_artifacts(ticker: str, cik: str) -> dict:
     """Pull the XBRL instance + candidate R-file HTML for a ticker's latest 10-K."""
     accession, primary, filing_date = _latest_10k(cik)
