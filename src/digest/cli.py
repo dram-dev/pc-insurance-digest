@@ -333,6 +333,51 @@ def learn(horizon: int) -> None:
     console.print(f"  [green]✓[/green] learned_score written for {s.get('scored', 0)} items")
 
 
+@main.command(name="triangles-compare")
+@click.argument("tickers", nargs=-1)
+def triangles_compare(tickers: tuple[str, ...]) -> None:
+    """Cross-validate the two EDGAR triangle extractors (build-both-and-compare).
+
+    For each ticker's latest 10-K, runs the XBRL-instance parser and the rendered
+    R-file parser and reports whether their values agree. No DB writes — this is
+    the evaluation harness for picking the extraction path. Needs EDGAR_USER_AGENT.
+    """
+    from digest.edgar_triangle_extract import extract_and_compare, ticker_ciks
+
+    ciks = ticker_ciks()
+    targets = [t.upper() for t in tickers] or list(ciks)
+    console.rule("[bold cyan]EDGAR triangle extractor comparison")
+    table = Table(title="XBRL vs R-file — value cross-validation")
+    table.add_column("Ticker", no_wrap=True)
+    table.add_column("Filed", style="dim", no_wrap=True)
+    table.add_column("XBRL", justify="right")
+    table.add_column("R-file", justify="right")
+    table.add_column("Agree", justify="right")
+    table.add_column("Matched tri", justify="right")
+    table.add_column("Only X / R", justify="right")
+    table.add_column("Note", overflow="fold")
+    for tk in targets:
+        try:
+            res = extract_and_compare(tk, ciks[tk])
+            d = res["diff"]
+            agree = f"{d['value_agree_pct']:.0f}%"
+            colour = "green" if d["value_agree_pct"] >= 99 and d["rfile_cells"] else (
+                "yellow" if d["rfile_cells"] else "red")
+            note = ""
+            if not d["rfile_cells"]:
+                note = "no R-file parsed (XBRL only)"
+            elif d["only_xbrl_values"] or d["only_rfile_values"]:
+                note = f"{len(d['unmatched_xbrl'])} X / {len(d['unmatched_rfile'])} R unmatched tri"
+            table.add_row(
+                tk, str(res["filing_date"]), str(d["xbrl_cells"]), str(d["rfile_cells"]),
+                f"[{colour}]{agree}[/{colour}]", str(d["matched_triangles"]),
+                f"{d['only_xbrl_values']}/{d['only_rfile_values']}", note or "[green]✓ full agreement[/green]",
+            )
+        except Exception as exc:  # noqa: BLE001
+            table.add_row(tk, "—", "—", "—", "[red]ERR[/red]", "—", "—", str(exc)[:60])
+    console.print(table)
+
+
 @main.command()
 def reserving() -> None:
     """Chain-ladder reserving over stored loss triangles (Option 5).
