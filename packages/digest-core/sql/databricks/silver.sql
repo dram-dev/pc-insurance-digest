@@ -132,6 +132,52 @@ CREATE TABLE IF NOT EXISTS pc_silver.reserving_signals (
 )
 USING DELTA;
 
+-- Component-level insurer XBRL facts (concept registry — datasets 1-13). One row
+-- per (concept × dimensional context) from the top-10 SEC-filing P&C insurers'
+-- 10-K instances. Mirrors the SQLite insurer_xbrl_facts table.
+CREATE TABLE IF NOT EXISTS pc_silver.insurer_xbrl_facts (
+    fact_key         STRING NOT NULL,
+    insurer          STRING NOT NULL,
+    dataset          STRING NOT NULL,            -- premiums|claim_counts|ibnr|triangle|…
+    concept          STRING NOT NULL,            -- us-gaap localname
+    field            STRING,
+    period_end       STRING,
+    period_type      STRING,                     -- 'instant' | 'duration'
+    accident_year    INT,
+    segment          STRING,
+    product          STRING,
+    subsegment       STRING,
+    geography        STRING,
+    investment_type  STRING,
+    instrument       STRING,
+    fv_level         STRING,
+    value            DOUBLE NOT NULL,            -- USD millions (or raw count)
+    is_count         INT,
+    as_of            STRING,
+    CONSTRAINT pc_silver_xbrl_facts_pk PRIMARY KEY (fact_key)
+)
+USING DELTA;
+
+-- Statutory high-level facts for insurers NOT in SEC XBRL (the big mutuals) —
+-- NAIC InsData Schedule P summary + free III top-writer tables. Mirrors the
+-- SQLite statutory_facts table.
+CREATE TABLE IF NOT EXISTS pc_silver.statutory_facts (
+    fact_key      STRING NOT NULL,
+    insurer       STRING NOT NULL,
+    source        STRING NOT NULL,               -- 'naic_insdata'|'iii'|'annual_report'
+    dataset       STRING NOT NULL,               -- premiums|combined_ratio|surplus|market_share
+    field         STRING,
+    line          STRING,
+    accident_year INT,
+    period        STRING,
+    value         DOUBLE NOT NULL,
+    unit          STRING,
+    as_of         STRING,
+    canonical_lob STRING,                         -- unified taxonomy
+    CONSTRAINT pc_silver_statutory_pk PRIMARY KEY (fact_key)
+)
+USING DELTA;
+
 -- ── Wave 4 — Insurance EKG leads (derived facts) ─────────────────────────
 -- See docs/WAVE4_EKG_PLAN.md. Ingestors are future waves; the DatabricksSink
 -- already has a no-op write_* per table.

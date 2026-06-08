@@ -2128,6 +2128,7 @@ def upsert_triangle_cells(cells: list[dict]) -> int:
                        :cumulative_value, :as_of, :canonical_lob)""",
             rows,
         )
+    sink.write_triangle_cells(rows)
     return len(rows)
 
 
@@ -2180,6 +2181,7 @@ def upsert_xbrl_facts(facts: list[dict]) -> int:
             f"INSERT OR REPLACE INTO insurer_xbrl_facts ({cols}) VALUES ({placeholders})",
             facts,
         )
+    sink.write_xbrl_facts(facts)
     return len(facts)
 
 
@@ -2226,6 +2228,7 @@ def upsert_statutory_facts(facts: list[dict]) -> int:
                        :accident_year, :period, :value, :unit, :as_of, :canonical_lob)""",
             rows,
         )
+    sink.write_statutory_facts(rows)
     return len(rows)
 
 

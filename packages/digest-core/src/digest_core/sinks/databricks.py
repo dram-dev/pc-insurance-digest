@@ -74,7 +74,15 @@ _PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
     "silver.litigation_pressure":  ("state", "sector", "as_of"),
     "silver.disclosure_sentiment": ("insurer", "period", "as_of"),
     "silver.capital_flows":        ("item_hash",),
+    # Insurer fundamentals registry (XBRL concept-registry + statutory feeds).
+    "bronze.loss_triangles":       ("insurer", "lob", "metric", "accident_year", "dev_period", "as_of"),
+    "silver.insurer_xbrl_facts":   ("fact_key",),
+    "silver.statutory_facts":      ("fact_key",),
 }
+
+# Bound the connect handshake so an unreachable warehouse can't hang the pipeline
+# (the connector blocks indefinitely otherwise). Seconds.
+_CONNECT_TIMEOUT = 10
 
 # Max rows per MERGE statement. 50 keeps total parameter count well under
 # warehouse limits (50 × ~15 cols ≈ 750 params) and bounds the size of any
@@ -138,6 +146,11 @@ class DatabricksSink:
         # unprefixed internally; only the emitted SQL is qualified.
         self._schema_prefix = schema_prefix
         self._conn: Any | None = None  # lazy databricks.sql.Connection
+        # Latch: once a connection attempt fails (unreachable host, missing
+        # connector, bad creds), stop retrying for the rest of the process so a
+        # 180-row write doesn't trigger 180 connect timeouts. SQLite stays the
+        # source of truth; the medallion can be backfilled later.
+        self._broken = False
 
     def _qualify(self, table: str) -> str:
         """`bronze.ingested_items` → `{prefix}bronze.ingested_items`."""
@@ -146,27 +159,46 @@ class DatabricksSink:
 
     # ── Connection (lazy) ─────────────────────────────────────────────────
 
-    def _connection(self) -> Any:
+    def _connection(self) -> Any | None:
+        """Lazily open the warehouse connection. Returns None (and latches the
+        sink off for this run) on any failure — best-effort, never raises."""
         if self._conn is not None:
             return self._conn
+        if self._broken:
+            return None
         try:
             from databricks import sql  # type: ignore[import-not-found]
-        except ImportError as exc:
-            raise RuntimeError(
-                "DATABRICKS_ENABLED=true but databricks-sql-connector is not "
-                "installed. Add `databricks-sql-connector` to the host project."
-            ) from exc
-        self._conn = sql.connect(
-            server_hostname=self._host,
-            http_path=self._http_path,
-            access_token=self._token,
-        )
-        cur = self._conn.cursor()
-        try:
-            cur.execute(f"USE CATALOG `{self._catalog}`")
-        finally:
-            cur.close()
-        return self._conn
+
+            connect_kwargs = dict(
+                server_hostname=self._host,
+                http_path=self._http_path,
+                access_token=self._token,
+            )
+            # Bound the attempt: a 10s socket timeout AND no internal retries, so
+            # an unreachable warehouse fails in seconds instead of the connector's
+            # default multi-minute retry/backoff. Fall back if a kwarg is unknown
+            # to this connector version (then the _broken latch is the backstop).
+            fast_fail = {"_socket_timeout": _CONNECT_TIMEOUT,
+                         "_retry_stop_after_attempts_count": 1}
+            try:
+                conn = sql.connect(**connect_kwargs, **fast_fail)
+            except TypeError:
+                conn = sql.connect(**connect_kwargs)
+            cur = conn.cursor()
+            try:
+                cur.execute(f"USE CATALOG `{self._catalog}`")
+            finally:
+                cur.close()
+            self._conn = conn
+            return self._conn
+        except Exception as exc:  # noqa: BLE001 — connector import, timeout, auth, …
+            self._broken = True
+            self._conn = None
+            logger.warning(
+                "databricks sink: connection failed (%s) — disabled for this run; "
+                "SQLite remains source of truth", exc,
+            )
+            return None
 
     def close(self) -> None:
         if self._conn is not None:
@@ -436,11 +468,32 @@ class DatabricksSink:
         }
         self._insert("silver.capital_flows", [row])
 
+    # ── Insurer fundamentals registry (XBRL concept-registry + statutory) ──
+
+    def write_triangle_cells(self, cells: Iterable[dict[str, Any]]) -> None:
+        """Loss-triangle cells (SEC-XBRL or NAIC) → bronze.loss_triangles. Carries
+        canonical_lob so the medallion rollups inherit the unified taxonomy."""
+        if not self._enabled:
+            return
+        self._insert("bronze.loss_triangles", [dict(c) for c in cells])
+
+    def write_xbrl_facts(self, facts: Iterable[dict[str, Any]]) -> None:
+        """Component-level insurer XBRL facts → silver.insurer_xbrl_facts."""
+        if not self._enabled:
+            return
+        self._insert("silver.insurer_xbrl_facts", [dict(f) for f in facts])
+
+    def write_statutory_facts(self, facts: Iterable[dict[str, Any]]) -> None:
+        """Statutory high-level facts (NAIC / III) → silver.statutory_facts."""
+        if not self._enabled:
+            return
+        self._insert("silver.statutory_facts", [dict(f) for f in facts])
+
     # ── Internals ─────────────────────────────────────────────────────────
 
     def _insert(self, table: str, rows: list[dict[str, Any]]) -> None:
         """Idempotent batched MERGE INTO write."""
-        if not rows:
+        if not rows or self._broken:
             return
         pk_cols = _PRIMARY_KEYS.get(table)
         if pk_cols is None:
@@ -449,10 +502,12 @@ class DatabricksSink:
                 table,
             )
             return
+        conn = self._connection()
+        if conn is None:                       # connection latched off — no-op
+            return
         cols = list(rows[0].keys())
         qualified = self._qualify(table)
         try:
-            conn = self._connection()
             cur = conn.cursor()
             try:
                 for start in range(0, len(rows), _BATCH_SIZE):
