@@ -9,6 +9,7 @@ wrappers that default `db_path` from settings and fan out to the Databricks
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import sqlite3
@@ -330,6 +331,25 @@ MIGRATIONS = [
     )""",
     "CREATE INDEX IF NOT EXISTS idx_xbrl_facts_insurer ON insurer_xbrl_facts(insurer, dataset)",
     "CREATE INDEX IF NOT EXISTS idx_xbrl_facts_dataset ON insurer_xbrl_facts(dataset)",
+    # Statutory high-level facts for insurers NOT in SEC XBRL (the big mutuals) —
+    # from NAIC InsData (Schedule P summary) and free annual-report / market-share
+    # sources. Triangles go to loss_triangles; this holds premiums / combined
+    # ratio / surplus / market share, source-tagged so canonicalization can unify
+    # statutory + SEC-XBRL facts later.
+    """CREATE TABLE IF NOT EXISTS statutory_facts (
+        fact_key      TEXT PRIMARY KEY,           -- sha256(insurer|source|dataset|field|line|ay|period)
+        insurer       TEXT NOT NULL,
+        source        TEXT NOT NULL,              -- 'naic_insdata'|'annual_report'|'iii'|…
+        dataset       TEXT NOT NULL,              -- premiums|combined_ratio|surplus|market_share
+        field         TEXT,
+        line          TEXT,                       -- statutory line / LOB (nullable)
+        accident_year INTEGER,
+        period        TEXT,                       -- statement year / period
+        value         REAL NOT NULL,
+        unit          TEXT,                       -- 'usd_millions'|'ratio'|'pct'
+        as_of         TEXT
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_statutory_insurer ON statutory_facts(insurer, dataset)",
 ]
 
 
@@ -2131,6 +2151,39 @@ def xbrl_facts_coverage() -> list[sqlite3.Row]:
                FROM insurer_xbrl_facts GROUP BY insurer, dataset
                ORDER BY insurer, dataset"""
         ).fetchall()
+
+
+def _statutory_fact_key(f: dict) -> str:
+    parts = (f["insurer"], f["source"], f["dataset"], f.get("field"),
+             f.get("line"), f.get("accident_year"), f.get("period"))
+    return hashlib.sha256("::".join(str(p) for p in parts).encode()).hexdigest()[:24]
+
+
+def upsert_statutory_facts(facts: list[dict]) -> int:
+    """Bulk-upsert statutory high-level facts; idempotent on a derived fact_key."""
+    rows = []
+    for f in facts:
+        r = dict(f)
+        r.setdefault("field", None)
+        r.setdefault("line", None)
+        r.setdefault("accident_year", None)
+        r.setdefault("period", None)
+        r.setdefault("unit", None)
+        r.setdefault("as_of", None)
+        r["fact_key"] = f.get("fact_key") or _statutory_fact_key(f)
+        rows.append(r)
+    if not rows:
+        return 0
+    with get_conn() as conn:
+        conn.executemany(
+            """INSERT OR REPLACE INTO statutory_facts
+                 (fact_key, insurer, source, dataset, field, line, accident_year,
+                  period, value, unit, as_of)
+               VALUES (:fact_key, :insurer, :source, :dataset, :field, :line,
+                       :accident_year, :period, :value, :unit, :as_of)""",
+            rows,
+        )
+    return len(rows)
 
 
 def load_triangle(insurer: str, lob: str, metric: str,

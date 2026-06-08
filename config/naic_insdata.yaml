@@ -1,0 +1,45 @@
+# NAIC InsData — Schedule P export column mapping.
+#
+# InsData is a download product: run a Schedule P query in the InsData portal
+# (Parts 2 & 3 — incurred & cumulative-paid losses+DCC by accident year and
+# valuation year, plus Part 1 earned premium), export to CSV, and drop the
+# file(s) in $NAIC_INSDATA_DIR (default ./data/naic_insdata). Then run:
+#   digest ingest-naic
+#
+# Map YOUR export's column headers to the canonical fields below. The loader
+# expects LONG form (one row per company × line × accident year × valuation
+# year). If your export is wide (a valuation column per year), pivot it long
+# first, or tell me the layout and I'll add a reshaper.
+column_map:
+  company:        "Company Name"
+  line:           "Line of Business"
+  accident_year:  "Accident Year"
+  valuation_year: "Valuation Year"
+  incurred:       "Incurred Losses and DCC"
+  paid:           "Cumulative Paid Losses and DCC"
+  earned_premium: "Premiums Earned"
+
+# Schedule P amounts are reported in thousands ($000). 0.001 → store USD millions
+# (matching the SEC-XBRL facts so the two sources are directly comparable).
+value_scale: 0.001
+
+# Statutory Schedule P line of business → canonical LOB slug. Extend as needed;
+# unmapped lines are slugified verbatim. (Canonicalization across SEC + statutory
+# LOBs is the next roadmap step — keep these close to the XBRL LOB names.)
+line_map:
+  "Homeowners/Farmowners":              homeowners
+  "Private Passenger Auto Liability":   personal_auto_liability
+  "Private Passenger Auto Liability/Medical": personal_auto_liability
+  "Auto Physical Damage":               auto_physical_damage
+  "Private Passenger Auto Physical Damage": auto_physical_damage
+  "Commercial Auto/Truck Liability":    commercial_auto_liability
+  "Commercial Auto Liability":          commercial_auto_liability
+  "Workers' Compensation":              workers_comp
+  "Workers Compensation":               workers_comp
+  "Commercial Multiple Peril":          commercial_multi_peril
+  "Other Liability - Occurrence":       general_liability
+  "Other Liability - Claims-Made":      general_liability_cm
+  "Products Liability":                 products_liability
+  "Special Property":                   special_property
+  "Medical Professional Liability":     medical_malpractice
+  "Reinsurance - Nonproportional Assumed Property": reinsurance_property

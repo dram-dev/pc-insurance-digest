@@ -108,6 +108,12 @@ class Settings(BaseSettings):
     # Empty → the legiscan ingestor no-ops.
     legiscan_api_key: str = Field(default="", alias="LEGISCAN_API_KEY")
 
+    # NAIC InsData — statutory annual-statement (Schedule P) data for the big
+    # mutuals (State Farm, USAA, Liberty Mutual, …) that file nothing with the
+    # SEC. InsData is a download product, so the loader reads exported files from
+    # this directory (`digest ingest-naic`). Map columns in config/naic_insdata.yaml.
+    naic_insdata_dir: str = Field(default="./data/naic_insdata", alias="NAIC_INSDATA_DIR")
+
     # Databricks medallion sink (Wave 3 Phase 1 scaffold). All writes no-op when
     # databricks_enabled=False; workspace provisioning is deferred to Wave 4.
     # See packages/digest-core/sql/databricks/{bronze,silver,gold}.sql for DDL.

@@ -333,6 +333,51 @@ def learn(horizon: int) -> None:
     console.print(f"  [green]✓[/green] learned_score written for {s.get('scored', 0)} items")
 
 
+@main.command(name="ingest-naic")
+def ingest_naic() -> None:
+    """Load NAIC InsData Schedule P exports → loss_triangles + statutory_facts.
+
+    The only route to loss triangles for the big mutuals (State Farm, USAA,
+    Liberty Mutual, …) that file nothing with the SEC. Export Schedule P from the
+    InsData portal, drop the CSV(s) in $NAIC_INSDATA_DIR, map columns in
+    config/naic_insdata.yaml, then run this. Feeds the same reserving chain.
+    """
+    from digest.ingest import naic_insdata
+
+    db.init_db()
+    console.rule("[bold cyan]NAIC InsData Schedule P ingest")
+    r = naic_insdata.load_from_dir()
+    if r["files"] == 0:
+        console.print(f"[yellow]No export files found in {settings.naic_insdata_dir}.[/yellow]\n"
+                      "Export Schedule P from InsData and drop CSV(s) there "
+                      "(map columns in config/naic_insdata.yaml).")
+        return
+    console.print(f"[green]✓[/green] {r['files']} file(s) → {r['triangle_cells']:,} triangle cells, "
+                  f"{r['premium_facts']:,} premium facts across {r['insurers']} insurers")
+    if r.get("insurer_list"):
+        console.print(f"  [dim]{', '.join(r['insurer_list'])}[/dim]")
+
+
+@main.command(name="ingest-statutory")
+def ingest_statutory() -> None:
+    """Free high-level statutory data — top-writer DPW + market share from III.
+
+    Pulls the big mutuals' direct premiums written and market share (NAIC-sourced
+    III tables) into statutory_facts — so the warehouse isn't blind to State Farm
+    (#1) and peers. No credentials. Triangles still come from `digest ingest-naic`.
+    """
+    from digest.ingest import statutory_summary
+
+    db.init_db()
+    console.rule("[bold cyan]free statutory summary ingest")
+    r = statutory_summary.run_statutory_summary()
+    console.print(f"[green]✓[/green] {r['sources']} source(s) → {r['facts']:,} facts "
+                  f"across {r['insurers']} insurers")
+    if r.get("insurer_list"):
+        console.print(f"  [dim]{', '.join(r['insurer_list'][:14])}"
+                      f"{' …' if len(r['insurer_list']) > 14 else ''}[/dim]")
+
+
 @main.command(name="ingest-xbrl")
 @click.argument("tickers", nargs=-1)
 def ingest_xbrl(tickers: tuple[str, ...]) -> None:
