@@ -32,14 +32,18 @@ _LOOKBACK_MONTHS = 24      # fetch 2y; compute z-score over trailing 12 of m/m %
 _REQUEST_TIMEOUT = 20
 
 
-def _fetch_series(series_id: str) -> list[dict[str, Any]]:
-    """Return the last `_LOOKBACK_MONTHS` observations for a FRED series, oldest first."""
+def _fetch_series(series_id: str, limit: int = _LOOKBACK_MONTHS) -> list[dict[str, Any]]:
+    """Return the last `limit` observations for a FRED series, oldest first.
+
+    Defaults to `_LOOKBACK_MONTHS` (the 2y window the anomaly ingestor needs);
+    the Severity Tape passes a longer `limit` to backfill a trend-able history.
+    """
     params = {
         "series_id":      series_id,
         "api_key":        settings.fred_api_key,
         "file_type":      "json",
         "sort_order":     "desc",
-        "limit":          _LOOKBACK_MONTHS,
+        "limit":          limit,
     }
     r = requests.get(_FRED_API_URL, params=params, timeout=_REQUEST_TIMEOUT)
     r.raise_for_status()
