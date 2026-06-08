@@ -34,7 +34,7 @@ def _to_years(dates: list[str]) -> list[float]:
 
 def fit_trend(series: list[dict]) -> dict:
     """Log-linear OLS over [{date,value}]. Returns annual trend, R², latest dev."""
-    pts = [(s["date"], float(s["value"])) for s in series if float(s["value"]) > 0]
+    pts = [(s["date"], v) for s in series if (v := float(s["value"])) > 0]
     pts.sort(key=lambda x: x[0])
     if len(pts) < 3:
         sys.exit("need >=3 positive points to fit a trend.")
@@ -128,7 +128,9 @@ def main() -> None:
                  "decomposition": decompose(f["annual_trend_pct"], s["annual_trend_pct"])}
             print(json.dumps(r, indent=2))
             return
-        series = payload["series"]
+        series = payload.get("series")
+        if series is None:
+            sys.exit("stdin: provide 'series', or 'frequency' + 'severity'.")
     elif args.index_name:
         series, meta = db_series(args.db, args.index_name)
         if not series:
@@ -144,7 +146,8 @@ def main() -> None:
         out = [f"Loss-cost trend — {meta.get('index_name','stdin series')}", "=" * 48]
         for k, v in r.items():
             lab = k.replace("_", " ")
-            out.append(f"  {lab:<22} {v:+.2f}%" if k.endswith("_pct") else f"  {lab:<22} {v}")
+            out.append(f"  {lab:<22} {round(v, 2) + 0.0:+.2f}%" if k.endswith("_pct")
+                       else f"  {lab:<22} {v}")
         print("\n".join(out))
 
 

@@ -16,8 +16,23 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-BF_PATH = ROOT / ".claude/skills/bornhuetter-ferguson/scripts/bornhuetter_ferguson.py"
-CR_PATH = ROOT / ".claude/skills/combined-ratio-bridge/scripts/combined_ratio_bridge.py"
+SKILLS = ROOT / ".claude/skills"
+BF_PATH = SKILLS / "bornhuetter-ferguson/scripts/bornhuetter_ferguson.py"
+CR_PATH = SKILLS / "combined-ratio-bridge/scripts/combined_ratio_bridge.py"
+CRED_PATH = SKILLS / "credibility-weighting/scripts/credibility.py"
+RATE_PATH = SKILLS / "ratemaking-indication/scripts/ratemaking_indication.py"
+GLM_PATH = SKILLS / "glm-pricing/scripts/glm_pricing.py"
+SEV_PATH = SKILLS / "severity-trend-decomposition/scripts/severity_trend.py"
+
+
+def _run(path: Path, *cli_args, stdin: str | None = None):
+    return subprocess.run([sys.executable, str(path), *cli_args],
+                          input=stdin, capture_output=True, text=True)
+
+
+def _clean_exit(r) -> bool:
+    """Non-zero return with a friendly message, not a Python traceback."""
+    return r.returncode != 0 and "Traceback" not in (r.stderr + r.stdout)
 
 
 def _load(path: Path, name: str):
@@ -158,3 +173,76 @@ def test_cr_demo_still_reconciles():
     d = json.loads(r.stdout)
     assert round(d["combined_ratio"] * 100, 2) == 93.0
     assert round(d["underlying_combined"] * 100, 2) == 83.0
+
+
+# ── credibility-weighting (round-2 audit) ─────────────────────────────────────
+
+def test_credibility_stdin_buhlmann_nk_works():
+    """The documented '--n & --k' Bühlmann path now works via stdin (the dispatch
+    gated on args.mode instead of the resolved mode)."""
+    r = _run(CRED_PATH, "--stdin",
+             stdin=json.dumps({"mode": "buhlmann", "n": 300, "k": 40,
+                               "observed": 0.8, "complement": 0.65}))
+    assert r.returncode == 0, r.stderr
+    d = json.loads(r.stdout)
+    assert d["mode"] == "buhlmann" and round(d["Z"], 4) == round(300 / 340, 4)
+
+
+def test_credibility_classical_missing_n_exits_cleanly():
+    assert _clean_exit(_run(CRED_PATH, "--mode", "classical", "--observed", "0.8"))
+
+
+def test_credibility_buhlmann_zero_vhm_exits_cleanly():
+    r = _run(CRED_PATH, "--stdin",
+             stdin=json.dumps({"mode": "buhlmann", "n": 10, "epv": 5, "vhm": 0}))
+    assert _clean_exit(r) and "vhm" in (r.stderr + r.stdout).lower()
+
+
+# ── ratemaking-indication (round-2 audit) ─────────────────────────────────────
+
+def test_ratemaking_missing_key_exits_cleanly():
+    r = _run(RATE_PATH, "--method", "loss_ratio", "--loss-lae-ratio", "0.65",
+             "--fixed-expense-ratio", "0.06", "--variable-expense-ratio", "0.25")
+    assert _clean_exit(r) and "target_profit" in (r.stderr + r.stdout)
+
+
+def test_ratemaking_zero_current_rate_exits_cleanly():
+    r = _run(RATE_PATH, "--stdin",
+             stdin=json.dumps({"method": "pure_premium", "pure_premium": 300,
+                               "fixed_expense_per_exposure": 20,
+                               "variable_expense_ratio": 0.25, "target_profit": 0.05,
+                               "current_avg_rate": 0}))
+    assert _clean_exit(r)
+
+
+# ── glm-pricing (round-2 audit) ───────────────────────────────────────────────
+
+def test_glm_zero_exposure_exits_cleanly():
+    r = _run(GLM_PATH, stdin=json.dumps({"family": "poisson", "rows": [
+        {"exposure": 0, "count": 0, "factors": {"region": "A"}},
+        {"exposure": 100, "count": 10, "factors": {"region": "B"}}]}))
+    assert _clean_exit(r) and "exposure" in (r.stderr + r.stdout)
+
+
+def test_glm_singular_design_exits_cleanly():
+    # region and plan are perfectly collinear → singular design matrix.
+    r = _run(GLM_PATH, stdin=json.dumps({"family": "poisson", "rows": [
+        {"exposure": 100, "count": 10, "factors": {"region": "A", "plan": "P"}},
+        {"exposure": 100, "count": 12, "factors": {"region": "A", "plan": "P"}},
+        {"exposure": 100, "count": 20, "factors": {"region": "B", "plan": "Q"}},
+        {"exposure": 100, "count": 22, "factors": {"region": "B", "plan": "Q"}}]}))
+    assert _clean_exit(r) and "glm:" in (r.stderr + r.stdout)
+
+
+# ── severity-trend-decomposition (round-2 audit) ──────────────────────────────
+
+def test_severity_no_negative_zero_formatting():
+    r = _run(SEV_PATH, "--stdin", "--format", "text",
+             stdin=json.dumps({"series": [{"date": "2020-01-01", "value": 100},
+                                          {"date": "2021-01-01", "value": 100},
+                                          {"date": "2022-01-01", "value": 100}]}))
+    assert r.returncode == 0 and "-0.00%" not in r.stdout
+
+
+def test_severity_stdin_missing_series_exits_cleanly():
+    assert _clean_exit(_run(SEV_PATH, "--stdin", stdin="{}"))

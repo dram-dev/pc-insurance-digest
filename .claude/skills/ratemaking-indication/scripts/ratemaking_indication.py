@@ -33,6 +33,13 @@ import json
 import sys
 
 
+def _req(p: dict, key: str) -> float:
+    """Fetch a required numeric input or exit with a friendly message (not a KeyError)."""
+    if p.get(key) is None:
+        sys.exit(f"ratemaking: missing required input {key!r}.")
+    return float(p[key])
+
+
 def _trend_factor(annual: float, years: float) -> float:
     return (1.0 + annual) ** years
 
@@ -44,22 +51,24 @@ def loss_ratio_method(p: dict) -> dict:
         lr = float(p["loss_lae_ratio"])
         detail = {"loss_lae_ratio_input": lr}
     else:
-        losses = float(p["losses"])
-        premium = float(p["premium"])
+        losses = _req(p, "losses")
+        premium = _req(p, "premium")
         dev = float(p.get("development", 1.0))
         trend = _trend_factor(float(p.get("trend_annual", 0.0)),
                               float(p.get("trend_years", 0.0)))
         on_level = float(p.get("on_level", 1.0))
-        ult = losses * dev * trend
         prem_crl = premium * on_level
+        if prem_crl == 0:
+            sys.exit("ratemaking: premium × on_level must be non-zero.")
+        ult = losses * dev * trend
         lr = ult / prem_crl
         detail = {"ultimate_loss_lae": round(ult, 4),
                   "premium_at_current_rate_level": round(prem_crl, 4),
                   "development": dev, "trend_factor": round(trend, 6),
                   "on_level": on_level}
-    fixed = float(p["fixed_expense_ratio"])
-    var = float(p["variable_expense_ratio"])
-    profit = float(p["target_profit"])
+    fixed = _req(p, "fixed_expense_ratio")
+    var = _req(p, "variable_expense_ratio")
+    profit = _req(p, "target_profit")
     variable_perm = 1.0 - var - profit
     if variable_perm <= 0:
         sys.exit("variable expense ratio + target profit must be < 1.")
@@ -84,8 +93,10 @@ def pure_premium_method(p: dict) -> dict:
         pp = float(p["pure_premium"])
         detail = {"pure_premium_input": pp}
     else:
-        losses = float(p["losses"])
-        exposures = float(p["exposures"])
+        losses = _req(p, "losses")
+        exposures = _req(p, "exposures")
+        if exposures == 0:
+            sys.exit("ratemaking: exposures must be non-zero.")
         dev = float(p.get("development", 1.0))
         trend = _trend_factor(float(p.get("trend_annual", 0.0)),
                               float(p.get("trend_years", 0.0)))
@@ -93,9 +104,9 @@ def pure_premium_method(p: dict) -> dict:
         detail = {"projected_ultimate_loss_lae": round(losses * dev * trend, 4),
                   "exposures": exposures, "development": dev,
                   "trend_factor": round(trend, 6)}
-    fixed_pe = float(p["fixed_expense_per_exposure"])
-    var = float(p["variable_expense_ratio"])
-    profit = float(p["target_profit"])
+    fixed_pe = _req(p, "fixed_expense_per_exposure")
+    var = _req(p, "variable_expense_ratio")
+    profit = _req(p, "target_profit")
     variable_perm = 1.0 - var - profit
     if variable_perm <= 0:
         sys.exit("variable expense ratio + target profit must be < 1.")
@@ -112,6 +123,8 @@ def pure_premium_method(p: dict) -> dict:
     }
     if p.get("current_avg_rate") is not None:
         cur = float(p["current_avg_rate"])
+        if cur == 0:
+            sys.exit("ratemaking: current_avg_rate must be non-zero for a % change.")
         out["current_avg_rate"] = cur
         out["indicated_change_pct"] = round((indicated_rate / cur - 1.0) * 100.0, 4)
     return out
@@ -124,13 +137,14 @@ def render_text(r: dict) -> str:
             continue
         label = k.replace("_", " ")
         if k.endswith("_pct"):
-            out.append(f"  {label:<34} {v:+.2f}%")
+            out.append(f"  {label:<34} {round(v, 2) + 0.0:+.2f}%")  # +0.0 kills -0.00
         elif isinstance(v, float):
             out.append(f"  {label:<34} {v:,.4f}")
         else:
             out.append(f"  {label:<34} {v}")
     if "indicated_change_pct" in r:
-        out += ["", f"  >>> INDICATED RATE CHANGE: {r['indicated_change_pct']:+.2f}%"]
+        chg = round(r["indicated_change_pct"], 2) + 0.0
+        out += ["", f"  >>> INDICATED RATE CHANGE: {chg:+.2f}%"]
     return "\n".join(out)
 
 
