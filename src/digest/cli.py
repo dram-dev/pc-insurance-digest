@@ -759,6 +759,20 @@ def weekly(date_iso: str | None, calibration: bool) -> None:
     from digest.obsidian import publish_weekly
 
     db.init_db()
+
+    # Refresh the severity tape first (monthly FRED loss-cost levels) so the note
+    # and calibration loop see the freshest loss-cost regime. Weekly is ample for
+    # monthly CPI/PPI data. Best-effort: a FRED hiccup never blocks the note.
+    console.rule("[bold cyan]severity tape")
+    try:
+        from digest.severity_tape import run_severity_tape
+        st = run_severity_tape()
+        console.print(
+            f"  [green]✓[/green] {st['components']} components, {st['written']} rows"
+        )
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"  [yellow]severity tape skipped:[/yellow] {exc}")
+
     console.rule("[bold cyan]weekly digest")
     try:
         result = publish_weekly(date_iso=date_iso)

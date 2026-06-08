@@ -1,4 +1,4 @@
-"""Severity Tape (EKG Lead 3) — blended loss-cost index → inflation boost.
+"""Severity Tape (EKG Lead 3) — blended loss-cost index → inflation boost + trend.
 
 `signals._inflation_keyword_boost` fires a flat 1.2× whenever an item names a
 loss-cost driver (auto parts, repair labor, medical, used-car, severity). That's
@@ -7,17 +7,27 @@ series PC Digest already ingests (`config/fred_series.yaml`) into one severity
 tape, so the boost can scale with the actual severity regime:
 
     FRED parts/labor/used-car/medical series   (already ingested by fred.py)
-      → run_severity_tape()  → per-series m/m z-score + a blended z
+      → run_severity_tape()  → a monthly LEVEL series per component + a blended,
+                               rebased composite, each with a rolling 12m z
       → db.upsert_severity_index()  (local mirror of pc_bronze.severity_index)
-      → severity_regime()  → blended z
-      → signals._inflation_keyword_boost(blob, boost_value, severity_z)
-         (lifts the keyword boost when the tape is hot; unchanged otherwise)
+      → severity_regime()  → latest blended z      (inflation-boost magnitude)
+      → severity-trend-decomposition skill  → fit ln(value) over the level tape
+
+Two consumers, two columns:
+  - `value` is the index **level** (FRED observation, or for the blend an
+    equal-weighted composite rebased to 100 at a common base month). The
+    trend skill fits `ln(value)` over the level series, so it must be positive
+    and compounding — not a m/m %.
+  - `zscore_12m` is the **rolling** z of the month's m/m % vs its trailing-12m
+    distribution (fred.py's per-print semantics). The *latest* row's z is
+    identical to the old single-point tape, so `severity_regime()` and the
+    inflation boost are behavior-preserving — there's just history behind them.
 
 Behavior-preserving until `digest severity-tape` runs: with no stored blend,
 `severity_regime()` returns None and the inflation boost keeps its flat value.
 
 Databricks-native upgrade: Manheim UVVI joins the same table as a `used_vehicle`
-component and `ai_forecast()` projects the tape; this numpy z-blend over the
+component and `ai_forecast()` projects the tape; this numpy-free z-blend over the
 existing FRED series (the `fred.py` pattern) is the Free-Edition default.
 """
 from __future__ import annotations
@@ -33,6 +43,10 @@ from digest import db
 logger = logging.getLogger(__name__)
 
 _ANOMALY_Z = 1.5
+_TAPE_LOOKBACK_MONTHS = 120   # fetch ~10y of monthly levels for a trend-able tape
+_MIN_TAPE_POINTS = 6          # a series needs ≥6 monthly levels to contribute
+_Z_MIN_HISTORY = 3            # ≥3 prior m/m points before a rolling z is defined
+_Z_TRAILING = 11             # trailing m/m points in the z window (fred.py: last-12 ⧵ latest)
 
 # Map a FRED series id → severity category for the tape (label fallback elsewhere).
 _CATEGORY = {
@@ -43,70 +57,142 @@ _CATEGORY = {
 }
 
 
-def _series_z(obs: list, mom_changes) -> tuple[str, float, float] | None:
-    """(latest_date, latest_mom_pct, z) for one FRED series, or None if too short.
-    Mirrors fred.py's z math: latest m/m % vs the trailing-12m m/m distribution."""
-    changes = mom_changes(obs)
-    if len(changes) < 6:
-        return None
-    window = [pct for _, pct in changes[-12:]]
-    latest_date, latest_pct = changes[-1]
-    history = window[:-1] if len(window) > 1 else window
-    if len(history) < 3:
-        return None
-    mean = statistics.fmean(history)
-    stdev = statistics.pstdev(history)
-    if stdev == 0:
-        return None
-    return latest_date, latest_pct, (latest_pct - mean) / stdev
+def _level_series(obs: list) -> list[tuple[str, float]]:
+    """[(date, level)] for valid monthly observations, oldest first (skips '.')."""
+    out: list[tuple[str, float]] = []
+    for o in obs:
+        raw = o.get("value")
+        if raw in (None, ".", ""):
+            continue
+        try:
+            out.append((o.get("date", ""), float(raw)))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _rolling_z(mom_changes: list[tuple[str, float]]) -> dict[str, float]:
+    """{date: z} — each month's m/m % vs its trailing-12m distribution.
+
+    Mirrors fred.py's z for the latest print (history = the up-to-11 m/m points
+    before the month), rolled across every month with enough history, so each
+    stored row carries its own hotness read. Months without ≥_Z_MIN_HISTORY
+    prior points (or a zero-variance window) get no z and stay out of the map.
+    """
+    zmap: dict[str, float] = {}
+    for i, (date, pct) in enumerate(mom_changes):
+        history = [p for _, p in mom_changes[max(0, i - _Z_TRAILING):i]]
+        if len(history) < _Z_MIN_HISTORY:
+            continue
+        mean = statistics.fmean(history)
+        stdev = statistics.pstdev(history)
+        if stdev == 0:
+            continue
+        zmap[date] = (pct - mean) / stdev
+    return zmap
+
+
+def _blended_rows(
+    comp_levels: list[dict[str, float]],
+    comp_zs: list[dict[str, float]],
+    fetched_at: str,
+) -> list[dict]:
+    """Composite blended tape, ascending by date.
+
+    Components sit on different index bases (parts CPI ≠ medical CPI), so a raw
+    average is meaningless — rebase each to 100 at a common base month (the
+    latest of the per-series start dates, where every series has data), then
+    average the rebased levels into an equal-weighted composite the trend skill
+    can fit. The blended z is the mean of component z's that month. A row is
+    emitted only when at least a majority of components are present, so a thin
+    early month can't define the blend.
+    """
+    if not comp_levels:
+        return []
+    need = max(1, (len(comp_levels) + 1) // 2)
+    base_date = max(min(levels) for levels in comp_levels)   # latest per-series start
+    all_dates = sorted({d for levels in comp_levels for d in levels if d >= base_date})
+
+    out: list[dict] = []
+    for date in all_dates:
+        rebased = [
+            levels[date] / levels[base_date] * 100.0
+            for levels in comp_levels
+            if levels.get(date) and levels.get(base_date)
+        ]
+        if len(rebased) < need:
+            continue
+        zs = [zmap[date] for zmap in comp_zs if date in zmap]
+        z = statistics.fmean(zs) if zs else None
+        out.append({
+            "index_name": "blended_severity", "observation_date": date,
+            "value": round(statistics.fmean(rebased), 4),
+            "zscore_12m": round(z, 3) if z is not None else None,
+            "is_anomaly": int(z is not None and abs(z) >= _ANOMALY_Z),
+            "category": "blended", "source": "fred", "fetched_at": fetched_at,
+        })
+    return out
 
 
 def run_severity_tape(_fetch=None) -> dict[str, int]:
-    """Compute per-series + blended severity z over the FRED loss-cost series and
-    upsert severity_index rows. `_fetch(series_id) -> observations` is injectable
-    for tests; defaults to the live FRED fetch (needs FRED_API_KEY)."""
+    """Backfill the full monthly severity tape: one level row per (series, month)
+    plus a rebased blended composite, each carrying a rolling 12m z. `_fetch(
+    series_id) -> observations` is injectable for tests; production pulls
+    `_TAPE_LOOKBACK_MONTHS` of history from FRED (needs FRED_API_KEY)."""
     from digest.ingest.fred import _CONFIG_PATH, _fetch_series, _mom_pct_changes
 
-    fetch = _fetch or _fetch_series
+    fetch = _fetch or (lambda sid: _fetch_series(sid, limit=_TAPE_LOOKBACK_MONTHS))
     series = (yaml.safe_load(_CONFIG_PATH.read_text()) or {}).get("series", [])
     fetched_at = datetime.now(tz=timezone.utc).isoformat()
+
     rows: list[dict] = []
-    component_z: list[float] = []
-    latest_date = ""
+    comp_levels: list[dict[str, float]] = []
+    comp_zs: list[dict[str, float]] = []
+
     for entry in series:
         sid = entry["id"]
         try:
-            res = _series_z(fetch(sid), _mom_pct_changes)
-        except Exception as exc:  # noqa: BLE001
+            obs = fetch(sid)
+        except Exception as exc:  # noqa: BLE001 — one bad series shouldn't abort
             logger.warning("severity_tape: fetch failed for %s: %s", sid, exc)
             continue
-        if res is None:
+        levels = _level_series(obs)
+        if len(levels) < _MIN_TAPE_POINTS:
             continue
-        date, pct, z = res
-        latest_date = max(latest_date, date)
-        component_z.append(z)
-        rows.append({
-            "index_name": f"fred_{sid}", "observation_date": date,
-            "value": round(pct, 3), "zscore_12m": round(z, 3),
-            "is_anomaly": int(abs(z) >= _ANOMALY_Z),
-            "category": _CATEGORY.get(sid, "other"), "source": "fred",
-            "fetched_at": fetched_at,
-        })
-    if not component_z:
+        zmap = _rolling_z(_mom_pct_changes(obs))
+        category = _CATEGORY.get(sid, "other")
+        for date, level in levels:
+            z = zmap.get(date)
+            rows.append({
+                "index_name": f"fred_{sid}", "observation_date": date,
+                "value": round(level, 4),
+                "zscore_12m": round(z, 3) if z is not None else None,
+                "is_anomaly": int(z is not None and abs(z) >= _ANOMALY_Z),
+                "category": category, "source": "fred", "fetched_at": fetched_at,
+            })
+        comp_levels.append(dict(levels))
+        comp_zs.append(zmap)
+
+    components = len(comp_levels)
+    if components == 0:
         logger.info("severity_tape: no usable FRED series — skipping")
         return {"components": 0, "written": 0}
 
-    blended = statistics.fmean(component_z)
-    rows.append({
-        "index_name": "blended_severity", "observation_date": latest_date,
-        "value": round(blended, 3), "zscore_12m": round(blended, 3),
-        "is_anomaly": int(abs(blended) >= _ANOMALY_Z),
-        "category": "blended", "source": "fred", "fetched_at": fetched_at,
-    })
+    blended = _blended_rows(comp_levels, comp_zs, fetched_at)
+    rows.extend(blended)
     written = db.upsert_severity_index(rows)
-    logger.info("severity_tape: %d components, blended z=%+.2f", len(component_z), blended)
-    return {"components": len(component_z), "written": written,
-            "anomaly": int(abs(blended) >= _ANOMALY_Z)}
+
+    latest_z = blended[-1]["zscore_12m"] if blended else None
+    logger.info(
+        "severity_tape: %d components → %d rows (%d blended), latest blended z=%s",
+        components, written, len(blended),
+        f"{latest_z:+.2f}" if latest_z is not None else "n/a",
+    )
+    return {
+        "components": components,
+        "written": written,
+        "anomaly": int(latest_z is not None and abs(latest_z) >= _ANOMALY_Z),
+    }
 
 
 def severity_regime() -> float | None:
