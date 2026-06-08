@@ -131,6 +131,8 @@ def fit(payload: dict) -> dict:
 
     if family == "poisson":
         y = [float(r["count"]) for r in rows]
+        if any(float(r["exposure"]) <= 0 for r in rows):
+            sys.exit("glm: poisson exposure must be > 0 for every row (offset = log exposure).")
         offset = [math.log(float(r["exposure"])) for r in rows]
         prior_w = [1.0] * len(rows)
         target_label = "frequency (per exposure)"
@@ -175,7 +177,12 @@ def main() -> None:
     ap.add_argument("--format", choices=["text", "json"], default="text")
     args = ap.parse_args()
     payload = json.load(open(args.data)) if args.data else json.load(sys.stdin)
-    r = fit(payload)
+    try:
+        r = fit(payload)
+    except KeyError as exc:
+        sys.exit(f"glm: missing required field {exc}.")
+    except ValueError as exc:                       # e.g. solve()'s singular design
+        sys.exit(f"glm: {exc}")
     print(json.dumps(r, indent=2) if args.format == "json" else render_text(r))
 
 

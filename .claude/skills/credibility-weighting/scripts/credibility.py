@@ -32,6 +32,8 @@ import sys
 
 def full_credibility_standard(p: float, k: float) -> float:
     """n_full = (z_{(1+p)/2} / k)^2 — claims for full credibility, Poisson frequency."""
+    if k <= 0:
+        sys.exit("classical: k (tolerance) must be > 0.")
     z = statistics.NormalDist().inv_cdf((1.0 + p) / 2.0)
     return (z / k) ** 2
 
@@ -104,7 +106,9 @@ def main() -> None:
     ap.add_argument("--format", choices=["text", "json"], default="json")
     ap.add_argument("--n", type=float)
     ap.add_argument("--p", type=float, default=0.9)
-    ap.add_argument("--k", type=float, default=0.05)
+    ap.add_argument("--k", type=float,
+                    help="classical tolerance k (default 0.05); or the Bühlmann "
+                         "credibility constant K with --n.")
     ap.add_argument("--full", type=float)
     ap.add_argument("--epv", type=float); ap.add_argument("--vhm", type=float)
     ap.add_argument("--observed", type=float); ap.add_argument("--complement", type=float)
@@ -118,15 +122,24 @@ def main() -> None:
         mode = args.mode
 
     if mode == "classical":
+        if p.get("n") is None:
+            sys.exit("classical: --n (observed claim count) is required.")
         r = classical(p["n"], p.get("observed"), p.get("complement"),
                       p.get("p", 0.9), p.get("k", 0.05), p.get("full"))
     elif mode == "buhlmann":
         if "groups" in p:
             r = buhlmann_empirical(p["groups"])
         elif p.get("epv") is not None and p.get("vhm") is not None:
-            k = p["epv"] / p["vhm"]
-            r = buhlmann_from_k(p["n"], k, p.get("observed"), p.get("complement"))
-        elif p.get("k") is not None and p.get("n") is not None and args.mode == "buhlmann":
+            if p["vhm"] <= 0:
+                sys.exit("buhlmann: vhm must be > 0 (no variance of hypothetical means "
+                         "→ zero credibility to the group).")
+            if p.get("n") is None:
+                sys.exit("buhlmann: --n (group size) is required with --epv/--vhm.")
+            r = buhlmann_from_k(p["n"], p["epv"] / p["vhm"],
+                                p.get("observed"), p.get("complement"))
+        # Resolved `mode` (not args.mode) gates this — so a stdin payload of
+        # {mode:buhlmann, n, k} reaches the --n & --k path it advertises.
+        elif p.get("k") is not None and p.get("n") is not None:
             r = buhlmann_from_k(p["n"], p["k"], p.get("observed"), p.get("complement"))
         else:
             sys.exit("buhlmann: give --groups (stdin), or --epv & --vhm, or --n & --k.")
