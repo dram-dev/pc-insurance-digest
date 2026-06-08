@@ -10,8 +10,11 @@ sources:
     line: personal_auto
     year: 2023
     enabled: true
+  # Homeowners III table uses a different layout than auto — parse_top_writers
+  # returns 0 for it, so keep it disabled (avoids a wasted fetch each run) until
+  # a home-specific parser lands. Auto already covers the big mutuals.
   - name: iii_home
     url: https://www.iii.org/fact-statistic/facts-statistics-homeowners-insurance
     line: homeowners
     year: 2023
-    enabled: true
+    enabled: false

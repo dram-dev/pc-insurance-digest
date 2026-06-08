@@ -176,14 +176,20 @@ class DatabricksSink:
             )
             # Bound the attempt: a 10s socket timeout AND no internal retries, so
             # an unreachable warehouse fails in seconds instead of the connector's
-            # default multi-minute retry/backoff. Fall back if a kwarg is unknown
-            # to this connector version (then the _broken latch is the backstop).
-            fast_fail = {"_socket_timeout": _CONNECT_TIMEOUT,
-                         "_retry_stop_after_attempts_count": 1}
-            try:
-                conn = sql.connect(**connect_kwargs, **fast_fail)
-            except TypeError:
-                conn = sql.connect(**connect_kwargs)
+            # default multi-minute retry/backoff. Degrade one kwarg at a time so a
+            # connector that supports only the socket timeout still keeps it
+            # (TypeError = unknown kwarg → drop the most-specialized one first; the
+            # _broken latch is the final backstop). Non-TypeError errors (auth,
+            # network) propagate to the outer handler and latch immediately.
+            for extra in ({"_socket_timeout": _CONNECT_TIMEOUT,
+                           "_retry_stop_after_attempts_count": 1},
+                          {"_socket_timeout": _CONNECT_TIMEOUT},
+                          {}):
+                try:
+                    conn = sql.connect(**connect_kwargs, **extra)
+                    break
+                except TypeError:
+                    continue
             cur = conn.cursor()
             try:
                 cur.execute(f"USE CATALOG `{self._catalog}`")
