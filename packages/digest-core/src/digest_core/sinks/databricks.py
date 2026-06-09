@@ -78,6 +78,9 @@ _PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
     "bronze.loss_triangles":       ("insurer", "lob", "metric", "accident_year", "dev_period", "as_of"),
     "silver.insurer_xbrl_facts":   ("fact_key",),
     "silver.statutory_facts":      ("fact_key",),
+    # Alpha engine — daily price store + return forecasts.
+    "bronze.prices":               ("ticker", "date"),
+    "silver.return_forecasts":     ("ticker", "as_of", "horizon_days"),
 }
 
 # Bound the connect handshake so an unreachable warehouse can't hang the pipeline
@@ -473,6 +476,19 @@ class DatabricksSink:
             "investors":  flow.get("investors"),
         }
         self._insert("silver.capital_flows", [row])
+
+    def write_prices(self, rows: Iterable[dict[str, Any]]) -> None:
+        """Alpha engine — daily insurer/benchmark closes → bronze.prices."""
+        if not self._enabled:
+            return
+        self._insert("bronze.prices", [dict(r) for r in rows])
+
+    def write_return_forecasts(self, rows: Iterable[dict[str, Any]]) -> None:
+        """Alpha engine — per-(ticker, as_of, horizon) return forecasts →
+        silver.return_forecasts."""
+        if not self._enabled:
+            return
+        self._insert("silver.return_forecasts", [dict(r) for r in rows])
 
     # ── Insurer fundamentals registry (XBRL concept-registry + statutory) ──
 

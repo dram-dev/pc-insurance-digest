@@ -355,6 +355,52 @@ MIGRATIONS = [
     # rollups line up. Populated at upsert time; backfill via db.backfill_canonical_lob().
     "ALTER TABLE loss_triangles ADD COLUMN canonical_lob TEXT",
     "ALTER TABLE statutory_facts ADD COLUMN canonical_lob TEXT",
+    # ── Alpha engine (local ML: data + signal scores → insurer returns) ──────
+    # Daily price store for the 14 insurers + benchmarks (IAK / SPY). Backfilled
+    # from the same free Yahoo/Stooq fetch the outcomes stock_move signal uses
+    # (outcomes.fetch_daily_closes), then refreshed in-pipeline. `kind` separates
+    # the modeled insurers from the benchmark series used for excess returns.
+    """CREATE TABLE IF NOT EXISTS prices (
+        ticker     TEXT NOT NULL,                  -- insurer ticker or benchmark symbol
+        date       TEXT NOT NULL,                  -- 'YYYY-MM-DD' trading day
+        close      REAL NOT NULL,                  -- adjusted close
+        kind       TEXT NOT NULL DEFAULT 'insurer',-- 'insurer' | 'benchmark'
+        source     TEXT,                           -- 'yahoo' | 'stooq'
+        fetched_at TEXT,
+        PRIMARY KEY (ticker, date)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_prices_ticker ON prices(ticker, date)",
+    # Trained return models (LightGBM booster or numpy fallback), one row per
+    # train run. Mirrors learned_models' shape: metrics + serialized model blob.
+    """CREATE TABLE IF NOT EXISTS return_models (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        trained_at     TEXT NOT NULL DEFAULT (datetime('now')),
+        target         TEXT NOT NULL,              -- 'excess_return' | 'beats_peer'
+        horizon_days   INTEGER NOT NULL,           -- forward window
+        algo           TEXT NOT NULL,              -- 'lightgbm' | 'ridge' | 'logreg-numpy'
+        n_samples      INTEGER,
+        ic             REAL,                       -- out-of-sample information coefficient
+        hit_rate       REAL,                       -- sign-agreement on holdout
+        baseline_ic    REAL,                       -- best baseline IC (momentum / signal-only)
+        long_short_ret REAL,                       -- mean top-minus-bottom excess on holdout
+        features_json  TEXT NOT NULL,              -- ordered feature contract
+        model_blob     BLOB,                       -- pickled booster / JSON weights
+        model_json     TEXT,                       -- JSON weights for the numpy fallback
+        metrics_json   TEXT
+    )""",
+    # Per-(ticker, as-of, horizon) forward-return predictions from the latest
+    # model. Advisory — never feeds the heuristic leaderboard.
+    """CREATE TABLE IF NOT EXISTS return_forecasts (
+        ticker       TEXT NOT NULL,
+        as_of        TEXT NOT NULL,                -- prediction date (panel row date)
+        horizon_days INTEGER NOT NULL,
+        pred_excess  REAL,                         -- predicted excess return vs benchmark
+        pred_prob    REAL,                         -- P(beats peer by ≥1σ), classifier head
+        model_id     INTEGER,
+        scored_at    TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (ticker, as_of, horizon_days)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_return_forecasts_asof ON return_forecasts(as_of DESC)",
 ]
 
 
@@ -2036,6 +2082,52 @@ def learning_dataset(horizon_days: int) -> list[sqlite3.Row]:
         ).fetchall()
 
 
+def scored_items_for_features() -> list[sqlite3.Row]:
+    """Every scored item with the fields the alpha feature panel needs: the
+    latest heuristic + learned score, materiality, topic, and the text the
+    insurer-name matcher reads (title + summary), plus ingested_at as the event
+    time for the as-of join. One row per item (latest score)."""
+    with get_conn() as conn:
+        return conn.execute(
+            """
+            WITH latest AS (
+                SELECT item_id, MAX(computed_at) AS computed_at
+                FROM signal_scores GROUP BY item_id
+            )
+            SELECT i.id AS item_id, i.source, i.source_id, i.title, i.summary,
+                   i.topic, i.ingested_at, i.materiality_score,
+                   s.score, s.learned_score
+            FROM latest l
+            JOIN signal_scores s ON s.item_id = l.item_id AND s.computed_at = l.computed_at
+            JOIN items i         ON i.id = l.item_id
+            """
+        ).fetchall()
+
+
+def reserving_signals_all() -> list[sqlite3.Row]:
+    """All reserving signals (insurer, as_of, deterioration) for the as-of join."""
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT insurer, as_of, deterioration_pct, direction
+               FROM reserving_signals ORDER BY as_of""").fetchall()
+
+
+def disclosure_sentiment_all() -> list[sqlite3.Row]:
+    """All disclosure-sentiment rows (insurer, as_of, adverse score) for the as-of join."""
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT insurer, as_of, reserve_tone, adverse_language_score
+               FROM disclosure_sentiment ORDER BY as_of""").fetchall()
+
+
+def regime_signals_all() -> list[sqlite3.Row]:
+    """All regime readings (as_of, multipliers) for the market-wide as-of join."""
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT as_of, market_cycle_mult, cat_load_mult, multiplier
+               FROM regime_signals ORDER BY as_of""").fetchall()
+
+
 def items_to_learn_score() -> list[sqlite3.Row]:
     """Latest-scored items to apply the learned model to (factors + materiality)."""
     with get_conn() as conn:
@@ -2423,6 +2515,142 @@ def latest_severity_index(index_name: str = "blended_severity") -> sqlite3.Row |
                ORDER BY observation_date DESC LIMIT 1""",
             (index_name,),
         ).fetchone()
+
+
+# ── Alpha engine: price store, models, forecasts ────────────────────────────
+
+
+def upsert_prices(rows: list[dict]) -> int:
+    """Persist daily closes (insurers + benchmarks); mirror to bronze.prices.
+
+    Each row: ticker, date, close, kind, source, fetched_at. Idempotent on
+    (ticker, date) — backfill and daily-tail refresh both go through here."""
+    rows = list(rows)
+    if not rows:
+        return 0
+    with get_conn() as conn:
+        conn.executemany(
+            """INSERT OR REPLACE INTO prices
+                 (ticker, date, close, kind, source, fetched_at)
+               VALUES (:ticker, :date, :close, :kind, :source, :fetched_at)""",
+            rows,
+        )
+    sink.write_prices(rows)
+    return len(rows)
+
+
+def price_history(ticker: str, since: str | None = None) -> list[sqlite3.Row]:
+    """Ascending (date, close) rows for a ticker, optionally from `since` (ISO date)."""
+    with get_conn() as conn:
+        if since:
+            return conn.execute(
+                """SELECT date, close FROM prices
+                   WHERE ticker = ? AND date >= ? ORDER BY date""",
+                (ticker, since),
+            ).fetchall()
+        return conn.execute(
+            "SELECT date, close FROM prices WHERE ticker = ? ORDER BY date",
+            (ticker,),
+        ).fetchall()
+
+
+def price_closes(ticker: str) -> dict[str, float]:
+    """{ 'YYYY-MM-DD': close } for a ticker from the store — the shape
+    outcomes.compute_stock_move expects, so the σ label can read the store
+    instead of re-fetching. Empty dict if the ticker isn't stored yet."""
+    return {r["date"]: float(r["close"]) for r in price_history(ticker)}
+
+
+def latest_price_date(ticker: str) -> str | None:
+    """Newest stored trading day for a ticker, or None — used to fetch only the tail."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT MAX(date) AS d FROM prices WHERE ticker = ?", (ticker,)
+        ).fetchone()
+    return row["d"] if row and row["d"] else None
+
+
+def priced_tickers() -> list[str]:
+    """Distinct tickers present in the price store."""
+    with get_conn() as conn:
+        return [r["ticker"] for r in conn.execute(
+            "SELECT DISTINCT ticker FROM prices ORDER BY ticker").fetchall()]
+
+
+def save_return_model(meta: dict) -> int:
+    """Persist a trained return model; return its new id. Mirrors save_learned_model."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO return_models
+                 (target, horizon_days, algo, n_samples, ic, hit_rate,
+                  baseline_ic, long_short_ret, features_json, model_blob,
+                  model_json, metrics_json)
+               VALUES (:target, :horizon_days, :algo, :n_samples, :ic, :hit_rate,
+                       :baseline_ic, :long_short_ret, :features_json, :model_blob,
+                       :model_json, :metrics_json)""",
+            {**{k: meta.get(k) for k in (
+                "target", "horizon_days", "algo", "n_samples", "ic", "hit_rate",
+                "baseline_ic", "long_short_ret", "features_json", "model_blob",
+                "model_json", "metrics_json")}},
+        )
+        return int(cur.lastrowid)
+
+
+def latest_return_model(target: str = "excess_return") -> sqlite3.Row | None:
+    """Newest trained model for a target (default the regression head), or None."""
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT * FROM return_models WHERE target = ?
+               ORDER BY trained_at DESC, id DESC LIMIT 1""",
+            (target,),
+        ).fetchone()
+
+
+def return_model_by_id(model_id: int) -> sqlite3.Row | None:
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM return_models WHERE id = ?", (model_id,)
+        ).fetchone()
+
+
+def upsert_return_forecasts(rows: list[dict]) -> int:
+    """Persist per-(ticker, as_of, horizon) forecasts; mirror to silver.return_forecasts."""
+    rows = list(rows)
+    if not rows:
+        return 0
+    with get_conn() as conn:
+        conn.executemany(
+            """INSERT OR REPLACE INTO return_forecasts
+                 (ticker, as_of, horizon_days, pred_excess, pred_prob, model_id, scored_at)
+               VALUES (:ticker, :as_of, :horizon_days, :pred_excess, :pred_prob,
+                       :model_id, :scored_at)""",
+            rows,
+        )
+    sink.write_return_forecasts(rows)
+    return len(rows)
+
+
+def latest_return_forecasts(horizon_days: int | None = None, limit: int = 50) -> list[sqlite3.Row]:
+    """Most recent forecast per ticker (optionally for one horizon), by predicted excess."""
+    with get_conn() as conn:
+        if horizon_days is not None:
+            return conn.execute(
+                """SELECT f.* FROM return_forecasts f
+                   JOIN (SELECT ticker, MAX(as_of) AS m FROM return_forecasts
+                         WHERE horizon_days = ? GROUP BY ticker) t
+                     ON f.ticker = t.ticker AND f.as_of = t.m
+                   WHERE f.horizon_days = ?
+                   ORDER BY f.pred_excess DESC LIMIT ?""",
+                (horizon_days, horizon_days, limit),
+            ).fetchall()
+        return conn.execute(
+            """SELECT f.* FROM return_forecasts f
+               JOIN (SELECT ticker, horizon_days, MAX(as_of) AS m FROM return_forecasts
+                     GROUP BY ticker, horizon_days) t
+                 ON f.ticker = t.ticker AND f.horizon_days = t.horizon_days AND f.as_of = t.m
+               ORDER BY f.pred_excess DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
 
 
 def upsert_litigation_pressure(sig: dict) -> None:

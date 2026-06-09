@@ -229,3 +229,19 @@ CREATE TABLE IF NOT EXISTS pc_silver.capital_flows (
     CONSTRAINT pc_silver_capital_flows_pk PRIMARY KEY (item_hash)
 )
 USING DELTA;
+
+-- Alpha engine — per-(insurer, as-of, horizon) forward-return forecasts from
+-- the local returns model. Advisory only; never feeds the heuristic
+-- leaderboard. Joins to bronze.prices for realized-vs-predicted accuracy.
+CREATE TABLE IF NOT EXISTS pc_silver.return_forecasts (
+    ticker       STRING NOT NULL,
+    as_of        DATE   NOT NULL,                       -- prediction date
+    horizon_days INT    NOT NULL,
+    pred_excess  DOUBLE,                                 -- predicted excess return vs benchmark
+    pred_prob    DOUBLE,                                 -- P(beats peer by ≥1σ), classifier head
+    model_id     BIGINT,
+    scored_at    TIMESTAMP,
+    CONSTRAINT pc_silver_return_forecasts_pk PRIMARY KEY (ticker, as_of, horizon_days)
+)
+USING DELTA
+PARTITIONED BY (horizon_days);

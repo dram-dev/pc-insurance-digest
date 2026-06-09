@@ -29,6 +29,7 @@ import json
 import logging
 import math
 import re
+import time
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
@@ -99,23 +100,117 @@ def _stooq_symbol(ticker: str) -> str:
     return _STOOQ_OVERRIDE.get(ticker, f"{ticker.lower()}.us")
 
 
+# Tiingo uses lowercase symbols with a hyphen for share classes.
+_TIINGO_OVERRIDE = {"BRK": "brk-b"}
+# Yahoo rate-limits unauthenticated rapid requests with 429 even from residential
+# IPs, so a single shared cookie+crumb session (built once, reused across tickers)
+# plus exponential backoff is what makes the fetch actually populate.
+_YAHOO_BACKOFF = (3.0, 8.0)         # seconds slept after the 1st/2nd 429
+_yahoo_session: requests.Session | None = None
+_yahoo_crumb: str | None = None
+# Circuit breaker: once Yahoo exhausts backoff with a 429, the IP is hard-blocked
+# for this process — flip this so the remaining tickers skip Yahoo instantly
+# instead of each eating the full backoff (≈minutes × 17 tickers otherwise).
+_yahoo_blocked = False
+
+
+def _tiingo_symbol(ticker: str) -> str:
+    return _TIINGO_OVERRIDE.get(ticker, ticker.lower())
+
+
+def _get_yahoo_session() -> tuple[requests.Session, str | None]:
+    """Build (once) a Yahoo session carrying consent cookies + a crumb. Yahoo's
+    chart endpoint is far more forgiving of cookie+crumb traffic than of bare
+    requests; cached module-wide so all tickers in a run share one handshake."""
+    global _yahoo_session, _yahoo_crumb
+    if _yahoo_session is not None:
+        return _yahoo_session, _yahoo_crumb
+    s = requests.Session()
+    s.headers.update(_PRICE_HEADERS)
+    for warm in ("https://fc.yahoo.com/", "https://finance.yahoo.com/"):
+        try:
+            s.get(warm, timeout=20)           # sets A1/A3 consent cookies (may 404)
+        except Exception:  # noqa: BLE001
+            pass
+    crumb = None
+    try:
+        r = s.get("https://query1.finance.yahoo.com/v1/test/getcrumb", timeout=20)
+        if r.status_code == 200 and r.text and "<" not in r.text:
+            crumb = r.text.strip()
+    except Exception:  # noqa: BLE001
+        pass
+    _yahoo_session, _yahoo_crumb = s, crumb
+    return s, crumb
+
+
 def _fetch_yahoo(ticker: str) -> dict[str, float]:
-    """{ 'YYYY-MM-DD': close } from the Yahoo Finance chart JSON API (no key, no
-    pandas). The chart endpoint needs no crumb. Raises on failure."""
+    """{ 'YYYY-MM-DD': close } from the Yahoo chart JSON API via a cookie+crumb
+    session, retrying with backoff on 429 and falling back query1→query2. Raises
+    on non-429 HTTP errors; returns {} only if every host/retry is exhausted."""
+    global _yahoo_blocked
+    if _yahoo_blocked:                       # circuit open — don't retry a hard-blocked IP
+        return {}
     symbol = _YAHOO_OVERRIDE.get(ticker, ticker)
-    url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
-           f"?range=2y&interval=1d")
-    r = requests.get(url, headers=_PRICE_HEADERS, timeout=20)
+    session, crumb = _get_yahoo_session()
+    crumb_q = f"&crumb={requests.utils.quote(crumb)}" if crumb else ""
+    last_exc: Exception | None = None
+    for host in ("query1", "query2"):
+        url = (f"https://{host}.finance.yahoo.com/v8/finance/chart/{symbol}"
+               f"?range=2y&interval=1d{crumb_q}")
+        for attempt, wait in enumerate((*_YAHOO_BACKOFF, None)):
+            r = session.get(url, timeout=20)
+            if r.status_code == 429 and wait is not None:
+                logger.info("outcomes: yahoo 429 for %s (%s, try %d) — backing off %.0fs",
+                            ticker, host, attempt + 1, wait)
+                time.sleep(wait)
+                continue
+            if r.status_code == 429:         # exhausted backoff on this host
+                last_exc = requests.HTTPError("429 (backoff exhausted)")
+                break
+            try:
+                r.raise_for_status()
+            except Exception as exc:  # noqa: BLE001 — try the next host
+                last_exc = exc
+                break
+            res = r.json()["chart"]["result"][0]
+            ts = res["timestamp"]
+            closes_list = res["indicators"]["quote"][0]["close"]
+            out: dict[str, float] = {}
+            for epoch, close in zip(ts, closes_list):
+                if close is None:
+                    continue
+                out[datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%Y-%m-%d")] = float(close)
+            return out
+    # Both hosts failed. If it was a 429, the IP is throttled — open the breaker
+    # so the rest of the run skips Yahoo instead of re-eating the backoff.
+    if last_exc is not None and "429" in str(last_exc):
+        _yahoo_blocked = True
+        logger.warning("outcomes: yahoo 429-blocking this IP — skipping Yahoo for the rest of the run")
+    if last_exc:
+        raise last_exc
+    return {}
+
+
+def _fetch_tiingo(ticker: str) -> dict[str, float]:
+    """{ 'YYYY-MM-DD': adjClose } from Tiingo's free EOD API. The reliable source
+    when TIINGO_API_TOKEN is set (no anti-bot games). {} when no token; raises on
+    a real HTTP error so the caller falls through to Yahoo/Stooq."""
+    from digest.config import settings
+
+    token = settings.tiingo_api_token
+    if not token:
+        return {}
+    url = (f"https://api.tiingo.com/tiingo/daily/{_tiingo_symbol(ticker)}/prices"
+           f"?startDate=2024-01-01&token={token}")
+    r = requests.get(url, headers={"Content-Type": "application/json"}, timeout=20)
     r.raise_for_status()
-    res = r.json()["chart"]["result"][0]
-    ts = res["timestamp"]
-    closes_list = res["indicators"]["quote"][0]["close"]
-    out: dict[str, float] = {}
-    for epoch, close in zip(ts, closes_list):
-        if close is None:
+    closes: dict[str, float] = {}
+    for row in r.json():
+        try:
+            closes[row["date"][:10]] = float(row.get("adjClose") or row["close"])
+        except (KeyError, TypeError, ValueError):
             continue
-        out[datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%Y-%m-%d")] = float(close)
-    return out
+    return closes
 
 
 def _fetch_stooq(ticker: str) -> dict[str, float]:
@@ -134,11 +229,14 @@ def _fetch_stooq(ticker: str) -> dict[str, float]:
 
 
 def fetch_daily_closes(ticker: str) -> dict[str, float]:
-    """{ 'YYYY-MM-DD': close } for the stock-move signal. Tries Yahoo (chart JSON)
-    then Stooq (CSV) — datacenter IPs get rate-limited/challenged, so a residential
-    host (the Mac mini) is where this actually populates. {} on total failure (the
-    signal just doesn't fire — never aborts the backtest)."""
-    for source, fetch in (("yahoo", _fetch_yahoo), ("stooq", _fetch_stooq)):
+    """{ 'YYYY-MM-DD': close } for a ticker. Source order: Tiingo (if a token is
+    set — the reliable path), then Yahoo (cookie+crumb session w/ 429 backoff),
+    then Stooq. {} on total failure (the signal just doesn't fire — never aborts
+    the backtest). Both unauthenticated vendors throttle/challenge datacenter and
+    rapid traffic, so set TIINGO_API_TOKEN for dependable backfills."""
+    for source, fetch in (("tiingo", _fetch_tiingo),
+                          ("yahoo", _fetch_yahoo),
+                          ("stooq", _fetch_stooq)):
         try:
             closes = fetch(ticker)
             if closes:
@@ -258,6 +356,17 @@ def _percentile(values, q: float) -> float:
     return float(vals[min(len(vals) - 1, int(q * len(vals)))])
 
 
+def _closes_for(ticker: str) -> dict[str, float]:
+    """Closes for the σ label — read the persisted price store first
+    (db.price_closes), fall back to a live fetch on a miss. The store is the
+    backfilled, reproducible source; the live fetch keeps the backtest working
+    before `digest forecast prices` has ever run."""
+    stored = db.price_closes(ticker)
+    if stored:
+        return stored
+    return fetch_daily_closes(ticker)
+
+
 def run_outcomes(horizons: tuple[int, ...] = (7, 30), limit: int = 500) -> dict[int, int]:
     """Score outcomes for matured items at each horizon. Returns {horizon: n_checked}."""
     emb_rows = db.embeddings_with_time()
@@ -290,7 +399,7 @@ def run_outcomes(horizons: tuple[int, ...] = (7, 30), limit: int = 500) -> dict[
                 if edgar_filed:
                     signals.append("edgar")
                 if ticker not in price_cache:
-                    price_cache[ticker] = fetch_daily_closes(ticker)
+                    price_cache[ticker] = _closes_for(ticker)
                 smz, sband = compute_stock_move(price_cache[ticker], t, horizon)
                 if smz is not None and abs(smz) >= STOCK_TRIGGER_SIGMA:
                     signals.append("stock_move")

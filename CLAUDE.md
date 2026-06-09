@@ -356,6 +356,46 @@ BRK (Berkshire Hathaway) was added in Wave 2.x to cover GEICO via the
 parent's consolidated filings. The insurer-priority boost treats BRK at
 1.5× (same as PGR/ALL) since GEICO is a personal-auto big-3 carrier.
 
+### Alpha engine (local ML: data + signal scores → insurer returns)
+
+A **fully local** ML layer that predicts each public insurer's **forward,
+benchmark-relative stock return** from the digest's own data + signal scores —
+an early-warning / alpha signal that rides *alongside* the heuristic leaderboard
+and **never feeds it**. Opt-in deps: `uv sync --extra ml` (LightGBM, scikit-learn,
+pandas; `ml-explain` for shap, `ml-mlx` for the MLX head). CLI: `digest forecast
+{prices,backtest,train,predict}`.
+
+- **Stack:** primary learner is scikit-learn **`HistGradientBoosting`** (LightGBM-
+  class GBT, **no `libomp` dylib needed** — LightGBM is an optional accelerator,
+  lazy-imported with graceful fallback). pandas builds the panel; an optional
+  Apple **MLX** MLP head (`alpha_mlx.py`) can be blended in (Mac-only, off by
+  default).
+- **Price store** (`prices` table, `prices.py`): daily closes for the 14 insurers
+  + `IAK`/`SPY` benchmarks, backfilled from the same free Yahoo/Stooq fetch the
+  outcomes σ signal uses; refreshed in `pipeline` (stage 5b). `outcomes.py` now
+  reads this store first (`_closes_for`) and only falls back to a live fetch.
+- **Feature panel** (`features.py`): one row per **(ticker, as-of date)**, the
+  headline correctness property is **no lookahead** — signal aggregates use a
+  trailing window; reserving/disclosure/regime use as-of-or-before reads; price
+  controls use closes ≤ t. The forward-return **label lives only in `alpha.py`**,
+  so the panel can't leak the future. Math is isolated in pure functions for
+  unit-testing (`tests/test_features.py` asserts the leakage guards).
+- **Honesty gates:** training is a **purged + embargoed walk-forward** (embargo =
+  one horizon); the scorecard reports out-of-sample **IC**, hit-rate and a
+  top-minus-bottom **long-short** return **vs three baselines** (zero, momentum,
+  signal-only). Surfacing says so explicitly when the model does **not** beat the
+  baselines. Small-n gating (`MIN_LABELED=60`) returns a `model_id: None` note
+  rather than a bogus model — same discipline as `learn.py`.
+- **Persistence + surfacing:** `return_models` (pickled booster + scorecard),
+  `return_forecasts` (per-ticker predictions) → Databricks `bronze.prices` /
+  `silver.return_forecasts` / `gold.forecast_accuracy`; MCP tool
+  `return_forecasts` (Analyst can query forecasts + scorecard); Obsidian Signal
+  Desk **"📈 Signal → Return Watch"** panel (`dashboard.build_return_watch`).
+- **Status:** code + tests shipped (445 tests green); **runs on n≈0 until the
+  price store is backfilled on the Mac mini** (`digest forecast prices` needs the
+  residential host — datacenter IPs are throttled by Yahoo/Stooq). This is the
+  same data-coverage bottleneck as the rest of the warehouse.
+
 ### EDGAR auto-keep behavior
 
 The Python hook (`db.auto_keep_insurer_filings`) auto-keeps every 8-K /
@@ -429,6 +469,10 @@ src/digest/
 │                 # + Wave 2 materiality field for leaderboard llm_judgment
 ├── regime.py     # Wave 2 two-axis regime detector (market_cycle × cat_load)
 ├── signals.py    # Wave 2 leaderboard formula + per-item score persistence
+├── prices.py     # Alpha engine — daily price store (14 insurers + IAK/SPY); reuses outcomes.fetch_daily_closes
+├── features.py   # Alpha engine — leakage-safe (ticker, as-of) feature panel: signal aggregates + warehouse facts + price controls
+├── alpha.py      # Alpha engine — HistGB/LightGBM returns model; forward excess-return labels; purged walk-forward IC/long-short backtest
+├── alpha_mlx.py  # Alpha engine — OPTIONAL Apple-MLX MLP head (lazy-gated, Mac-only); blend() with the tree head; off the default path
 ├── obsidian.py   # Markdown writer; 17-topic label/callout/emoji dicts; daily + weekly + topic archives
 │                 # + Wave 2 regime callout, top-N leaderboard, sonar one-liner
 ├── health.py     # Launchd job status + DB stats

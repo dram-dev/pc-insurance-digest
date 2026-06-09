@@ -333,6 +333,110 @@ def learn(horizon: int) -> None:
     console.print(f"  [green]✓[/green] learned_score written for {s.get('scored', 0)} items")
 
 
+@main.group()
+def forecast() -> None:
+    """Alpha engine — predict insurer returns from digest data + signal scores.
+
+    Local-only ML (LightGBM + optional Apple MLX). The heuristic leaderboard
+    stays authoritative; these forecasts are an advisory early-warning layer.
+    Pipeline: `prices` (build the price store) → `train` (fit + honest
+    walk-forward backtest) → `predict` (write per-insurer forecasts).
+    """
+
+
+@forecast.command(name="prices")
+@click.option("--full", is_flag=True, help="Re-upsert the full ~2y window (else just the tail)")
+@click.option("--ticker", "tickers", multiple=True, help="Limit to these insurer tickers")
+def forecast_prices(full: bool, tickers: tuple[str, ...]) -> None:
+    """Refresh the daily price store (14 insurers + IAK/SPY benchmarks).
+
+    Reuses the free Yahoo/Stooq fetch the outcomes σ signal uses; Yahoo returns
+    ~2y so the first run backfills for free. Datacenter IPs get throttled — run
+    this from the residential Mac-mini host.
+    """
+    from digest.prices import run_prices
+
+    db.init_db()
+    console.rule("[bold cyan]price store")
+    res = run_prices(tickers=list(tickers) or None, full=full)
+    console.print(f"[green]✓[/green] {res['rows']:,} rows across {res['tickers']} tickers")
+    if res["skipped"]:
+        console.print(f"  [yellow]skipped (no data):[/yellow] {', '.join(res['skipped'])}")
+
+
+def _fmt(x):
+    return f"{x:+.4f}" if isinstance(x, (int, float)) else "—"
+
+
+@forecast.command(name="backtest")
+@click.option("--horizon", default=20, help="Forward trading-day horizon")
+@click.option("--splits", default=3, help="Walk-forward folds")
+def forecast_backtest(horizon: int, splits: int) -> None:
+    """Honest walk-forward scorecard (IC / hit-rate / long-short vs baselines).
+
+    Purged + embargoed expanding-window backtest — no model is saved. The model
+    must beat the momentum and signal-only baselines before the forecasts mean
+    anything; this command is how you check.
+    """
+    from digest import alpha
+
+    db.init_db()
+    console.rule("[bold cyan]return backtest")
+    r = alpha.backtest(horizon=horizon, n_splits=splits)
+    if not r.get("ok"):
+        console.print(f"[yellow]{r.get('note')}[/yellow] (n={r.get('n', 0)})")
+        return
+    from digest import alpha as _alpha
+    base = r.get("baseline_ic")
+    verdict = ("[green]↑ real edge (positive IC, beats baselines)[/green]"
+               if _alpha.has_edge(r.get("ic"), base)
+               else "[yellow]→ no edge — IC not positive / no lift over baselines (treat as noise)[/yellow]")
+    console.print(f"[green]✓[/green] {r['oos_rows']} OOS rows over {r['folds']} folds (n={r['n']})")
+    console.print(f"  IC: {_fmt(r.get('ic'))}   hit-rate: {_fmt(r.get('hit_rate'))}   "
+                  f"long-short: {_fmt(r.get('long_short'))}")
+    console.print(f"  baselines — momentum IC {_fmt(r.get('momentum_ic'))}, "
+                  f"signal IC {_fmt(r.get('signal_ic'))}  →  {verdict}")
+
+
+@forecast.command(name="train")
+@click.option("--horizon", default=20, help="Forward trading-day horizon")
+@click.option("--splits", default=3, help="Walk-forward folds for the scorecard")
+def forecast_train(horizon: int, splits: int) -> None:
+    """Backtest, then fit + persist a final model on all labeled rows."""
+    from digest import alpha
+
+    db.init_db()
+    console.rule("[bold cyan]return model — train")
+    r = alpha.train(horizon=horizon, n_splits=splits)
+    if not r.get("model_id"):
+        console.print(f"[yellow]{r.get('note', 'training skipped')}[/yellow] (n={r.get('n', 0)})")
+        return
+    console.print(f"[green]✓[/green] model #{r['model_id']} ({r['algo']}) on {r['n']} rows; "
+                  f"classifier={'yes' if r.get('has_classifier') else 'no'}")
+    console.print(f"  OOS IC {_fmt(r.get('ic'))} vs baseline {_fmt(r.get('baseline_ic'))}; "
+                  f"long-short {_fmt(r.get('long_short'))}")
+
+
+@forecast.command(name="predict")
+@click.option("--horizon", default=20, help="Horizon (only used to pick a model if none trained)")
+def forecast_predict(horizon: int) -> None:
+    """Write per-insurer forecasts from the latest model + latest signal date."""
+    from digest import alpha
+
+    db.init_db()
+    console.rule("[bold cyan]return model — predict")
+    r = alpha.predict(horizon=horizon)
+    if not r.get("forecasts"):
+        console.print(f"[yellow]{r.get('note', 'no forecasts')}[/yellow]")
+        return
+    console.print(f"[green]✓[/green] {r['forecasts']} forecasts (model #{r['model_id']}, "
+                  f"horizon={r['horizon']}d)")
+    top = db.latest_return_forecasts(horizon_days=r["horizon"], limit=5)
+    for f in top:
+        prob = f"{f['pred_prob']:.2f}" if f["pred_prob"] is not None else "—"
+        console.print(f"  {f['ticker']:<5} excess {_fmt(f['pred_excess'])}  P(beat) {prob}")
+
+
 @main.command()
 def canonicalize() -> None:
     """Backfill canonical_lob across loss_triangles + statutory_facts.
@@ -856,6 +960,18 @@ def pipeline(run_type: str, skip_publish: bool) -> None:
         console.print(f"  [green]✓[/green] scored={sig['scored']}")
     except Exception as exc:  # noqa: BLE001
         console.print(f"  [red]✗[/red] signals failed: {exc}")
+
+    # Alpha engine — refresh the daily price store (insurers + benchmarks) so the
+    # outcomes σ label and the returns model see fresh closes. Best-effort: a
+    # vendor throttle never blocks the digest.
+    console.rule("[bold cyan]stage 5b: price store")
+    try:
+        from digest.prices import run_prices
+        px = run_prices()
+        console.print(f"  [green]✓[/green] {px['rows']:,} price rows "
+                      f"({len(px['skipped'])} tickers skipped)")
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"  [yellow]price store skipped:[/yellow] {exc}")
 
     if skip_publish:
         console.rule("[bold yellow]stage 6: publish (skipped)")

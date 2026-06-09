@@ -132,18 +132,25 @@ def test_run_outcomes_skips_already_checked(fresh_db, make_item, monkeypatch):
 
 def test_fetch_yahoo_parses_chart(monkeypatch):
     class FakeResp:
+        status_code = 200
         def raise_for_status(self): pass
         def json(self):
             return {"chart": {"result": [{
                 "timestamp": [1704067200, 1704153600],          # 2024-01-01, -02 UTC
                 "indicators": {"quote": [{"close": [100.0, None]}]},  # None close skipped
             }]}}
-    monkeypatch.setattr(outcomes.requests, "get", lambda *a, **k: FakeResp())
+
+    class FakeSession:
+        def get(self, *a, **k): return FakeResp()
+
+    monkeypatch.setattr(outcomes, "_yahoo_blocked", False)
+    monkeypatch.setattr(outcomes, "_get_yahoo_session", lambda: (FakeSession(), None))
     assert outcomes._fetch_yahoo("PGR") == {"2024-01-01": 100.0}
 
 
 def test_fetch_daily_closes_falls_back_to_stooq(monkeypatch):
     def boom(_t): raise RuntimeError("429 rate limited")
+    monkeypatch.setattr(outcomes, "_fetch_tiingo", lambda _t: {})   # no token / no data
     monkeypatch.setattr(outcomes, "_fetch_yahoo", boom)
     monkeypatch.setattr(outcomes, "_fetch_stooq", lambda _t: {"2024-01-01": 50.0})
     assert outcomes.fetch_daily_closes("PGR") == {"2024-01-01": 50.0}
@@ -151,6 +158,7 @@ def test_fetch_daily_closes_falls_back_to_stooq(monkeypatch):
 
 def test_fetch_daily_closes_empty_on_total_failure(monkeypatch):
     def boom(_t): raise RuntimeError("blocked")
+    monkeypatch.setattr(outcomes, "_fetch_tiingo", boom)
     monkeypatch.setattr(outcomes, "_fetch_yahoo", boom)
     monkeypatch.setattr(outcomes, "_fetch_stooq", boom)
     assert outcomes.fetch_daily_closes("PGR") == {}

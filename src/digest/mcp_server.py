@@ -467,6 +467,52 @@ def fundamentals(insurer: str) -> str:
     return _json(fmod.insurer_fundamentals(insurer))
 
 
+@mcp.tool()
+def return_forecasts(horizon_days: int | None = None, limit: int = 20) -> str:
+    """Alpha-engine forecasts: predicted forward excess return per insurer.
+
+    The local returns model (digest forecast train) predicts each insurer's
+    forward return vs the IAK benchmark from the digest's own data + signal
+    scores. Advisory only — it rides alongside the heuristic leaderboard, never
+    feeds it. Returns the latest forecast per ticker plus the model's honest
+    walk-forward scorecard (out-of-sample IC, hit-rate, long-short vs baselines)
+    so you can judge whether the signal has any edge before trusting a name.
+
+    Args:
+        horizon_days: filter to one horizon (e.g. 20); None = all horizons.
+        limit: max forecast rows (clamped to [1, 100]).
+    """
+    capped = max(1, min(int(limit), 100))
+    h_clause = "WHERE horizon_days = ?" if horizon_days is not None else ""
+    fc_sql = f"""
+        WITH latest AS (
+            SELECT ticker, horizon_days, MAX(as_of) AS m
+            FROM return_forecasts {h_clause} GROUP BY ticker, horizon_days
+        )
+        SELECT f.ticker, f.as_of, f.horizon_days, f.pred_excess, f.pred_prob, f.model_id
+        FROM return_forecasts f
+        JOIN latest l ON f.ticker = l.ticker
+                     AND f.horizon_days = l.horizon_days AND f.as_of = l.m
+        ORDER BY f.pred_excess DESC LIMIT ?
+    """
+    fc_params = ([horizon_days] if horizon_days is not None else []) + [capped]
+    with _ro_conn() as conn:
+        forecasts = _rows(conn.execute(fc_sql, tuple(fc_params)))
+        model = _rows(conn.execute(
+            """SELECT id, trained_at, horizon_days, algo, n_samples, ic, hit_rate,
+                      baseline_ic, long_short_ret
+               FROM return_models ORDER BY trained_at DESC, id DESC LIMIT 1"""))
+    scorecard = model[0] if model else None
+    note = None
+    if scorecard:
+        from digest import alpha
+        note = ("model carries signal — positive IC that beats the baselines"
+                if alpha.has_edge(scorecard.get("ic"), scorecard.get("baseline_ic"))
+                else "model does NOT carry signal (IC not positive / no lift over momentum) — treat forecasts as noise")
+    return _json({"horizon_days": horizon_days, "forecasts": forecasts,
+                  "scorecard": scorecard, "edge": note})
+
+
 # ── Resources ─────────────────────────────────────────────────────────────
 
 
