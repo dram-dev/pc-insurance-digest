@@ -235,6 +235,17 @@ def _regime_shifted(start_iso: str, end_iso: str) -> bool:
     return False
 
 
+def _item_ticker(item) -> str | None:
+    """The insurer ticker for an item. EDGAR items carry it deterministically in
+    source_id ('PGR:accession') — their title ('PGR 8-K filed …') has no name
+    alias for match_insurer to catch, so the edgar/stock signals would otherwise
+    never fire for the highest-trust source. Other sources fall back to a name
+    match over title + summary."""
+    if item["source"] == "edgar":
+        return ((item["source_id"] or "").split(":", 1)[0] or None)
+    return match_insurer(f"{item['title'] or ''} {item['summary'] or ''}")
+
+
 def _window_end(t, horizon: int) -> str:
     return (datetime.fromisoformat(str(t)[:19].replace(" ", "T"))
             + timedelta(days=horizon)).strftime("%Y-%m-%d %H:%M:%S")
@@ -271,7 +282,7 @@ def run_outcomes(horizons: tuple[int, ...] = (7, 30), limit: int = 500) -> dict[
             if fc >= fthresh:                       # elevated, not just ≥1
                 signals.append("followon")
 
-            ticker = match_insurer(f"{it['title'] or ''} {it['summary'] or ''}")
+            ticker = _item_ticker(it)
             edgar_filed = False
             smz = sband = None
             if ticker:

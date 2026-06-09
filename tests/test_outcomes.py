@@ -188,3 +188,20 @@ def test_regime_shift_alone_does_not_corroborate(fresh_db, make_item, monkeypatc
             (x,)).fetchone()
     assert row["regime_shifted"] == 1        # recorded …
     assert row["corroborated"] == 0          # … but a window property doesn't corroborate
+
+
+def test_edgar_item_resolves_ticker_from_source_id(fresh_db, make_item, monkeypatch):
+    # An EDGAR title ('PGR 8-K') has no insurer NAME alias, so match_insurer would
+    # miss it — the ticker must come from source_id ('PGR:acc') for stock/edgar to fire.
+    monkeypatch.setattr(outcomes, "_followon_count", lambda *a: 0)
+    monkeypatch.setattr(outcomes, "fetch_daily_closes", lambda t: {"d": 1.0})
+    monkeypatch.setattr(outcomes, "compute_stock_move", lambda c, t, h: (2.5, "2+"))
+    x = _matured_item(make_item, "edgar", "PGR:acc1", "PGR 8-K", 40,
+                      topic="underwriting_results", scored=True)
+    outcomes.run_outcomes(horizons=(7,))
+    import json
+    with db.get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM outcome_backtest WHERE item_id=?", (x,)).fetchone()
+    assert "stock_move" in json.loads(row["signals_json"])   # ticker resolved → signal fired
+    assert row["stock_move_z"] == 2.5
