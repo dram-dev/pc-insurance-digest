@@ -107,3 +107,26 @@ def test_underwriting_ep_validation_flags_bad_denominator(fresh_db):
 def test_underwriting_none_without_premium(fresh_db):
     d = f.underwriting_ratios("ZZZ")
     assert d["earned_premium_musd"] is None and d["combined_ratio"] is None
+
+
+def test_reported_combined_ratio_surfaced(fresh_db):
+    db.upsert_xbrl_facts([
+        _xf("p", "premiums", "premiums_earned_net", 1000.0),
+        _xf("l", "combined_ratio", "losses_and_lae_incurred", 660.0),
+        _xf("e", "combined_ratio", "underwriting_expense", 140.0),
+        _xf("d", "dac", "dac_amortization", 75.0),
+    ])
+    assert f.combined_ratio_anchor("PGR") == 0.875        # XBRL combined = anchor
+    db.upsert_statutory_facts([{
+        "insurer": "PGR", "source": "investor_supp", "dataset": "combined_ratio",
+        "field": "reported_combined_ratio", "value": 0.874, "period": "2025", "unit": "ratio",
+    }])
+    assert f.underwriting_ratios("PGR")["reported_combined_ratio"] == 0.874
+
+
+def test_combined_ratio_anchor_falls_back_to_loss_plus_expense(fresh_db):
+    db.upsert_xbrl_facts([
+        _xf("p", "premiums", "premiums_earned_net", 1000.0),
+        _xf("l", "combined_ratio", "losses_and_lae_incurred", 660.0),   # no full expense → no XBRL combined
+    ])
+    assert f.combined_ratio_anchor("PGR") == 0.87         # loss 0.66 + 0.21 expense provision
