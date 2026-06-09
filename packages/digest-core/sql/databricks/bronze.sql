@@ -167,6 +167,24 @@ PARTITIONED BY (index_name);
 -- Operational telemetry per pipeline stage. Spots pipeline degradation,
 -- enables source-level SLO dashboards. Subsumes SQLite run_log + summarizer_log.
 -- `errors` defaulting to 0 is handled in the sink wiring, not via column DEFAULT.
+-- Alpha engine — daily price store for the modeled insurers + benchmarks
+-- (IAK, SPY). Backfilled from the same free Yahoo/Stooq fetch the outcomes
+-- stock_move signal uses; feeds forward, benchmark-relative return labels.
+CREATE TABLE IF NOT EXISTS pc_bronze.prices (
+    ticker     STRING NOT NULL,        -- insurer ticker or benchmark symbol
+    date       DATE   NOT NULL,        -- trading day
+    close      DOUBLE NOT NULL,        -- adjusted close
+    kind       STRING,                 -- 'insurer' | 'benchmark'
+    source     STRING,                 -- 'yahoo' | 'stooq'
+    fetched_at TIMESTAMP,
+    CONSTRAINT pc_bronze_prices_pk PRIMARY KEY (ticker, date)
+)
+USING DELTA
+PARTITIONED BY (ticker);
+
+-- Operational telemetry per pipeline stage. Spots pipeline degradation,
+-- enables source-level SLO dashboards. Subsumes SQLite run_log + summarizer_log.
+-- `errors` defaulting to 0 is handled in the sink wiring, not via column DEFAULT.
 CREATE TABLE IF NOT EXISTS pc_bronze.pipeline_telemetry (
     run_id        STRING NOT NULL,    -- UUID per pipeline invocation
     stage         STRING NOT NULL,    -- ingest|triage|summarize|publish|signals

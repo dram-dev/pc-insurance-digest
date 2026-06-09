@@ -103,6 +103,13 @@ class Settings(BaseSettings):
     # Free tier limits: 5 req/min, 50 req/hour, 125 req/day.
     courtlistener_token: str = Field(default="", alias="COURTLISTENER_TOKEN")
 
+    # Tiingo — free EOD price API (https://www.tiingo.com, free tier ~50 symbols/hr).
+    # The alpha engine's PREFERRED price source when set: Yahoo's unauthenticated
+    # chart endpoint now 429s rapid requests even from residential IPs, and Stooq
+    # serves an anti-bot challenge. With a token, the price store fetches reliably;
+    # empty → fall back to the (best-effort) Yahoo crumb session + Stooq.
+    tiingo_api_token: str = Field(default="", alias="TIINGO_API_TOKEN")
+
     # LegiScan — state legislation API (free tier 30k queries/month). Feeds the
     # Lead 9 Regulatory Burden Barometer (per-state insurance-bill velocity).
     # Empty → the legiscan ingestor no-ops.

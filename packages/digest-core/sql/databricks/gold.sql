@@ -355,3 +355,42 @@ FROM burden WHERE rn = 1;
 -- FROM pc_bronze.ingested_items b
 -- WHERE b.source IN ('nhc','usgs')
 --   AND get_json_object(b.metadata_json, '$.trigger_band') IS NOT NULL;
+
+-- ── Alpha engine — forecast accuracy ─────────────────────────────────────
+-- Realized-vs-predicted excess return per matured forecast. Joins the stored
+-- prediction to the price store at as_of and as_of + horizon (insurer minus
+-- the IAK benchmark), so the rolling IC / hit-rate can be computed downstream
+-- and the model's live track record sits next to the leaderboard's.
+CREATE OR REPLACE VIEW pc_gold.forecast_accuracy AS
+WITH fwd AS (
+    SELECT
+        f.ticker, f.as_of, f.horizon_days, f.pred_excess, f.pred_prob, f.model_id,
+        p0.close                                              AS px_start,
+        p1.close                                              AS px_end,
+        b0.close                                              AS bench_start,
+        b1.close                                              AS bench_end
+    FROM pc_silver.return_forecasts f
+    -- insurer close at as_of and the first trading day >= as_of + horizon
+    JOIN pc_bronze.prices p0
+      ON p0.ticker = f.ticker AND p0.date = f.as_of
+    JOIN pc_bronze.prices p1
+      ON p1.ticker = f.ticker
+     AND p1.date = (SELECT MIN(date) FROM pc_bronze.prices
+                    WHERE ticker = f.ticker
+                      AND date >= DATE_ADD(f.as_of, f.horizon_days))
+    LEFT JOIN pc_bronze.prices b0
+      ON b0.ticker = 'IAK' AND b0.date = f.as_of
+    LEFT JOIN pc_bronze.prices b1
+      ON b1.ticker = 'IAK'
+     AND b1.date = (SELECT MIN(date) FROM pc_bronze.prices
+                    WHERE ticker = 'IAK'
+                      AND date >= DATE_ADD(f.as_of, f.horizon_days))
+)
+SELECT
+    ticker, as_of, horizon_days, model_id, pred_excess, pred_prob,
+    (px_end / px_start - 1)
+      - COALESCE(bench_end / bench_start - 1, 0)              AS realized_excess,
+    SIGN(pred_excess) = SIGN(
+        (px_end / px_start - 1) - COALESCE(bench_end / bench_start - 1, 0)
+    )                                                          AS direction_hit
+FROM fwd;

@@ -32,6 +32,18 @@ render = ["playwright>=1.49"]
 # core install stays lean: `uv run --extra mcp digest-mcp` (also how .mcp.json
 # launches it for Claude Code).
 mcp = ["mcp>=1.2"]
+# Alpha engine — local ML predicting insurer returns from digest data + signal
+# scores (src/digest/{features,alpha}.py). LightGBM is the primary tabular
+# learner; pandas builds the as-of panel; scikit-learn supplies CV/metrics +
+# the Ridge/logistic baselines; shap is optional per-prediction attribution.
+# Opt-in so the core pipeline stays slim: `uv sync --extra ml`.
+ml = ["lightgbm>=4.5", "scikit-learn>=1.5", "pandas>=2.2"]
+# Per-prediction attribution. Split out because shap → numba/llvmlite has no
+# wheels on newer Pythons; lazy-imported, so the engine runs without it.
+ml-explain = ["shap>=0.46"]
+# Apple-Silicon neural head over item embeddings (src/digest/alpha_mlx.py).
+# Separate extra — MLX only installs on macOS arm64: `uv sync --extra ml-mlx`.
+ml-mlx = ["mlx>=0.18"]
 
 [project.scripts]
 digest = "digest.cli:main"

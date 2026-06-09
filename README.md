@@ -171,6 +171,34 @@ per filer plus statutory feeds:
 The cross-insurer figures and the `fundamentals(ticker)` MCP tool give the Analyst
 a structured read of each carrier's underwriting results alongside the method skills.
 
+## Alpha engine — return forecasts (local ML)
+
+A **fully local** ML layer that predicts each public insurer's **forward,
+benchmark-relative (vs IAK) stock return** from the digest's own data + signal
+scores. An early-warning / alpha signal that rides *alongside* the heuristic
+leaderboard and **never feeds it**. Opt-in deps: `uv sync --extra ml`
+(scikit-learn `HistGradientBoosting` is the primary learner — no `libomp` needed;
+LightGBM is an optional accelerator; pandas builds the panel). Optional Apple
+**MLX** neural head (`--extra ml-mlx`, Mac-only) and **shap** (`--extra ml-explain`).
+
+- **`digest forecast prices`** — daily close store for the 14 insurers + IAK/SPY
+  benchmarks ([src/digest/prices.py](src/digest/prices.py)), via **Tiingo**
+  (set `TIINGO_API_TOKEN` — the reliable source; Yahoo 429s and Stooq challenges
+  unauthenticated traffic), with a Yahoo cookie+crumb session + backoff fallback.
+- **`digest forecast backtest`** — the honest scorecard: a **purged + embargoed
+  walk-forward** reporting out-of-sample **IC**, hit-rate and a top-minus-bottom
+  **long-short** return **vs three baselines** (zero, momentum, signal-only). It
+  flags "no edge — treat as noise" unless IC is *positive* and beats the baseline.
+- **`digest forecast train` / `predict`** — fit + persist a model
+  ([src/digest/alpha.py](src/digest/alpha.py)) and write per-insurer forecasts.
+  Surfaces in the Obsidian Signal Desk "📈 Signal → Return Watch" panel and the
+  `return_forecasts` MCP tool.
+
+The leakage-safe (insurer, as-of) feature panel lives in
+[src/digest/features.py](src/digest/features.py). **Predictive power depends on
+per-insurer signal density** — until scored items densely map to the tickers, the
+model has little beyond price momentum and will (correctly) report no edge.
+
 ## Shared core (`digest-core`)
 
 The pipeline's domain-agnostic mechanics live in a uv-workspace package,
@@ -216,9 +244,10 @@ Staggered with macro digest to avoid MLX contention:
   uv run playwright install chromium`) for JS/WAF-blocked sources;
   COURTLISTENER_TOKEN and LEGISCAN_API_KEY for those ingestors; ANTHROPIC_API_KEY
   / GEMINI_API_KEY for fallback summarizer backends; the `mcp` extra
-  (`uv sync --extra mcp`) for the local Analyst agent; Databricks workspace
-  credentials if enabling the medallion sink (Reddit needs no key — it uses the
-  public `.rss` feed)
+  (`uv sync --extra mcp`) for the local Analyst agent; the `ml` extra
+  (`uv sync --extra ml`) + `TIINGO_API_TOKEN` for the alpha engine's return
+  forecasts; Databricks workspace credentials if enabling the medallion sink
+  (Reddit needs no key — it uses the public `.rss` feed)
 
 ## Getting started
 

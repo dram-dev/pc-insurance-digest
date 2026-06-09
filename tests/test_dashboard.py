@@ -120,3 +120,32 @@ def test_daily_frontmatter_enriched_with_regime(fresh_db):
     head = text.split("---", 2)[1]            # the YAML frontmatter block
     assert "regime_cycle: hard_market" in head
     assert "regime_mult:" in head
+
+
+# ── Alpha engine — Signal → Return Watch panel ───────────────────────────────
+
+def test_return_watch_no_model(fresh_db):
+    md = dashboard.build_return_watch()
+    assert "No returns model yet" in md
+
+
+def test_return_watch_renders_scorecard_and_forecasts(fresh_db):
+    import json
+    mid = db.save_return_model({
+        "target": "excess_return", "horizon_days": 20, "algo": "histgb",
+        "n_samples": 120, "ic": 0.08, "hit_rate": 0.56, "baseline_ic": 0.02,
+        "long_short_ret": 0.015, "features_json": json.dumps(["x"]),
+        "model_blob": b"x", "model_json": None, "metrics_json": "{}",
+    })
+    db.upsert_return_forecasts([
+        {"ticker": "PGR", "as_of": "2026-06-08", "horizon_days": 20,
+         "pred_excess": 0.03, "pred_prob": 0.61, "model_id": mid, "scored_at": "now"},
+        {"ticker": "ALL", "as_of": "2026-06-08", "horizon_days": 20,
+         "pred_excess": -0.01, "pred_prob": 0.40, "model_id": mid, "scored_at": "now"},
+    ])
+    md = dashboard.build_return_watch()
+    assert "beats baselines" in md            # IC 0.08 > baseline 0.02
+    assert "| PGR |" in md and "| ALL |" in md
+    assert "+0.0300" in md                     # PGR predicted excess, signed
+    # PGR (higher pred_excess) ranks above ALL
+    assert md.index("| PGR |") < md.index("| ALL |")

@@ -49,6 +49,50 @@ def _daily_source() -> str:
         return f"{settings.obsidian_digest_dir}/Daily"
 
 
+def build_return_watch() -> str:
+    """Static 'Signal → Return Watch' table from the alpha engine: top predicted
+    movers + the model's honest walk-forward scorecard. Rendered from SQLite at
+    build time (forecasts don't live in note frontmatter, so Dataview can't see
+    them). Degrades to a hint when no model has been trained yet."""
+    from digest import db
+
+    model = db.latest_return_model("excess_return")
+    if model is None:
+        return ("## 📈 Signal → Return Watch\n"
+                "_No returns model yet — run `digest forecast prices` then "
+                "`digest forecast train`._")
+
+    def _f(x, sign=True):
+        if x is None:
+            return "—"
+        return f"{x:+.4f}" if sign else f"{x:.4f}"
+
+    from digest import alpha
+    ic, base = model["ic"], model["baseline_ic"]
+    edge = ("✅ real edge — positive IC, beats baselines" if alpha.has_edge(ic, base)
+            else "⚠️ no edge — IC not positive / no lift over momentum (treat as noise)")
+    lines = [
+        "## 📈 Signal → Return Watch",
+        f"*Local model #{model['id']} ({model['algo']}, {model['horizon_days']}d horizon) — "
+        "predicts insurer excess return vs the IAK benchmark from the digest's own "
+        "data + signal scores. **Advisory only**; never feeds the leaderboard.*",
+        "",
+        f"**Scorecard (out-of-sample):** IC {_f(ic)} · baseline {_f(base)} · "
+        f"hit-rate {_f(model['hit_rate'], sign=False)} · "
+        f"long-short {_f(model['long_short_ret'])} → {edge}",
+        "",
+    ]
+    rows = db.latest_return_forecasts(horizon_days=model["horizon_days"], limit=14)
+    if not rows:
+        lines.append("_Model trained but no forecasts written — run `digest forecast predict`._")
+        return "\n".join(lines)
+    lines += ["| Insurer | Pred. excess | P(beat peer) | As of |", "|---|--:|--:|---|"]
+    for r in rows:
+        prob = f"{r['pred_prob']:.2f}" if r["pred_prob"] is not None else "—"
+        lines.append(f"| {r['ticker']} | {_f(r['pred_excess'])} | {prob} | {r['as_of']} |")
+    return "\n".join(lines)
+
+
 def build_signal_desk_md() -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     src = _daily_source()
@@ -88,6 +132,8 @@ def build_signal_desk_md() -> str:
         "",
         "## Calibration — system score vs your ratings",
         viz_lab.render_calibration_heatmap(),
+        "",
+        build_return_watch(),
         "",
         "---",
         "*Tip: rate items with `digest rate <id> <1-5>` to feed the calibration "
