@@ -142,6 +142,35 @@ feed's behaviour — with the rigor of a P&C actuary. Three pieces:
 Enable with the `mcp` extra (`uv sync --extra mcp`). The agent reads the live
 SQLite warehouse, so analytics work with no MLX / Databricks.
 
+## Insurer fundamentals (10-K XBRL + statutory)
+
+A structured-financials layer over the P&C universe, from one XBRL instance fetch
+per filer plus statutory feeds:
+
+- **`digest ingest-xbrl`** — a *concept registry*
+  ([src/digest/parse/xbrl_facts.py](src/digest/parse/xbrl_facts.py)) pulls every
+  standardized disclosure out of each insurer's 10-K XBRL instance — premiums,
+  claim counts (frequency), IBNR, reserve development, reinsurance, investments,
+  DAC, segment results, combined-ratio components, and the ASC 944 loss-development
+  **triangles** — by segment / product / accident-year / geography, into
+  `insurer_xbrl_facts` (+ `loss_triangles`, feeding `digest reserving`).
+- **`digest ingest-statutory`** — free III top-writer tables → `statutory_facts`
+  for the big mutuals absent from SEC XBRL (State Farm, USAA, Liberty Mutual, …).
+- **`digest canonicalize`** — unifies the source-specific LOB strings onto one
+  `canonical_lob` taxonomy so a line compares across insurers.
+- **`digest underwriting`** — loss&LAE / expense / combined ratios per insurer,
+  with the **earned-premium denominator validated against net written premium**
+  (`EP/WP ≈ 1.0 ✓`). The combined ratio is shown only where the EP validates *and*
+  the full expense is tagged (never backed out of a GAAP operating-profit line).
+- **`digest ingest investor_supp`** — additionally parses the carrier-**reported**
+  combined ratio from the investor-supplement highlights table and keeps only the
+  candidate that **reconciles with the independent XBRL figure** (PGR: computed
+  87.4% vs reported 87.4%) — never a guessed value. Reported figures land in
+  `statutory_facts` and surface in `digest underwriting` (✓ = the two agree).
+
+The cross-insurer figures and the `fundamentals(ticker)` MCP tool give the Analyst
+a structured read of each carrier's underwriting results alongside the method skills.
+
 ## Shared core (`digest-core`)
 
 The pipeline's domain-agnostic mechanics live in a uv-workspace package,

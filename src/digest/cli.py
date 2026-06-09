@@ -513,6 +513,7 @@ def underwriting(tickers: tuple[str, ...]) -> None:
     table.add_column("Loss&LAE %", justify="right")
     table.add_column("Expense %", justify="right")
     table.add_column("Combined %", justify="right")
+    table.add_column("Reported %", justify="right")
 
     def pct(x):
         return f"{x * 100:.1f}" if x is not None else "[dim]—[/dim]"
@@ -531,12 +532,19 @@ def underwriting(tickers: tuple[str, ...]) -> None:
                  f"{'✓' if d['ep_validated'] else '?'}[/]"
         cr = d["combined_ratio"]
         crc = "green" if cr is not None and cr < 1.0 else ("red" if cr is not None else "dim")
+        # Reported (from the investor-supplement table) with a ✓ when it reconciles
+        # with the computed combined ratio — two independent sources agreeing.
+        rep = d["reported_combined_ratio"]
+        rep_cell = "[dim]—[/dim]"
+        if rep is not None:
+            agree = cr is not None and abs(cr - rep) <= 0.01
+            rep_cell = f"[{'green' if agree else 'yellow'}]{rep * 100:.1f}{'✓' if agree else ''}[/]"
         table.add_row(tk, musd(d["earned_premium_musd"]), ep, pct(d["loss_lae_ratio"]),
-                      pct(d["expense_ratio"]), f"[{crc}]{pct(d['combined_ratio'])}[/{crc}]")
+                      pct(d["expense_ratio"]), f"[{crc}]{pct(d['combined_ratio'])}[/{crc}]", rep_cell)
     console.print(table)
-    console.print(f"[dim]{clean}/{len(targets)} clean loss line; combined shown only where the "
-                  f"EP validates (vs written) and the full expense is tagged. Others → "
-                  f"per-LOB roll-up / reported EX-99.1 figure (combined-ratio-bridge skill).[/dim]")
+    console.print(f"[dim]{clean}/{len(targets)} clean loss line. Combined = XBRL components (EP "
+                  f"validated vs written); Reported = parsed from the investor-supplement table "
+                  f"(`digest ingest investor_supp`), ✓ = the two reconcile.[/dim]")
 
 
 @main.command()

@@ -135,13 +135,33 @@ def underwriting_ratios(insurer: str) -> dict:
         # Sanity band — a P&C combined ratio outside this is a sign the expense is
         # incomplete (no full-statement cross-check exists here); withhold it.
         combined = c if 0.6 <= c <= 1.4 else None
+    # Carrier-REPORTED combined ratio parsed from the investor-supplement table
+    # (digest.ingest.investor_supp) — the figure the carrier publishes, validated
+    # against the XBRL computation at ingest time. None until that ingest runs.
+    rep = _rows("""SELECT value FROM statutory_facts
+                   WHERE insurer=? AND source='investor_supp' AND dataset='combined_ratio'
+                   ORDER BY period DESC LIMIT 1""", (tk,))
+    reported = rep[0]["value"] if rep else None
     return {
         "insurer": tk, "earned_premium_musd": prem, "written_premium_musd": written,
         "ep_to_wp": ep_to_wp, "ep_validated": ep_validated,
         "losses_lae_musd": losses, "loss_lae_ratio": loss_lae_ratio,
         "other_underwriting_expense_musd": other_uw, "acquisition_cost_amort_musd": dac,
         "expense_ratio": expense_ratio, "combined_ratio": combined,
+        "reported_combined_ratio": reported,
     }
+
+
+def combined_ratio_anchor(insurer: str) -> float | None:
+    """An independent combined-ratio estimate to VALIDATE a reported figure against
+    (used by investor_supp): the XBRL-computed combined ratio if available, else the
+    loss&LAE ratio plus a typical 0.21 expense provision, else None."""
+    d = underwriting_ratios(insurer)
+    if d["combined_ratio"] is not None:
+        return d["combined_ratio"]
+    if d["loss_lae_ratio"] is not None:
+        return round(d["loss_lae_ratio"] + 0.21, 4)
+    return None
 
 
 def insurer_fundamentals(insurer: str) -> dict:

@@ -149,6 +149,12 @@ class InvestorSuppIngestor(IngestorBase):
         triangle_ids = {id(t) for t in triangle_tables}
         remaining = [t for t in tables if id(t) not in triangle_ids]
 
+        # Reported combined ratio — read from the highlights table and validated
+        # against the XBRL-computed anchor, into statutory_facts (not a news item).
+        fiscal_year = (text_cells[0]["as_of"][:4] if text_cells
+                       else str(datetime.now(tz=timezone.utc).year - 1))
+        self._extract_combined_ratio(tables, ticker, fiscal_year)
+
         paid = find_tables(remaining, self.paid_patterns)
         pending = find_tables(remaining, self.pending_patterns)
 
@@ -161,6 +167,29 @@ class InvestorSuppIngestor(IngestorBase):
             len(triangle_tables), cells_written, len(tables),
         )
         return out
+
+    def _extract_combined_ratio(self, tables: list[Table], ticker: str, fiscal_year: str) -> None:
+        """Parse the carrier-reported combined ratio from the highlights table,
+        validate it against the XBRL-computed anchor, and persist to statutory_facts.
+        No-op when nothing reconciles (the parser returns None)."""
+        from digest import fundamentals
+        from digest.parse.combined_ratio import parse_combined_ratio
+
+        anchor = fundamentals.combined_ratio_anchor(ticker)
+        result = parse_combined_ratio(tables, insurer=ticker, anchor=anchor)
+        if not result:
+            return
+        db.upsert_statutory_facts([{
+            "insurer": ticker, "source": "investor_supp", "dataset": "combined_ratio",
+            "field": "reported_combined_ratio", "value": result["combined_ratio"],
+            "period": fiscal_year, "unit": "ratio", "as_of": f"{fiscal_year}-12-31",
+        }])
+        logger.info(
+            "investor_supp: %s FY%s reported combined ratio %.1f%% "
+            "(validated vs anchor %.1f%%; candidates %s)",
+            ticker, fiscal_year, result["combined_ratio"] * 100,
+            (anchor or 0) * 100, [round(c * 100, 1) for c in result["candidates"]],
+        )
 
     def _route_triangles(
         self,
