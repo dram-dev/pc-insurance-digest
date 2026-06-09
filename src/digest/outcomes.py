@@ -1,20 +1,25 @@
 """Outcome backtest (Databricks Option 1b) — did a ranked item actually matter?
 
-For each scored, kept item whose horizon (7d and 30d) has elapsed, five detectors
-look at the window (t, t+N] and decide whether the item *corroborated*:
+For each scored, kept item whose horizon (7d and 30d) has elapsed, item-specific
+detectors look at the window (t, t+N] and decide whether the item *corroborated*:
 
-  followon    ≥1 later item is semantically near it (embeddings; topic fallback)
+  followon    later items are semantically near it (embeddings; topic fallback),
+              counted as a signal only when ELEVATED vs the cohort (≥ the run's
+              median) — a lone follow-on in a busy feed is noise, not corroboration
   edgar       the insurer it names filed an 8-K/10-Q in-window
-  regime      a cat_load/market_cycle shift occurred in-window
   manual      the user later rated it ≥4
   stock_move  the named insurer's return crossed ≥1.0σ (own trailing vol),
               with the σ band recorded granularly (0.5/0.75/.../2+)
 
-corroborated = any signal fired. Results → signal_outcomes (+ silver mirror),
-feeding gold.outcome_hit_rate / outcome_by_factor and the Option-4 learned scorer.
+corroborated = any of these item-specific signals fired. (A regime shift in the
+window is RECORDED but does not corroborate — it's identical for every item in
+the window, so counting it made ~all items positive and starved the learned
+scorer of negatives.) Results → outcome_backtest (+ silver mirror), feeding
+gold.outcome_hit_rate / outcome_by_factor and the Option-4 learned scorer.
 
-Design choices (locked with the user): dual horizon 7+30, binary + which-fired,
-Stooq daily closes (no pandas/yfinance), σ vs the stock's own trailing vol.
+Design: dual horizon 7+30, binary + which-fired, σ vs the stock's own trailing
+vol. Prices come free from Yahoo (chart JSON) with a Stooq CSV fallback — both
+rate-limit datacenter IPs, so the signal populates from a residential host.
 """
 from __future__ import annotations
 
@@ -24,7 +29,7 @@ import json
 import logging
 import math
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import requests
@@ -36,6 +41,12 @@ logger = logging.getLogger(__name__)
 FOLLOWON_THRESHOLD = 0.80     # cosine for "semantically near"
 STOCK_TRIGGER_SIGMA = 1.0     # |z| at/above this fires stock_move
 MANUAL_GOOD = 4.0             # rating ≥ this corroborates
+# A lone "another similar item appeared" is weak corroboration in a busy feed —
+# the median item has dozens of same-topic follow-ons. Count follow-on as a
+# signal only when it's ELEVATED vs the cohort (the median of the run's counts),
+# so the corroboration label has real positive/negative balance for the learned
+# scorer to train on (otherwise every item corroborates → single-class → no model).
+FOLLOWON_PERCENTILE = 0.5
 
 # Insurer NAME aliases (never bare tickers — "ALL"/"EG" would false-match prose).
 # Used to map a non-EDGAR item to a ticker; EDGAR items carry it in source_id.
@@ -57,8 +68,13 @@ INSURER_ALIASES: dict[str, list[str]] = {
     "BRK": ["Berkshire Hathaway", "Berkshire", "GEICO"],
 }
 
-# ticker → Stooq symbol (mostly {ticker}.us; BRK trades as class B on Stooq).
+# ticker → vendor symbol (BRK trades as class B). Yahoo uses 'BRK-B', Stooq 'brk-b.us'.
+_YAHOO_OVERRIDE = {"BRK": "BRK-B"}
 _STOOQ_OVERRIDE = {"BRK": "brk-b.us"}
+_PRICE_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+}
 
 
 def match_insurer(text: str) -> str | None:
@@ -83,16 +99,31 @@ def _stooq_symbol(ticker: str) -> str:
     return _STOOQ_OVERRIDE.get(ticker, f"{ticker.lower()}.us")
 
 
-def fetch_daily_closes(ticker: str) -> dict[str, float]:
-    """{ 'YYYY-MM-DD': close } from Stooq's free CSV. {} on any failure (the
-    signal just doesn't fire — never aborts the backtest)."""
+def _fetch_yahoo(ticker: str) -> dict[str, float]:
+    """{ 'YYYY-MM-DD': close } from the Yahoo Finance chart JSON API (no key, no
+    pandas). The chart endpoint needs no crumb. Raises on failure."""
+    symbol = _YAHOO_OVERRIDE.get(ticker, ticker)
+    url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+           f"?range=2y&interval=1d")
+    r = requests.get(url, headers=_PRICE_HEADERS, timeout=20)
+    r.raise_for_status()
+    res = r.json()["chart"]["result"][0]
+    ts = res["timestamp"]
+    closes_list = res["indicators"]["quote"][0]["close"]
+    out: dict[str, float] = {}
+    for epoch, close in zip(ts, closes_list):
+        if close is None:
+            continue
+        out[datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%Y-%m-%d")] = float(close)
+    return out
+
+
+def _fetch_stooq(ticker: str) -> dict[str, float]:
+    """{ 'YYYY-MM-DD': close } from Stooq's free CSV. Raises on failure; returns
+    {} if the response isn't CSV (Stooq now serves a JS challenge to some IPs)."""
     url = f"https://stooq.com/q/d/l/?s={_stooq_symbol(ticker)}&i=d"
-    try:
-        r = requests.get(url, timeout=30)
-        r.raise_for_status()
-    except requests.RequestException as exc:
-        logger.warning("outcomes: Stooq fetch failed for %s: %s", ticker, exc)
-        return {}
+    r = requests.get(url, headers=_PRICE_HEADERS, timeout=20)
+    r.raise_for_status()
     closes: dict[str, float] = {}
     for row in csv.DictReader(io.StringIO(r.text)):
         try:
@@ -100,6 +131,21 @@ def fetch_daily_closes(ticker: str) -> dict[str, float]:
         except (KeyError, ValueError):
             continue
     return closes
+
+
+def fetch_daily_closes(ticker: str) -> dict[str, float]:
+    """{ 'YYYY-MM-DD': close } for the stock-move signal. Tries Yahoo (chart JSON)
+    then Stooq (CSV) — datacenter IPs get rate-limited/challenged, so a residential
+    host (the Mac mini) is where this actually populates. {} on total failure (the
+    signal just doesn't fire — never aborts the backtest)."""
+    for source, fetch in (("yahoo", _fetch_yahoo), ("stooq", _fetch_stooq)):
+        try:
+            closes = fetch(ticker)
+            if closes:
+                return closes
+        except Exception as exc:  # noqa: BLE001 — any vendor hiccup → try the next
+            logger.warning("outcomes: %s fetch failed for %s: %s", source, ticker, exc)
+    return {}
 
 
 def sigma_band(absz: float) -> str | None:
@@ -189,6 +235,18 @@ def _regime_shifted(start_iso: str, end_iso: str) -> bool:
     return False
 
 
+def _window_end(t, horizon: int) -> str:
+    return (datetime.fromisoformat(str(t)[:19].replace(" ", "T"))
+            + timedelta(days=horizon)).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _percentile(values, q: float) -> float:
+    vals = sorted(v for v in values if v is not None)
+    if not vals:
+        return 0.0
+    return float(vals[min(len(vals) - 1, int(q * len(vals)))])
+
+
 def run_outcomes(horizons: tuple[int, ...] = (7, 30), limit: int = 500) -> dict[int, int]:
     """Score outcomes for matured items at each horizon. Returns {horizon: n_checked}."""
     emb_rows = db.embeddings_with_time()
@@ -199,14 +257,18 @@ def run_outcomes(horizons: tuple[int, ...] = (7, 30), limit: int = 500) -> dict[
 
     for horizon in horizons:
         items = db.items_for_backtest(horizon, limit=limit)
-        for it in items:
-            t = it["ingested_at"]
-            end = (datetime.fromisoformat(str(t)[:19].replace(" ", "T"))
-                   + timedelta(days=horizon)).strftime("%Y-%m-%d %H:%M:%S")
-            signals: list[str] = []
+        ends = {it["id"]: _window_end(it["ingested_at"], horizon) for it in items}
+        # Pass 1: follow-on counts for the cohort → the "elevated" threshold.
+        fcounts = {it["id"]: _followon_count(it, ends[it["id"]], emb, emb_rows)
+                   for it in items}
+        fthresh = max(1.0, _percentile(fcounts.values(), FOLLOWON_PERCENTILE))
 
-            followon = _followon_count(it, end, emb, emb_rows)
-            if followon > 0:
+        # Pass 2: label each item against the cohort threshold.
+        for it in items:
+            t, end = it["ingested_at"], ends[it["id"]]
+            fc = fcounts[it["id"]]
+            signals: list[str] = []
+            if fc >= fthresh:                       # elevated, not just ≥1
                 signals.append("followon")
 
             ticker = match_insurer(f"{it['title'] or ''} {it['summary'] or ''}")
@@ -222,18 +284,19 @@ def run_outcomes(horizons: tuple[int, ...] = (7, 30), limit: int = 500) -> dict[
                 if smz is not None and abs(smz) >= STOCK_TRIGGER_SIGMA:
                     signals.append("stock_move")
 
-            regime_shifted = _regime_shifted(t, end)
-            if regime_shifted:
-                signals.append("regime")
-
             mr = db.manual_rating_for(it["id"])
             if mr is not None and mr >= MANUAL_GOOD:
                 signals.append("manual")
 
+            # Regime shift is a WINDOW property — identical for every item in the
+            # window — so it's recorded but does NOT corroborate an individual item
+            # (counting it made ~all items positive and broke label balance).
+            regime_shifted = _regime_shifted(t, end)
+
             db.upsert_backtest_outcome(it["id"], horizon, {
                 "corroborated":    bool(signals),
                 "signals":         signals,
-                "followon_count":  followon,
+                "followon_count":  fc,
                 "edgar_filed":     edgar_filed,
                 "regime_shifted":  regime_shifted,
                 "manual_rating":   mr,
@@ -241,5 +304,6 @@ def run_outcomes(horizons: tuple[int, ...] = (7, 30), limit: int = 500) -> dict[
                 "stock_move_band": sband,
             })
         checked[horizon] = len(items)
-        logger.info("outcomes: horizon=%dd checked=%d", horizon, len(items))
+        logger.info("outcomes: horizon=%dd checked=%d (followon≥%.0f)",
+                    horizon, len(items), fthresh)
     return checked
