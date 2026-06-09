@@ -33,7 +33,7 @@ own `com.dr.pcdigest.*` jobs.
 | Reddit (r/Insurance, r/Actuary, r/CFP, weather/EQ) + Substack + HN | ✅ |
 | 35% per-topic cap on `ai_insurtech` (configurable in `summarize.py` → `TOPIC_CAP_PCT`) | ✅ |
 | Obsidian publish to `81 P&C Digest/{Daily,Topics,Weekly,_meta}` | ✅ |
-| launchd jobs loaded: `am` 04:00, `pm` 16:00 daily, `weekly` Sat 06:00 | ✅ |
+| launchd jobs loaded: `am` 04:00, `pm` 16:00 daily, `weekly` Sat 06:00 (+ `learn` Sat 07:00 — the alpha-engine learning loop) | ✅ |
 
 Each is committed on `master` and pushed to
 [github.com/dram-dev/pc-insurance-digest](https://github.com/dram-dev/pc-insurance-digest).
