@@ -31,8 +31,13 @@ warehouse now carries them as structured XBRL facts: `insurer_xbrl_facts`
 dataset=`premiums` (field `premiums_earned_net`) and dataset=`combined_ratio`
 (field `losses_and_lae_incurred`), by segment × period, for the top-10 SEC
 insurers (`fundamentals(ticker)` or `digest.fundamentals.combined_ratio_components`).
-Cats and prior-year development still come from the EDGAR text the pipeline
-extracts (`_financial_excerpt` / `_reserve_excerpt`); pair with
+For the **headline** trade-basis ratios straight from those facts, `digest
+combined-ratio` / `digest.fundamentals.combined_ratio(ticker)` gives loss&LAE /
+expense / combined per insurer (plausibility-gated; pure-play P&C writers extract
+cleanly, multi-line writers show none). This skill is for the step beyond that —
+stripping cats and prior-year development to expose the *underlying* current-AY
+ratio, which the structured facts don't carry: those come from the EDGAR text the
+pipeline extracts (`_financial_excerpt` / `_reserve_excerpt`); pair with
 [[bornhuetter-ferguson]] when the development line needs its own reserve view.
 For the bases, the AY-vs-CY mechanics, and the YoY/QoQ bridge, see
 [reference.md](reference.md).

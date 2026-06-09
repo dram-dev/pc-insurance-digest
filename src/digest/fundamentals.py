@@ -76,6 +76,57 @@ def statutory_top_writers(canonical_lob: str) -> list[dict]:
     )
 
 
+_CONSOLIDATED = """
+    SELECT value FROM insurer_xbrl_facts
+    WHERE insurer=? AND field=? AND period_type='duration' AND period_end=as_of
+      AND segment IS NULL AND product IS NULL AND subsegment IS NULL
+      AND geography IS NULL AND investment_type IS NULL AND instrument IS NULL
+      AND fv_level IS NULL
+    ORDER BY ABS(value) DESC LIMIT 1"""
+
+
+def _consolidated(insurer: str, field: str) -> float | None:
+    """Latest-period consolidated (un-dimensioned) value for a field. Largest
+    magnitude wins — the group total dominates a 0-valued or single-line sibling
+    fact that shares the same null-dimension context (e.g. TRV's losses)."""
+    rows = _rows(_CONSOLIDATED, (insurer.upper(), field))
+    return rows[0]["value"] if rows else None
+
+
+def combined_ratio(insurer: str) -> dict:
+    """Loss&LAE / expense / combined ratio from the consolidated XBRL components.
+
+    Each ratio is plausibility-gated and returns None when out of band — the
+    consolidated incurred-loss line is tagged inconsistently across filers
+    (multi-line writers bury P&C losses in a broader 'benefits, losses and
+    expenses' total), so this honestly covers the pure-play P&C writers and
+    leaves the rest to the combined-ratio-bridge skill fed with EDGAR-text
+    figures. Trade-basis combined = loss&LAE ratio + expense ratio; cats and
+    prior-year development are NOT in the structured facts — strip those via
+    the skill for the *underlying* combined ratio."""
+    tk = insurer.upper()
+    prem = _consolidated(tk, "premiums_earned_net")
+    losses = _consolidated(tk, "losses_and_lae_incurred")
+    expense = _consolidated(tk, "underwriting_expense")
+
+    def gated(num, lo, hi):
+        if not prem or not num:
+            return None
+        r = num / prem
+        return round(r, 4) if lo <= r <= hi else None
+
+    loss_ratio = gated(losses, 0.15, 1.5)
+    expense_ratio = gated(expense, 0.03, 0.6)
+    combined = (round(loss_ratio + expense_ratio, 4)
+                if loss_ratio is not None and expense_ratio is not None else None)
+    return {
+        "insurer": tk, "earned_premium_musd": prem,
+        "losses_lae_musd": losses, "underwriting_expense_musd": expense,
+        "loss_lae_ratio": loss_ratio, "expense_ratio": expense_ratio,
+        "combined_ratio": combined,
+    }
+
+
 def insurer_fundamentals(insurer: str) -> dict:
     """Cross-dataset headline summary for one insurer — the MCP `fundamentals`
     tool payload. Per dataset: fact count + a headline figure."""
@@ -110,6 +161,7 @@ def insurer_fundamentals(insurer: str) -> dict:
         "insurer": tk,
         "datasets": datasets,
         "total_earned_premium_musd": (premium[0]["total_earned_musd"] if premium else None),
+        "underwriting": combined_ratio(tk),
         "triangles_by_canonical_lob": triangles,
         "reserve_development": reserving,
     }

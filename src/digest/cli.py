@@ -489,6 +489,50 @@ def triangles_compare(tickers: tuple[str, ...]) -> None:
     console.print(table)
 
 
+@main.command(name="combined-ratio")
+@click.argument("tickers", nargs=-1)
+def combined_ratio(tickers: tuple[str, ...]) -> None:
+    """Loss / expense / combined ratio per insurer from the XBRL combined_ratio dataset.
+
+    Trade-basis combined = loss&LAE ratio + expense ratio, from the stored
+    consolidated components for the top-10 SEC P&C insurers. Pure-play P&C writers
+    extract cleanly; multi-line writers (no separable consolidated incurred-loss
+    line) show '—' — strip cats / prior-year development via the combined-ratio-
+    bridge skill with EDGAR-text figures for the *underlying* ratio.
+    """
+    from digest import fundamentals as fmod
+    from digest.edgar_xbrl_ingest import insurer_universe
+
+    db.init_db()
+    targets = [t.upper() for t in tickers] or [t for t, _ in insurer_universe()]
+    console.rule("[bold cyan]combined ratio (XBRL components)")
+    table = Table(title="Underwriting results — latest fiscal year")
+    table.add_column("Ticker", no_wrap=True)
+    table.add_column("Earned $M", justify="right")
+    table.add_column("Loss&LAE %", justify="right")
+    table.add_column("Expense %", justify="right")
+    table.add_column("Combined %", justify="right")
+
+    def pct(x):
+        return f"{x * 100:.1f}" if x is not None else "[dim]—[/dim]"
+
+    def musd(x):
+        return f"{x:,.0f}" if x else "[dim]—[/dim]"
+
+    clean = 0
+    for tk in targets:
+        d = fmod.combined_ratio(tk)
+        if d["loss_lae_ratio"] is not None:
+            clean += 1
+        cr = d["combined_ratio"]
+        colour = "green" if cr is not None and cr < 1.0 else ("red" if cr is not None else "dim")
+        table.add_row(tk, musd(d["earned_premium_musd"]), pct(d["loss_lae_ratio"]),
+                      pct(d["expense_ratio"]), f"[{colour}]{pct(d['combined_ratio'])}[/{colour}]")
+    console.print(table)
+    console.print(f"[dim]{clean}/{len(targets)} with a clean consolidated loss line; the "
+                  f"rest need the combined-ratio-bridge skill (EDGAR-text figures).[/dim]")
+
+
 @main.command()
 def reserving() -> None:
     """Chain-ladder reserving over stored loss triangles (Option 5).
