@@ -31,16 +31,18 @@ warehouse now carries them as structured XBRL facts: `insurer_xbrl_facts`
 dataset=`premiums` (field `premiums_earned_net`) and dataset=`combined_ratio`
 (field `losses_and_lae_incurred`), by segment × period, for the top-10 SEC
 insurers (`fundamentals(ticker)` or `digest.fundamentals.combined_ratio_components`).
-`digest loss-ratio` / `digest.fundamentals.loss_ratio(ticker)` gives the
-consolidated **loss & LAE ratio** straight from those facts (sound — one clean
-incurred-claims+ALAE line over earned premium, pure-play P&C writers only). It
-deliberately does NOT synthesize a combined ratio: the structured XBRL doesn't
-carry the proper expense component lines, so a reconstructed combined understates
-by 10-20 points, and backing into it from a GAAP underwriting-profit line is
-unsound (it nets in investment income). Build the COMBINED ratio here from proper
-per-LOB loss / LAE / expense components rolled up at a meaningful level (LAE in
-losses OR expense, never both), or from the carrier-REPORTED figure in the EX-99.1
-earnings release — plus the EDGAR text the pipeline extracts (`_financial_excerpt`
+`digest underwriting` / `digest.fundamentals.underwriting_ratios(ticker)` gives the
+loss&LAE ratio (incurred claims + ALAE over earned premium — LAE in losses, not
+duped), plus an expense and combined ratio where the full expense is tagged. It
+VALIDATES the earned-premium denominator against net written premium (`ep_to_wp`
+≈ 1.0 ⇒ sound) — the denominator is the thing to get right. Combined is shown only
+where the EP validates AND both expense pieces (other underwriting + acquisition-
+cost amortization) are present (e.g. PGR 87.4% ≈ reported 88.8%); elsewhere it's
+None — the structured XBRL doesn't carry the proper expense lines for every filer.
+For those, build the COMBINED ratio from per-LOB loss/LAE/expense rolled up at a
+meaningful level (LAE in losses OR expense, never both), or the carrier-REPORTED
+EX-99.1 figure — NEVER backed out of a GAAP operating-profit line (it nets in
+investment income). Add the EDGAR text the pipeline extracts (`_financial_excerpt`
 / `_reserve_excerpt`) for cats and prior-year development; pair with
 [[bornhuetter-ferguson]] when the development line needs its own reserve view.
 For the bases, the AY-vs-CY mechanics, and the YoY/QoQ bridge, see

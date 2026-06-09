@@ -93,37 +93,50 @@ def _consolidated(insurer: str, field: str) -> float | None:
     return rows[0]["value"] if rows else None
 
 
-def loss_ratio(insurer: str) -> dict:
-    """Consolidated loss & LAE ratio from the XBRL components — NOT a combined ratio.
+def underwriting_ratios(insurer: str) -> dict:
+    """Loss&LAE / expense / combined ratio with earned-premium VALIDATION.
 
-    The loss&LAE ratio is one clean line (incurred claims + ALAE, ASC 944) over
-    earned premium, so it's sound and not double-counted; it's plausibility-gated
-    and returns None where the consolidated incurred-loss line isn't cleanly tagged
-    (multi-line writers bury P&C losses in a broader total).
-
-    A COMBINED ratio is deliberately NOT synthesized here. Validation showed the
-    structured XBRL doesn't carry the proper component lines (underwriting expense
-    is tagged for only a few filers, and inconsistently), so summing what's present
-    understates the combined ratio by 10-20 points — and backing into it from a
-    GAAP operating-profit line is unsound (it nets in investment income). A correct
-    combined ratio is built from per-LOB loss/LAE/expense components rolled up at a
-    meaningful level; feed those (or the carrier-reported figure from the EX-99.1
-    earnings release) into the combined-ratio-bridge skill. The raw expense
-    components below are surfaced for transparency only — not summed into a ratio."""
+    The earned-premium denominator is the thing to get right, so it's cross-checked
+    against net WRITTEN premium — a sound EP has earned ≈ written for a stable book
+    (`ep_to_wp` ≈ 1.0; `ep_validated` flags 0.85-1.15). Ratios:
+      • loss&LAE ratio = incurred claims + ALAE / earned premium (LAE sits in the
+        loss line per ASC 944 — not double-counted on the expense side);
+      • expense ratio = (other underwriting + acquisition-cost amortization) /
+        earned premium, computed ONLY when BOTH parts are tagged, so it isn't
+        understated (and carries no LAE — that's in losses);
+      • combined = loss&LAE + expense when both are present.
+    Each is plausibility-gated → None when the consolidated loss line or the full
+    expense isn't cleanly tagged (multi-line writers). For those, build the ratio
+    from per-LOB loss/LAE/expense rolled up, or the carrier-reported EX-99.1 figure,
+    via the combined-ratio-bridge skill. A combined ratio is NEVER backed out of a
+    GAAP operating-profit line (that nets in investment income)."""
     tk = insurer.upper()
     prem = _consolidated(tk, "premiums_earned_net")
+    written = _consolidated(tk, "premiums_written_net")
     losses = _consolidated(tk, "losses_and_lae_incurred")
+    other_uw = _consolidated(tk, "underwriting_expense")
+    dac = _consolidated(tk, "dac_amortization")
 
-    lr = None
-    if prem and losses and 0.15 <= losses / prem <= 1.5:
-        lr = round(losses / prem, 4)
+    ep_to_wp = round(prem / written, 3) if (prem and written) else None
+    ep_validated = (0.85 <= ep_to_wp <= 1.15) if ep_to_wp is not None else None
+
+    def gated(num, lo, hi):
+        if not prem or not num:
+            return None
+        r = num / prem
+        return round(r, 4) if lo <= r <= hi else None
+
+    loss_lae_ratio = gated(losses, 0.15, 1.5)
+    # Expense only when BOTH components are present — otherwise it understates.
+    expense_ratio = gated((other_uw or 0) + (dac or 0), 0.05, 0.6) if (other_uw and dac) else None
+    combined = (round(loss_lae_ratio + expense_ratio, 4)
+                if loss_lae_ratio is not None and expense_ratio is not None else None)
     return {
-        "insurer": tk, "earned_premium_musd": prem,
-        "losses_lae_musd": losses, "loss_lae_ratio": lr,
-        # raw, for transparency — NOT a complete expense ratio (see docstring).
-        "other_underwriting_expense_musd": _consolidated(tk, "underwriting_expense"),
-        "acquisition_cost_amort_musd": _consolidated(tk, "dac_amortization"),
-        "combined_ratio": None,  # not soundly reconstructable from these facts
+        "insurer": tk, "earned_premium_musd": prem, "written_premium_musd": written,
+        "ep_to_wp": ep_to_wp, "ep_validated": ep_validated,
+        "losses_lae_musd": losses, "loss_lae_ratio": loss_lae_ratio,
+        "other_underwriting_expense_musd": other_uw, "acquisition_cost_amort_musd": dac,
+        "expense_ratio": expense_ratio, "combined_ratio": combined,
     }
 
 
@@ -161,7 +174,7 @@ def insurer_fundamentals(insurer: str) -> dict:
         "insurer": tk,
         "datasets": datasets,
         "total_earned_premium_musd": (premium[0]["total_earned_musd"] if premium else None),
-        "loss_ratio": loss_ratio(tk),
+        "underwriting": underwriting_ratios(tk),
         "triangles_by_canonical_lob": triangles,
         "reserve_development": reserving,
     }
