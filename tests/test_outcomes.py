@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from digest import db, outcomes
 
 
@@ -55,6 +57,71 @@ def test_compute_stock_move_big_up_move():
 def test_compute_stock_move_insufficient_history():
     closes = {"2026-03-01": 100.0, "2026-03-08": 105.0}   # <20 trailing points
     assert outcomes.compute_stock_move(closes, "2026-03-01T00:00:00", 7) == (None, None)
+
+
+def _bench_closes(start: str, days_before: int, jump_to: float | None) -> dict[str, float]:
+    """Benchmark series on the same dates: 200-level, quarter the insurer's
+    relative oscillation (so excess daily returns have nonzero vol)."""
+    base = datetime.fromisoformat(start)
+    out: dict[str, float] = {}
+    for i in range(days_before, -8, -1):
+        d = (base - timedelta(days=i)).strftime("%Y-%m-%d")
+        out[d] = 200.0 + 0.5 * (i % 2)
+    if jump_to is not None:
+        out[(base + timedelta(days=7)).strftime("%Y-%m-%d")] = jump_to
+    return out
+
+
+def test_market_wide_move_nets_out_against_benchmark():
+    # The insurer jumps +30% — but so does the whole sector. The raw own-vol z is
+    # huge; the benchmark-excess z must be small (it's beta, not the item).
+    closes = _closes("2026-03-01", days_before=90, jump_to=130.0)
+    bench = _bench_closes("2026-03-01", days_before=90, jump_to=260.0)  # +30% too
+    z_raw, _ = outcomes.compute_stock_move(closes, "2026-03-01T00:00:00", 7)
+    z_exc, _ = outcomes.compute_stock_move(closes, "2026-03-01T00:00:00", 7, bench)
+    assert z_raw is not None and abs(z_raw) > 2.0
+    assert z_exc is not None and abs(z_exc) < abs(z_raw) / 2
+
+
+def test_idiosyncratic_move_survives_benchmark_adjustment():
+    # The insurer jumps +30% while the benchmark stays flat — the excess z
+    # must remain extreme.
+    closes = _closes("2026-03-01", days_before=90, jump_to=130.0)
+    bench = _bench_closes("2026-03-01", days_before=90, jump_to=200.5)  # flat horizon
+    z_exc, band = outcomes.compute_stock_move(closes, "2026-03-01T00:00:00", 7, bench)
+    assert z_exc is not None and abs(z_exc) > 2.0 and band == "2+"
+
+
+# ── p-values + BH-FDR ─────────────────────────────────────────────────────
+
+
+def test_two_sided_p_sanity():
+    assert outcomes.two_sided_p(0.0) == pytest.approx(1.0)
+    assert outcomes.two_sided_p(1.96) == pytest.approx(0.05, abs=0.001)
+    assert outcomes.two_sided_p(-1.96) == pytest.approx(0.05, abs=0.001)  # symmetric
+    # The old fixed trigger: a 1σ move is a ~32% event under the null.
+    assert outcomes.two_sided_p(1.0) == pytest.approx(0.317, abs=0.001)
+
+
+def test_bh_survivors_single_item_reduces_to_p_below_q():
+    assert outcomes.bh_survivors({1: 0.02}, q=0.10) == {1}
+    assert outcomes.bh_survivors({1: 0.20}, q=0.10) == set()
+    assert outcomes.bh_survivors({}, q=0.10) == set()
+
+
+def test_bh_survivors_step_up_property():
+    # Classic BH: ranked p ≤ q·k/m. With q=0.10 and m=5: 0.01 ≤ 0.02 (k=1) and
+    # 0.04 ≤ 0.04 (k=2) pass; 0.30/0.50/0.90 fail. The step-up keeps everything
+    # at/below the largest passing rank.
+    p = {1: 0.01, 2: 0.04, 3: 0.30, 4: 0.50, 5: 0.90}
+    assert outcomes.bh_survivors(p, q=0.10) == {1, 2}
+
+
+def test_bh_survivors_modest_z_cohort_all_rejected():
+    # Five 1σ movers (p≈0.317 each): the old rule corroborated all five; BH at
+    # q=0.10 corroborates none.
+    p1 = outcomes.two_sided_p(1.0)
+    assert outcomes.bh_survivors({i: p1 for i in range(5)}, q=0.10) == set()
 
 
 # ── run_outcomes integration ──────────────────────────────────────────────
@@ -118,6 +185,25 @@ def test_run_outcomes_records_stock_band(fresh_db, make_item, monkeypatch):
         ).fetchone()
     assert row["stock_move_band"] == "2+" and row["stock_move_z"] == 2.3
     assert "stock_move" in row["signals_json"]
+
+
+def test_modest_stock_move_does_not_corroborate_under_fdr(fresh_db, make_item, monkeypatch):
+    # The old fixed 1.0σ trigger fired on a ~32%-probability-under-null move.
+    # Under BH-FDR (q=0.10) a lone 1σ move is recorded but does NOT corroborate.
+    monkeypatch.setattr(outcomes, "compute_stock_move", lambda c, t, h: (1.0, "1.0-1.25"))
+    monkeypatch.setattr(outcomes, "fetch_daily_closes", lambda t: {"x": 1.0})
+    monkeypatch.setattr(outcomes, "_followon_count", lambda *a: 0)
+    x = _matured_item(make_item, "rss", "x", "Allstate trims homeowners exposure",
+                      40, topic="personal_lines", scored=True)
+    outcomes.run_outcomes(horizons=(7,))
+    with db.get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM outcome_backtest WHERE item_id=? AND horizon_days=7", (x,)
+        ).fetchone()
+    assert row["stock_move_z"] == 1.0                       # recorded …
+    assert row["stock_move_p"] == pytest.approx(0.317, abs=0.001)
+    assert "stock_move" not in row["signals_json"]          # … but not corroborating
+    assert row["corroborated"] == 0
 
 
 def test_run_outcomes_skips_already_checked(fresh_db, make_item, monkeypatch):

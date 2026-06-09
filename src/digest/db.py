@@ -401,6 +401,25 @@ MIGRATIONS = [
         PRIMARY KEY (ticker, as_of, horizon_days)
     )""",
     "CREATE INDEX IF NOT EXISTS idx_return_forecasts_asof ON return_forecasts(as_of DESC)",
+    # ── Scoring-math wave 1 (2026-06-09) ─────────────────────────────────────
+    # Benchmark-excess stock_move: z of the insurer's IAK/SPY-excess return (the
+    # raw own-vol z stays in stock_move_z for continuity) + the two-sided p-value
+    # the BH-FDR corroboration gate reads.
+    "ALTER TABLE outcome_backtest ADD COLUMN stock_move_excess_z REAL",
+    "ALTER TABLE outcome_backtest ADD COLUMN stock_move_p REAL",
+    # Isotonic calibrators (materiality → P(corroborated)): the curve is a step
+    # function (PAVA breakpoints) stored as JSON; base_rate is the cohort
+    # corroboration rate the llm_judgment relativity divides by.
+    """CREATE TABLE IF NOT EXISTS calibrators (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        name         TEXT NOT NULL,                 -- 'materiality'
+        trained_at   TEXT NOT NULL DEFAULT (datetime('now')),
+        horizon_days INTEGER,
+        n_samples    INTEGER,
+        base_rate    REAL,
+        curve_json   TEXT NOT NULL
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_calibrators_name ON calibrators(name, id DESC)",
 ]
 
 
@@ -1801,7 +1820,7 @@ def top_signal_scores(
         SELECT i.id, i.source, i.title, i.url, i.author, i.published_at,
                i.topic, i.summary, i.why_it_matters, i.confidence,
                i.see_also, i.triage_score, i.materiality_score,
-               s.score, s.source_mult, s.regime_mult,
+               s.score, s.tier, s.source_mult, s.regime_mult,
                s.topic_relevance, s.recency, s.llm_judgment,
                s.topic_boost, s.burden_boost
         FROM signal_scores s
@@ -1814,6 +1833,29 @@ def top_signal_scores(
     params.append(limit)
     with get_conn() as conn:
         return conn.execute(sql, params).fetchall()
+
+
+def latest_scores_since(days: int = 90) -> list[float]:
+    """Latest heuristic score per item for items ingested in the trailing
+    `days` — the empirical distribution the quantile-calibrated conviction
+    tiers cut. Ascending order."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            WITH latest AS (
+                SELECT item_id, MAX(computed_at) AS computed_at
+                FROM signal_scores GROUP BY item_id
+            )
+            SELECT s.score
+            FROM signal_scores s
+            JOIN latest l ON s.item_id = l.item_id AND s.computed_at = l.computed_at
+            JOIN items  i ON i.id = s.item_id
+            WHERE i.ingested_at >= datetime('now', ?)
+            ORDER BY s.score
+            """,
+            (f"-{int(days)} days",),
+        ).fetchall()
+    return [float(r["score"]) for r in rows]
 
 
 def brief_alerts(hours: int = 48) -> dict[str, list[sqlite3.Row]]:
@@ -2020,8 +2062,8 @@ def upsert_backtest_outcome(item_id: int, horizon_days: int, outcome: dict) -> N
             """INSERT OR REPLACE INTO outcome_backtest
                  (item_id, horizon_days, checked_at, corroborated, signals_json,
                   followon_count, edgar_filed, regime_shifted, manual_rating,
-                  stock_move_z, stock_move_band)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                  stock_move_z, stock_move_band, stock_move_excess_z, stock_move_p)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (item_id, horizon_days, utcnow_iso(),
              1 if outcome["corroborated"] else 0,
              json.dumps(outcome.get("signals", [])),
@@ -2030,7 +2072,9 @@ def upsert_backtest_outcome(item_id: int, horizon_days: int, outcome: dict) -> N
              1 if outcome.get("regime_shifted") else 0,
              outcome.get("manual_rating"),
              outcome.get("stock_move_z"),
-             outcome.get("stock_move_band")),
+             outcome.get("stock_move_band"),
+             outcome.get("stock_move_excess_z"),
+             outcome.get("stock_move_p")),
         )
         row = conn.execute(
             "SELECT source, source_id FROM items WHERE id = ?", (item_id,)
@@ -2046,6 +2090,8 @@ def upsert_backtest_outcome(item_id: int, horizon_days: int, outcome: dict) -> N
             "manual_rating":   outcome.get("manual_rating"),
             "stock_move_z":    outcome.get("stock_move_z"),
             "stock_move_band": outcome.get("stock_move_band"),
+            "stock_move_excess_z": outcome.get("stock_move_excess_z"),
+            "stock_move_p":    outcome.get("stock_move_p"),
         })
 
 
@@ -2070,8 +2116,8 @@ def learning_dataset(horizon_days: int) -> list[sqlite3.Row]:
                 SELECT item_id, MAX(computed_at) AS computed_at
                 FROM signal_scores GROUP BY item_id
             )
-            SELECT i.id AS item_id, i.materiality_score, {_LEARN_FACTORS},
-                   o.corroborated
+            SELECT i.id AS item_id, i.materiality_score, i.ingested_at,
+                   {_LEARN_FACTORS}, o.corroborated
             FROM outcome_backtest o
             JOIN latest l        ON l.item_id = o.item_id
             JOIN signal_scores s ON s.item_id = l.item_id AND s.computed_at = l.computed_at
@@ -2174,6 +2220,31 @@ def learned_model_by_id(model_id: int) -> sqlite3.Row | None:
     with get_conn() as conn:
         return conn.execute(
             "SELECT * FROM learned_models WHERE id = ?", (model_id,)
+        ).fetchone()
+
+
+# ── Calibrator registry (isotonic materiality → P(corroborated)) ─────────
+
+
+def save_calibrator(meta: dict) -> int:
+    """Persist a fitted calibrator curve; returns the new calibrator id."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO calibrators
+                 (name, horizon_days, n_samples, base_rate, curve_json)
+               VALUES (?, ?, ?, ?, ?)""",
+            (meta["name"], meta.get("horizon_days"), meta.get("n_samples"),
+             meta.get("base_rate"), meta["curve_json"]),
+        )
+        return cur.lastrowid
+
+
+def latest_calibrator(name: str = "materiality") -> sqlite3.Row | None:
+    """Most recently fitted calibrator for `name`, or None."""
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM calibrators WHERE name = ? ORDER BY id DESC LIMIT 1",
+            (name,),
         ).fetchone()
 
 

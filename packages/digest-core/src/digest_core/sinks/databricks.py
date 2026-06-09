@@ -423,6 +423,8 @@ class DatabricksSink:
             "manual_rating":   outcome.get("manual_rating"),
             "stock_move_z":    outcome.get("stock_move_z"),
             "stock_move_band": outcome.get("stock_move_band"),
+            "stock_move_excess_z": outcome.get("stock_move_excess_z"),
+            "stock_move_p":    outcome.get("stock_move_p"),
         }
         self._insert("silver.outcome_backtest", [row])
 

@@ -112,3 +112,65 @@ def test_run_best_falls_back_to_shorter_horizon(fresh_db, make_item):
 def test_run_best_returns_note_when_no_horizon_has_data(fresh_db, make_item):
     summary = learn.run_best(horizons=(30, 7))
     assert summary.get("model_id") is None
+
+
+# ── temporal split + embargo (the random-split leakage fix) ───────────────
+
+
+def _rows_at(days: list[int]) -> list[dict]:
+    return [{"ingested_at": f"2026-01-{d:02d} 00:00:00"} for d in days]
+
+
+def test_temporal_split_is_chronological_even_on_shuffled_input():
+    rows = _rows_at([14, 3, 28, 1, 21, 7, 25, 10, 17, 5, 23, 12])
+    tr, te, _ = learn._temporal_split(rows, test_frac=0.3, embargo_days=0)
+    test_times = {rows[i]["ingested_at"] for i in te}
+    train_times = {rows[i]["ingested_at"] for i in tr}
+    assert max(train_times) < min(test_times)        # holdout is strictly the future
+
+
+def test_temporal_split_purges_embargo_window():
+    rows = _rows_at(list(range(1, 29)))              # one row/day, 28 days
+    tr, te, note = learn._temporal_split(rows, test_frac=0.3, embargo_days=7)
+    assert note == "temporal+embargo"
+    assert min(rows[i]["ingested_at"] for i in te) == "2026-01-21 00:00:00"
+    cutoff = "2026-01-14 00:00:00"                              # test_start − 7d
+    assert all(rows[i]["ingested_at"] < cutoff for i in tr)     # purged, not just earlier
+    # The 7 days before the holdout (label windows overlap it) are in NEITHER set.
+    excluded = set(range(len(rows))) - set(tr) - set(te)
+    assert {rows[i]["ingested_at"][:10] for i in excluded} == {
+        f"2026-01-{d:02d}" for d in range(14, 21)}
+
+
+def test_temporal_split_relaxes_embargo_on_thin_history():
+    rows = _rows_at([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])    # 12 days span
+    tr, te, note = learn._temporal_split(rows, test_frac=0.3, embargo_days=30)
+    assert "relaxed" in note                          # reported, never silent
+    assert len(tr) + len(te) == len(rows)             # falls back to un-purged split
+
+
+# ── bootstrap CI ──────────────────────────────────────────────────────────
+
+
+def test_bootstrap_ci_tight_on_separable_auc():
+    y = np.array([0] * 20 + [1] * 20)
+    s = np.array([0.1] * 20 + [0.9] * 20)
+    ci = learn.bootstrap_ci(learn.auc, y, s, n_boot=200, seed=1)
+    assert ci == (1.0, 1.0)                           # every resample is perfect
+
+
+def test_bootstrap_ci_orders_and_handles_empty():
+    rng = np.random.RandomState(2)
+    y = rng.randint(0, 2, 60)
+    s = rng.uniform(size=60)
+    ci = learn.bootstrap_ci(learn.auc, y, s, n_boot=200, seed=2)
+    assert ci is not None and ci[0] <= ci[1]
+    assert learn.bootstrap_ci(learn.auc, [], [], n_boot=10) is None
+
+
+def test_train_reports_split_and_cis(fresh_db, make_item):
+    _seed_labeled(make_item, n=30)
+    summary = learn.train(horizon_days=30)
+    assert summary["model_id"] is not None
+    assert summary["split"].startswith("temporal")    # never a random split
+    assert "learned_precision_ci" in summary
