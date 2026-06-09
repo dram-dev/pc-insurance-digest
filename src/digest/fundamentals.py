@@ -129,8 +129,12 @@ def underwriting_ratios(insurer: str) -> dict:
     loss_lae_ratio = gated(losses, 0.15, 1.5)
     # Expense only when BOTH components are present — otherwise it understates.
     expense_ratio = gated((other_uw or 0) + (dac or 0), 0.05, 0.6) if (other_uw and dac) else None
-    combined = (round(loss_lae_ratio + expense_ratio, 4)
-                if loss_lae_ratio is not None and expense_ratio is not None else None)
+    combined = None
+    if loss_lae_ratio is not None and expense_ratio is not None:
+        c = round(loss_lae_ratio + expense_ratio, 4)
+        # Sanity band — a P&C combined ratio outside this is a sign the expense is
+        # incomplete (no full-statement cross-check exists here); withhold it.
+        combined = c if 0.6 <= c <= 1.4 else None
     return {
         "insurer": tk, "earned_premium_musd": prem, "written_premium_musd": written,
         "ep_to_wp": ep_to_wp, "ep_validated": ep_validated,
