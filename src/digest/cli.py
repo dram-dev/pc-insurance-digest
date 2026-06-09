@@ -175,7 +175,7 @@ def brief(hours: int, top: int) -> None:
         table.add_column("Title", no_wrap=True, overflow="ellipsis", max_width=58)
         for r in rows:
             table.add_row(
-                signals.tier_badge(r["score"]), f"{r['score']:.2f}",
+                signals.tier_badge_for_row(r), f"{r['score']:.2f}",
                 r["topic"] or "?", r["source"], r["title"] or "(untitled)",
             )
         console.print(table)

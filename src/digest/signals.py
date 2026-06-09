@@ -17,8 +17,11 @@ Components, in plain English:
   regime_mult            Current market-cycle × cat-load multiplier from the regime detector.
   topic_relevance        Reserved — currently 1.0 for every topic. Tune later if topic
                          emphasis under specific regimes needs sharpening.
-  recency                Linear half-life over 7 days, floor 0.3.
+  recency                Exponential decay 2^(−age/h), per-topic half-life h (cat_event 2d,
+                         regulatory_rate 14d, reserving 21d, default 7d), floor 0.1.
   llm_judgment           Materiality from summarize.py (0.5–1.5), default 1.0 if missing.
+                         Once the isotonic calibrator is fitted (calibration.py), this
+                         becomes the calibrated relativity P(corroborated)/base_rate.
   topic_priority_boost   Personal-lines auto + liability topics (social inflation,
                          commercial specialty, reserving, supply chain) > 1.0.
   burden_intensity_boost Regulatory Sonar lite — burden_intensity classification on
@@ -173,6 +176,14 @@ PRIORITY_INSURER_NAMES: dict[str, float] = {
 # user cares about. Compiled once at module import — scans title +
 # summary + why_it_matters. 1.2× on any hit, 1.0× otherwise. Multiple
 # hits don't stack (one keyword is enough signal).
+#
+# COST DRIVERS ONLY. Litigation phrases (nuclear verdict, verdicts/
+# settlements, tort reform, social inflation, litigation financing) live in
+# _TPLF_KEYWORDS — they used to appear in BOTH lists, so one phrase fired
+# the inflation boost (1.2×) AND the TPLF boost (1.3×) on top of the
+# social_inflation topic boost (1.4×): a 2.18× stack from a single signal
+# counted three times. The two regex families are now disjoint, and the
+# keyword stack cap below is the belt-and-suspenders guard.
 
 _INFLATION_KEYWORDS = (
     r"\bauto[\s-]?parts?\b",
@@ -180,10 +191,6 @@ _INFLATION_KEYWORDS = (
     r"\blabor (?:cost|supply|shortage|inflation|rate)",
     r"\bwage[s]? (?:inflation|growth|pressure)",
     r"\bmedical (?:cost|inflation|trend)",
-    r"\bnuclear verdict",
-    r"\b(?:verdict|judgement|judgment|settlement)s?\b",
-    r"\btort reform",
-    r"\bsocial inflation",
     r"\bloss cost",
     r"\bseverity (?:trend|inflation|increase)",
     r"\bpure premium",
@@ -191,7 +198,6 @@ _INFLATION_KEYWORDS = (
     r"\bbody shop",
     r"\brepair cost",
     r"\bused[\s-]car",
-    r"\blitigat(?:ion|ed) financ",   # third-party litigation funding
 )
 
 _INFLATION_RE = re.compile("|".join(_INFLATION_KEYWORDS), re.IGNORECASE)
@@ -239,14 +245,38 @@ _REGULATORY_RE = re.compile("|".join(_REGULATORY_KEYWORDS), re.IGNORECASE)
 # logged. Unknown keys in overrides are ignored. Non-numeric values
 # are ignored with a warning. The pipeline never breaks on a bad edit.
 
+# Per-topic recency half-lives (days) for the exponential decay. A live cat
+# advisory is stale in days; a reserving development or rate filing stays
+# informative for weeks. Wave-2 follow-on: calibrate these from the decay of
+# corroboration rate vs item age once the outcome store matures.
+RECENCY_HALF_LIVES_DEFAULT: dict[str, float] = {
+    "default":         7.0,
+    "cat_event":       2.0,
+    "regulatory_rate": 14.0,
+    "reserving":       21.0,
+}
+
+# Cap on the PRODUCT of the three keyword boosts (inflation × regulatory ×
+# tplf). The regex families are disjoint, but distinct phrases in one item can
+# still stack multiplicatively; above the cap all three are scaled back
+# proportionally (cube root) so the persisted factors still multiply to the
+# score exactly.
+KEYWORD_STACK_CAP_DEFAULT = 1.6
+
 _DEFAULT_WEIGHTS: dict[str, dict[str, float]] = {
     "sources":          dict(SOURCE_MULT),
     "topics":           dict(TOPIC_PRIORITY_BOOST),
     "insurer_priority": dict(PRIORITY_INSURERS_BOOST),
     "insurer_names":    dict(PRIORITY_INSURER_NAMES),
-    "keyword_boosts":   {"inflation": 1.2, "regulatory": 1.2, "tplf": 1.3},
+    "keyword_boosts":   {"inflation": 1.2, "regulatory": 1.2, "tplf": 1.3,
+                         "stack_cap": KEYWORD_STACK_CAP_DEFAULT},
     "burden_intensity": dict(BURDEN_INTENSITY_BOOST),
-    "signal_tiers":     dict(SIGNAL_TIER_DEFAULTS),
+    # high/medium are the FIXED fallback cutoffs; high_quantile/medium_quantile
+    # + min_n drive the quantile calibration (trailing-90d score distribution).
+    "signal_tiers":     {**SIGNAL_TIER_DEFAULTS,
+                         "high_quantile": 0.90, "medium_quantile": 0.60,
+                         "min_n": 80},
+    "recency_half_lives": dict(RECENCY_HALF_LIVES_DEFAULT),
 }
 
 # Cache shape: (path, mtime, weights). Re-read only when the file's
@@ -336,12 +366,60 @@ def _load_scoring_weights() -> dict[str, dict[str, float]]:
 
 
 def tier_thresholds() -> tuple[float, float]:
-    """(high, medium) score cutoffs — user-tunable via Scoring Weights.md."""
+    """(high, medium) FIXED score cutoffs — user-tunable via Scoring Weights.md.
+
+    These are the fallback (and the ad-hoc display path). The scoring run
+    itself uses `quantile_tier_thresholds`, which replaces them with empirical
+    percentiles of the trailing score distribution once enough history exists;
+    the tier each run stamps on the row is the authoritative one.
+    """
     section = _load_scoring_weights().get("signal_tiers", SIGNAL_TIER_DEFAULTS)
     return (
         section.get("high",   SIGNAL_TIER_DEFAULTS["high"]),
         section.get("medium", SIGNAL_TIER_DEFAULTS["medium"]),
     )
+
+
+def _percentile_value(sorted_vals: list[float], q: float) -> float:
+    """Linear-interpolated percentile of an ascending list (numpy-free)."""
+    pos = q * (len(sorted_vals) - 1)
+    lo = int(pos)
+    hi = min(lo + 1, len(sorted_vals) - 1)
+    frac = pos - lo
+    return sorted_vals[lo] * (1.0 - frac) + sorted_vals[hi] * frac
+
+
+def quantile_tier_thresholds(
+    weights: dict[str, dict[str, float]] | None = None, days: int = 90,
+) -> tuple[float, float, str]:
+    """(high, medium, basis) tier cutoffs, self-calibrating.
+
+    With ≥min_n latest-scores in the trailing `days`, the cutoffs are the
+    empirical P90/P60 (quantiles user-tunable via `signal_tiers.high_quantile`
+    / `.medium_quantile`) — so 'high conviction' always means 'top decile of
+    what the pipeline has actually been producing', no matter how weights,
+    regime multipliers, or the source mix drift. Below min_n — or when the
+    distribution is too degenerate to separate the two cutoffs — the fixed
+    signal_tiers values apply. basis ∈ {'quantile', 'fixed'}.
+    """
+    if weights is None:
+        weights = _load_scoring_weights()
+    st = weights["signal_tiers"]
+    fixed = (
+        st.get("high",   SIGNAL_TIER_DEFAULTS["high"]),
+        st.get("medium", SIGNAL_TIER_DEFAULTS["medium"]),
+    )
+    min_n = int(st.get("min_n", 80))
+    scores = db.latest_scores_since(days=days)
+    if len(scores) < min_n:
+        return (*fixed, "fixed")
+    hq = min(max(float(st.get("high_quantile",   0.90)), 0.0), 1.0)
+    mq = min(max(float(st.get("medium_quantile", 0.60)), 0.0), 1.0)
+    high   = _percentile_value(scores, hq)
+    medium = _percentile_value(scores, mq)
+    if not high > medium:        # mass ties → quantiles can't separate the tiers
+        return (*fixed, "fixed")
+    return round(high, 4), round(medium, 4), "quantile"
 
 
 def tier_for_score(
@@ -374,6 +452,18 @@ def tier_badge(score: float | None) -> str:
     return f"{TIER_EMOJI[tier]} {TIER_LABEL[tier]}" if tier else ""
 
 
+def tier_badge_for_row(row: Any) -> str:
+    """Badge for a leaderboard row. Prefers the PERSISTED tier — stamped with
+    the (possibly quantile-calibrated) cutoffs in force when the row was
+    scored — falling back to the fixed-threshold score mapping for rows
+    persisted before tiers existed."""
+    tier = row["tier"] if "tier" in row.keys() and row["tier"] else None
+    if tier in TIER_EMOJI:
+        return f"{TIER_EMOJI[tier]} {TIER_LABEL[tier]}"
+    score = row["score"] if "score" in row.keys() else None
+    return tier_badge(float(score)) if score is not None else ""
+
+
 # ── TPLF / litigation-financing first-class boost (Wave 3 Phase 2) ────
 #
 # Fires when EITHER the LLM-classified sub_tags list contains
@@ -395,6 +485,11 @@ _TPLF_KEYWORDS = (
     r"\bnuclear verdict\b",
     r"\baggregate (?:settlement|verdict)\b",
     r"\bMDL panel\b",
+    # Moved here from _INFLATION_KEYWORDS (de-dup): litigation-environment
+    # phrases boost once, via this family only.
+    r"\b(?:verdict|judgement|judgment|settlement)s?\b",
+    r"\btort reform\b",
+    r"\bsocial inflation\b",
 )
 
 _TPLF_RE = re.compile("|".join(_TPLF_KEYWORDS), re.IGNORECASE)
@@ -525,13 +620,26 @@ def _reserve_deterioration_boost(blob: str, reserve_map: dict[str, float]) -> fl
 
 # ── Recency ────────────────────────────────────────────────────────────
 
+RECENCY_FLOOR = 0.1   # exponential tail floor (old linear ramp floored at 0.3)
 
-def _recency(published_iso: str | None, ingested_iso: str | None, half_life_days: float = 7.0) -> float:
-    """Linear decay over `half_life_days`, floored at 0.3.
 
-    Uses published_at if present, otherwise ingested_at. Returns 1.0 for items
-    less than ~1 day old and 0.3 for anything older than `half_life_days`.
+def _recency(
+    published_iso: str | None,
+    ingested_iso: str | None,
+    topic: str | None = None,
+    half_lives: dict[str, float] | None = None,
+) -> float:
+    """True exponential decay 2^(−age/h) with a PER-TOPIC half-life h.
+
+    The old implementation was a linear ramp (misnamed half-life) with one
+    global rate — but a cat advisory and a reserving development have wildly
+    different information half-lives. h comes from the `recency_half_lives`
+    weights section (cat_event 2d, regulatory_rate 14d, reserving 21d,
+    default 7d). Uses published_at if present, otherwise ingested_at; floored
+    at RECENCY_FLOOR; missing/unparseable timestamps → 0.6 (unchanged).
     """
+    hl = half_lives if half_lives is not None else RECENCY_HALF_LIVES_DEFAULT
+    h = float(hl.get((topic or "").lower()) or hl.get("default", 7.0))
     raw = published_iso or ingested_iso
     if not raw:
         return 0.6
@@ -542,7 +650,7 @@ def _recency(published_iso: str | None, ingested_iso: str | None, half_life_days
     if ts.tzinfo is None:
         ts = ts.replace(tzinfo=timezone.utc)
     age_days = max(0.0, (datetime.now(timezone.utc) - ts).total_seconds() / 86400.0)
-    decay = max(0.3, 1.0 - age_days / half_life_days)
+    decay = max(RECENCY_FLOOR, 2.0 ** (-age_days / max(h, 0.1)))
     return round(decay, 3)
 
 
@@ -615,6 +723,8 @@ def score_item(
     reserve_map: dict[str, float] | None = None,
     severity_z: float | None = None,
     litigation_pressure: float | None = None,
+    calibrator: Any | None = None,
+    tier_cutoffs: tuple[float, float] | None = None,
 ) -> Score:
     """Compute the leaderboard score for one item row.
 
@@ -622,6 +732,11 @@ def score_item(
     Obsidian _meta/Scoring Weights.md → module-level defaults. Production
     `run_signals` passes a single resolved dict so a per-batch reload
     happens at most once; ad-hoc callers can omit and pay the cached lookup.
+
+    `calibrator` (isotonic materiality → P(corroborated), see calibration.py)
+    replaces the raw materiality clamp when fitted; None → raw clamp (the
+    pre-calibration behavior). `tier_cutoffs` lets run_signals stamp tiers
+    from the batch's quantile-calibrated thresholds; None → fixed weights.
     """
     if weights is None:
         weights = _load_scoring_weights()
@@ -636,14 +751,19 @@ def score_item(
     rec        = _recency(
         row["published_at"] if "published_at" in row.keys() else None,
         row["ingested_at"]  if "ingested_at"  in row.keys() else None,
+        topic=topic,
+        half_lives=weights.get("recency_half_lives"),
     )
 
     materiality = row["materiality_score"] if "materiality_score" in row.keys() else None
-    try:
-        llm_j = float(materiality) if materiality is not None else 1.0
-    except (TypeError, ValueError):
-        llm_j = 1.0
-    llm_j = max(0.5, min(1.5, llm_j))
+    if calibrator is not None and materiality is not None:
+        llm_j = calibrator.judgment(materiality)
+    else:
+        try:
+            llm_j = float(materiality) if materiality is not None else 1.0
+        except (TypeError, ValueError):
+            llm_j = 1.0
+        llm_j = max(0.5, min(1.5, llm_j))
 
     topic_boost  = weights["topics"].get(topic, 1.0)
 
@@ -662,6 +782,19 @@ def score_item(
     inflation_boost  = _inflation_keyword_boost(blob,      kw.get("inflation",  1.2), severity_z)
     regulatory_boost = _regulatory_action_boost(blob,      kw.get("regulatory", 1.2))
     tplf_boost       = _litigation_tplf_boost(row, blob,   kw.get("tplf",       1.3), litigation_pressure)
+
+    # Keyword stack cap: the three keyword families are disjoint, but distinct
+    # phrases in one item can still stack multiplicatively. Above the cap all
+    # three are scaled back proportionally (cube root), so the persisted
+    # factors still multiply to the score exactly.
+    cap = float(kw.get("stack_cap", KEYWORD_STACK_CAP_DEFAULT))
+    stack = inflation_boost * regulatory_boost * tplf_boost
+    if cap > 0 and stack > cap:
+        shrink = (cap / stack) ** (1.0 / 3.0)
+        inflation_boost  *= shrink
+        regulatory_boost *= shrink
+        tplf_boost       *= shrink
+
     # Option 5: adverse reserve development on a named insurer. Neutral (1.0)
     # until reserving_signals has data (reserve_map empty → no-op).
     reserve_boost    = _reserve_deterioration_boost(blob, reserve_map or {})
@@ -672,8 +805,11 @@ def score_item(
         * insurer_boost * inflation_boost * regulatory_boost
         * tplf_boost * reserve_boost
     )
-    st = weights["signal_tiers"]
-    tier = tier_for_score(score, st.get("high"), st.get("medium"))
+    if tier_cutoffs is not None:
+        tier = tier_for_score(score, tier_cutoffs[0], tier_cutoffs[1])
+    else:
+        st = weights["signal_tiers"]
+        tier = tier_for_score(score, st.get("high"), st.get("medium"))
     return Score(
         item_id=int(row["id"]),
         score=round(score, 4),
@@ -713,6 +849,12 @@ def run_signals() -> dict[str, int]:
     severity_z = severity_regime()                 # Lead 3 (None until tape runs)
     from digest.litigation import pressure_signal
     litigation_pressure = pressure_signal()        # Lead 4 (None until index runs)
+    from digest.calibration import latest_materiality_calibrator
+    calibrator = latest_materiality_calibrator()   # None until fitted (raw clamp)
+    # Tier cutoffs for this batch: trailing-90d quantiles once history exists,
+    # the fixed signal_tiers values before that. Resolved once and stamped on
+    # every row so the persisted tier matches the thresholds actually in force.
+    tier_high, tier_medium, tier_basis = quantile_tier_thresholds(weights)
     computed_at = datetime.now(timezone.utc).isoformat()
 
     # Option 4: if a learned model exists, attach its score alongside the
@@ -728,7 +870,8 @@ def run_signals() -> dict[str, int]:
     scored: list[dict[str, Any]] = []
     for row in rows:
         s = score_item(row, regime, weights=weights, reserve_map=reserve_map,
-                       severity_z=severity_z, litigation_pressure=litigation_pressure)
+                       severity_z=severity_z, litigation_pressure=litigation_pressure,
+                       calibrator=calibrator, tier_cutoffs=(tier_high, tier_medium))
         d = s.as_row(computed_at)
         if model is not None:
             feat = dict(d)
@@ -740,10 +883,13 @@ def run_signals() -> dict[str, int]:
 
     inserted = db.upsert_signal_scores(scored)
     logger.info(
-        "signals: scored %d items at regime ×%.2f (inserted=%d, learned=%s)",
+        "signals: scored %d items at regime ×%.2f (inserted=%d, learned=%s, "
+        "calibrated=%s, tiers=%s high=%.3f medium=%.3f)",
         len(scored), regime.multiplier, inserted, "on" if model else "off",
+        "on" if calibrator else "off", tier_basis, tier_high, tier_medium,
     )
-    return {"scored": len(scored)}
+    return {"scored": len(scored), "tier_basis": tier_basis,
+            "tier_high": tier_high, "tier_medium": tier_medium}
 
 
 def top_n(n: int = 5, since_iso: str | None = None) -> list[Any]:

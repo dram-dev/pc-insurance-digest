@@ -206,10 +206,16 @@ across the pipeline:
   # largest personal-auto/home carriers outrank generic press even off-EDGAR.
   # This is the only carrier weighting State Farm can get: it is a MUTUAL with
   # no SEC filings, hence no ticker. Combined per-item as max(ticker, name).
-  inflation_keyword_boost = 1.2  # title/summary names an inflation driver: auto
+  inflation_keyword_boost = 1.2  # title/summary names a COST driver: auto
                                  # parts, construction cost, labor cost/supply,
-                                 # verdict/judgement/settlement, tort reform,
-                                 # severity/loss cost, body shop, repair cost
+                                 # severity/loss cost, body shop, repair cost.
+                                 # Litigation phrases (verdict/settlement, tort
+                                 # reform, social inflation, nuclear verdict)
+                                 # moved to the TPLF family (2026-06-09 de-dup —
+                                 # one phrase used to fire BOTH boosts). The
+                                 # product of the three keyword boosts is capped
+                                 # at `stack_cap` (default 1.6, proportional
+                                 # scale-back so factors still multiply to score).
   regulatory_action_boost = 1.2  # title/summary names a state DOI action,
                                  # insurer of last resort (FAIR Plan, Citizens),
                                  # SERFF rate filing, NAIC adoption, NYDFS/CDI/
@@ -243,9 +249,28 @@ across the pipeline:
   `signals.py` re-reads the file on each `digest signals` run when its
   mtime changes (cached otherwise). Missing file or malformed YAML →
   fall back to defaults silently with a warning. Unknown keys ignored.
-  Sections: `sources`, `topics`, `insurer_priority`, `keyword_boosts`,
-  `burden_intensity`. Regex patterns for the keyword boosts stay
+  Sections: `sources`, `topics`, `insurer_priority`, `insurer_names`,
+  `keyword_boosts` (incl. `stack_cap`), `burden_intensity`, `signal_tiers`,
+  `recency_half_lives`. Regex patterns for the keyword boosts stay
   code-side; only the boost VALUES are tunable.
+
+- **Scoring-math wave 1 (2026-06-09):**
+  - *Recency* is true exponential decay `2^(−age/h)` with per-topic
+    half-lives (`cat_event` 2d, `regulatory_rate` 14d, `reserving` 21d,
+    default 7d; floor 0.1) — tunable via `recency_half_lives`.
+  - *Conviction tiers* self-calibrate: cutoffs are the trailing-90d P90/P60
+    of latest scores once ≥`min_n` (80) exist (`signal_tiers.high_quantile`
+    / `.medium_quantile`); fixed 1.6/0.9 before that. The tier persisted on
+    the row is authoritative — display reads it via `tier_badge_for_row`.
+  - *llm_judgment* swaps the raw materiality clamp for an isotonic-calibrated
+    relativity `P(corroborated)/base_rate` (clamped 0.5–1.5) once
+    `calibration.py`'s PAVA fit passes its gate (≥100 labeled, ≥10/class);
+    raw clamp until then. Fitted by `digest learn` alongside the model.
+  - *Outcome labels*: `stock_move` is benchmark-excess (vs stored IAK/SPY
+    closes) and corroborates only under Benjamini–Hochberg FDR (q=0.10)
+    across the run cohort — never a fixed 1σ trigger. `learn.py` trains on
+    a chronological + embargoed split (random splits leaked time) and
+    reports bootstrap CIs.
 
 - **LLM materiality anchors** (`summarize.py` SYSTEM_PROMPT, sharpened
   2026-05-24 after Score Higher review): the 1.5 tier now explicitly

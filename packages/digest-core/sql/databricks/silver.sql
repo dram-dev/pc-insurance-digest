@@ -96,11 +96,16 @@ CREATE TABLE IF NOT EXISTS pc_silver.outcome_backtest (
     edgar_filed     BOOLEAN,
     regime_shifted  BOOLEAN,
     manual_rating   DOUBLE,
-    stock_move_z    DOUBLE,                       -- signed σ of the insurer's return
+    stock_move_z    DOUBLE,                       -- signed σ of the insurer's RAW return (own vol)
     stock_move_band STRING,                       -- 0.5/0.75/1.0/1.25/1.5/1.75/2.0/2+
+    stock_move_excess_z DOUBLE,                   -- σ of the IAK/SPY-EXCESS return (idiosyncratic)
+    stock_move_p    DOUBLE,                       -- two-sided p of the gating z (BH-FDR input)
     CONSTRAINT pc_silver_backtest_pk PRIMARY KEY (item_hash, horizon_days)
 )
 USING DELTA;
+-- Existing deployments (table created before the excess-z columns):
+--   ALTER TABLE pc_silver.outcome_backtest
+--     ADD COLUMNS (stock_move_excess_z DOUBLE, stock_move_p DOUBLE);
 
 -- Learned relevance score (Option 4): the numpy logistic-regression model's
 -- predicted P(corroborated), written alongside the heuristic so gold can A/B
