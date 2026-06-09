@@ -489,6 +489,56 @@ def triangles_compare(tickers: tuple[str, ...]) -> None:
     console.print(table)
 
 
+@main.command(name="underwriting")
+@click.argument("tickers", nargs=-1)
+def underwriting(tickers: tuple[str, ...]) -> None:
+    """Loss&LAE / expense / combined ratio per insurer, with earned-premium validation.
+
+    The earned-premium denominator is cross-checked against net written premium
+    (EP/WP ≈ 1.0 = sound, ✓). The loss&LAE ratio is the cross-insurer comparison;
+    the combined ratio is shown only where the EP validates AND the full expense is
+    tagged (else '—' — build it from per-LOB components rolled up or the reported
+    EX-99.1 figure via the combined-ratio-bridge skill, never from operating profit).
+    """
+    from digest import fundamentals as fmod
+    from digest.edgar_xbrl_ingest import insurer_universe
+
+    db.init_db()
+    targets = [t.upper() for t in tickers] or [t for t, _ in insurer_universe()]
+    console.rule("[bold cyan]underwriting ratios (XBRL components)")
+    table = Table(title="Underwriting — latest fiscal year")
+    table.add_column("Ticker", no_wrap=True)
+    table.add_column("Earned $M", justify="right")
+    table.add_column("EP/WP", justify="right")
+    table.add_column("Loss&LAE %", justify="right")
+    table.add_column("Expense %", justify="right")
+    table.add_column("Combined %", justify="right")
+
+    def pct(x):
+        return f"{x * 100:.1f}" if x is not None else "[dim]—[/dim]"
+
+    def musd(x):
+        return f"{x:,.0f}" if x else "[dim]—[/dim]"
+
+    clean = 0
+    for tk in targets:
+        d = fmod.underwriting_ratios(tk)
+        if d["loss_lae_ratio"] is not None:
+            clean += 1
+        ep = "[dim]—[/dim]"
+        if d["ep_to_wp"] is not None:
+            ep = f"[{'green' if d['ep_validated'] else 'yellow'}]{d['ep_to_wp']:.2f}" \
+                 f"{'✓' if d['ep_validated'] else '?'}[/]"
+        cr = d["combined_ratio"]
+        crc = "green" if cr is not None and cr < 1.0 else ("red" if cr is not None else "dim")
+        table.add_row(tk, musd(d["earned_premium_musd"]), ep, pct(d["loss_lae_ratio"]),
+                      pct(d["expense_ratio"]), f"[{crc}]{pct(d['combined_ratio'])}[/{crc}]")
+    console.print(table)
+    console.print(f"[dim]{clean}/{len(targets)} clean loss line; combined shown only where the "
+                  f"EP validates (vs written) and the full expense is tagged. Others → "
+                  f"per-LOB roll-up / reported EX-99.1 figure (combined-ratio-bridge skill).[/dim]")
+
+
 @main.command()
 def reserving() -> None:
     """Chain-ladder reserving over stored loss triangles (Option 5).

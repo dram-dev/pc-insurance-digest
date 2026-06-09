@@ -76,6 +76,74 @@ def statutory_top_writers(canonical_lob: str) -> list[dict]:
     )
 
 
+_CONSOLIDATED = """
+    SELECT value FROM insurer_xbrl_facts
+    WHERE insurer=? AND field=? AND period_type='duration' AND period_end=as_of
+      AND segment IS NULL AND product IS NULL AND subsegment IS NULL
+      AND geography IS NULL AND investment_type IS NULL AND instrument IS NULL
+      AND fv_level IS NULL
+    ORDER BY ABS(value) DESC LIMIT 1"""
+
+
+def _consolidated(insurer: str, field: str) -> float | None:
+    """Latest-period consolidated (un-dimensioned) value for a field. Largest
+    magnitude wins — the group total dominates a 0-valued or single-line sibling
+    fact that shares the same null-dimension context (e.g. TRV's losses)."""
+    rows = _rows(_CONSOLIDATED, (insurer.upper(), field))
+    return rows[0]["value"] if rows else None
+
+
+def underwriting_ratios(insurer: str) -> dict:
+    """Loss&LAE / expense / combined ratio with earned-premium VALIDATION.
+
+    The earned-premium denominator is the thing to get right, so it's cross-checked
+    against net WRITTEN premium — a sound EP has earned ≈ written for a stable book
+    (`ep_to_wp` ≈ 1.0; `ep_validated` flags 0.85-1.15). Ratios:
+      • loss&LAE ratio = incurred claims + ALAE / earned premium (LAE sits in the
+        loss line per ASC 944 — not double-counted on the expense side);
+      • expense ratio = (other underwriting + acquisition-cost amortization) /
+        earned premium, computed ONLY when BOTH parts are tagged, so it isn't
+        understated (and carries no LAE — that's in losses);
+      • combined = loss&LAE + expense when both are present.
+    Each is plausibility-gated → None when the consolidated loss line or the full
+    expense isn't cleanly tagged (multi-line writers). For those, build the ratio
+    from per-LOB loss/LAE/expense rolled up, or the carrier-reported EX-99.1 figure,
+    via the combined-ratio-bridge skill. A combined ratio is NEVER backed out of a
+    GAAP operating-profit line (that nets in investment income)."""
+    tk = insurer.upper()
+    prem = _consolidated(tk, "premiums_earned_net")
+    written = _consolidated(tk, "premiums_written_net")
+    losses = _consolidated(tk, "losses_and_lae_incurred")
+    other_uw = _consolidated(tk, "underwriting_expense")
+    dac = _consolidated(tk, "dac_amortization")
+
+    ep_to_wp = round(prem / written, 3) if (prem and written) else None
+    ep_validated = (0.85 <= ep_to_wp <= 1.15) if ep_to_wp is not None else None
+
+    def gated(num, lo, hi):
+        if not prem or not num:
+            return None
+        r = num / prem
+        return round(r, 4) if lo <= r <= hi else None
+
+    loss_lae_ratio = gated(losses, 0.15, 1.5)
+    # Expense only when BOTH components are present — otherwise it understates.
+    expense_ratio = gated((other_uw or 0) + (dac or 0), 0.05, 0.6) if (other_uw and dac) else None
+    combined = None
+    if loss_lae_ratio is not None and expense_ratio is not None:
+        c = round(loss_lae_ratio + expense_ratio, 4)
+        # Sanity band — a P&C combined ratio outside this is a sign the expense is
+        # incomplete (no full-statement cross-check exists here); withhold it.
+        combined = c if 0.6 <= c <= 1.4 else None
+    return {
+        "insurer": tk, "earned_premium_musd": prem, "written_premium_musd": written,
+        "ep_to_wp": ep_to_wp, "ep_validated": ep_validated,
+        "losses_lae_musd": losses, "loss_lae_ratio": loss_lae_ratio,
+        "other_underwriting_expense_musd": other_uw, "acquisition_cost_amort_musd": dac,
+        "expense_ratio": expense_ratio, "combined_ratio": combined,
+    }
+
+
 def insurer_fundamentals(insurer: str) -> dict:
     """Cross-dataset headline summary for one insurer — the MCP `fundamentals`
     tool payload. Per dataset: fact count + a headline figure."""
@@ -110,6 +178,7 @@ def insurer_fundamentals(insurer: str) -> dict:
         "insurer": tk,
         "datasets": datasets,
         "total_earned_premium_musd": (premium[0]["total_earned_musd"] if premium else None),
+        "underwriting": underwriting_ratios(tk),
         "triangles_by_canonical_lob": triangles,
         "reserve_development": reserving,
     }

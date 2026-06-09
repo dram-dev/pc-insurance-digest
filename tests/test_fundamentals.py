@@ -63,3 +63,47 @@ def test_statutory_top_writers_includes_mutuals(fresh_db):
     tw = f.statutory_top_writers("personal_auto")
     assert tw[0]["insurer"] == "state_farm"
     assert tw[0]["dpw_musd"] == 67748.0 and tw[0]["market_share_pct"] == 18.9
+
+
+def test_underwriting_ratios_loss_expense_combined(fresh_db):
+    db.upsert_xbrl_facts([
+        _xf("p", "premiums", "premiums_earned_net", 1000.0),
+        _xf("w", "premiums", "premiums_written_net", 1010.0),    # EP/WP ≈ 1.0 → validated
+        _xf("l", "combined_ratio", "losses_and_lae_incurred", 660.0),
+        _xf("l0", "combined_ratio", "losses_and_lae_incurred", 0.0),   # sibling 0 — magnitude wins
+        _xf("e", "combined_ratio", "underwriting_expense", 140.0),
+        _xf("d", "dac", "dac_amortization", 75.0),
+    ])
+    d = f.underwriting_ratios("PGR")
+    assert d["ep_to_wp"] == 0.99 and d["ep_validated"] is True
+    assert d["loss_lae_ratio"] == 0.66       # 660/1000, not the 0-valued sibling
+    assert d["expense_ratio"] == 0.215       # (140+75)/1000, both components present
+    assert d["combined_ratio"] == 0.875      # loss&LAE + expense (LAE not duped)
+
+
+def test_underwriting_combined_none_when_expense_incomplete(fresh_db):
+    db.upsert_xbrl_facts([
+        _xf("p", "premiums", "premiums_earned_net", 1000.0),
+        _xf("l", "combined_ratio", "losses_and_lae_incurred", 660.0),
+        _xf("e", "combined_ratio", "underwriting_expense", 140.0),    # only ONE expense piece
+    ])
+    d = f.underwriting_ratios("PGR")
+    assert d["loss_lae_ratio"] == 0.66
+    assert d["expense_ratio"] is None        # not both → would understate, so withheld
+    assert d["combined_ratio"] is None
+
+
+def test_underwriting_ep_validation_flags_bad_denominator(fresh_db):
+    db.upsert_xbrl_facts([
+        _xf("p", "premiums", "premiums_earned_net", 500.0),
+        _xf("w", "premiums", "premiums_written_net", 1000.0),    # EP/WP = 0.5 → NOT validated
+        _xf("l", "combined_ratio", "losses_and_lae_incurred", 300.0),
+    ])
+    d = f.underwriting_ratios("PGR")
+    assert d["ep_to_wp"] == 0.5 and d["ep_validated"] is False
+    assert d["loss_lae_ratio"] == 0.6        # computed, but the denominator is flagged unsound
+
+
+def test_underwriting_none_without_premium(fresh_db):
+    d = f.underwriting_ratios("ZZZ")
+    assert d["earned_premium_musd"] is None and d["combined_ratio"] is None

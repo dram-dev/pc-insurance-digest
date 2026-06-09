@@ -31,8 +31,19 @@ warehouse now carries them as structured XBRL facts: `insurer_xbrl_facts`
 dataset=`premiums` (field `premiums_earned_net`) and dataset=`combined_ratio`
 (field `losses_and_lae_incurred`), by segment × period, for the top-10 SEC
 insurers (`fundamentals(ticker)` or `digest.fundamentals.combined_ratio_components`).
-Cats and prior-year development still come from the EDGAR text the pipeline
-extracts (`_financial_excerpt` / `_reserve_excerpt`); pair with
+`digest underwriting` / `digest.fundamentals.underwriting_ratios(ticker)` gives the
+loss&LAE ratio (incurred claims + ALAE over earned premium — LAE in losses, not
+duped), plus an expense and combined ratio where the full expense is tagged. It
+VALIDATES the earned-premium denominator against net written premium (`ep_to_wp`
+≈ 1.0 ⇒ sound) — the denominator is the thing to get right. Combined is shown only
+where the EP validates AND both expense pieces (other underwriting + acquisition-
+cost amortization) are present (e.g. PGR 87.4% ≈ reported 88.8%); elsewhere it's
+None — the structured XBRL doesn't carry the proper expense lines for every filer.
+For those, build the COMBINED ratio from per-LOB loss/LAE/expense rolled up at a
+meaningful level (LAE in losses OR expense, never both), or the carrier-REPORTED
+EX-99.1 figure — NEVER backed out of a GAAP operating-profit line (it nets in
+investment income). Add the EDGAR text the pipeline extracts (`_financial_excerpt`
+/ `_reserve_excerpt`) for cats and prior-year development; pair with
 [[bornhuetter-ferguson]] when the development line needs its own reserve view.
 For the bases, the AY-vs-CY mechanics, and the YoY/QoQ bridge, see
 [reference.md](reference.md).
