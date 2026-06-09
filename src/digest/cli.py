@@ -953,9 +953,13 @@ def weekly(date_iso: str | None, calibration: bool) -> None:
             console.print(f"  [yellow]outcomes skipped:[/yellow] {exc}")
         try:
             from digest import learn as learn_mod
-            ls = learn_mod.run(horizon_days=30)
+            # Prefer the 30d horizon; fall back to 7d so the learned scorer
+            # self-starts before 30d items have matured.
+            ls = learn_mod.run_best(horizons=(30, 7))
             if ls.get("model_id"):
-                console.print(f"  [green]✓[/green] learn: model {ls['model_id']} trained")
+                console.print(f"  [green]✓[/green] learn: model {ls['model_id']} "
+                              f"trained @ {ls.get('horizon_days')}d (AUC "
+                              f"{ls.get('auc') if ls.get('auc') is not None else '—'})")
             else:
                 console.print("  [dim]learn: not enough labeled items yet (need ≥12)[/dim]")
         except Exception as exc:  # noqa: BLE001

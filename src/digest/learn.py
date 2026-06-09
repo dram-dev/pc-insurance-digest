@@ -202,3 +202,16 @@ def run(horizon_days: int = 30) -> dict:
     if summary.get("model_id"):
         summary["scored"] = score(summary["model_id"]).get("scored", 0)
     return summary
+
+
+def run_best(horizons: tuple[int, ...] = (30, 7)) -> dict:
+    """Train on the first horizon with enough labeled data, so the loop self-starts
+    before the longer (30d) horizon has matured. Returns that run's summary (or the
+    last attempt's note if none had enough)."""
+    summary: dict = {}
+    for h in horizons:
+        summary = run(horizon_days=h)
+        if summary.get("model_id"):
+            summary["horizon_days"] = h
+            return summary
+    return summary

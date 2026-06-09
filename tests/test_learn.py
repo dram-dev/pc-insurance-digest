@@ -48,7 +48,7 @@ def test_row_to_features_defaults():
 # ── train / score integration ─────────────────────────────────────────────
 
 
-def _seed_labeled(make_item, n=30):
+def _seed_labeled(make_item, n=30, horizon=30):
     for i in range(n):
         score = 0.5 + (i / n) * 2.5            # 0.5 .. 3.0
         sid = f"i{i}"
@@ -63,7 +63,7 @@ def _seed_labeled(make_item, n=30):
             "insurer_boost": 1.0, "inflation_boost": 1.0, "regulatory_boost": 1.0,
             "tplf_boost": 1.0, "tier": "high",
         }])
-        db.upsert_backtest_outcome(iid, 30, {
+        db.upsert_backtest_outcome(iid, horizon, {
             "corroborated": score > 1.7,                # learnable from `score`
             "signals": ["followon"] if score > 1.7 else [],
         })
@@ -98,3 +98,17 @@ def test_train_too_few_labels_is_graceful(fresh_db, make_item):
     _seed_labeled(make_item, n=5)
     summary = learn.train(horizon_days=30)
     assert summary["model_id"] is None and "need ≥12" in summary["note"]
+
+
+def test_run_best_falls_back_to_shorter_horizon(fresh_db, make_item):
+    # Only 7d labels exist (30d not matured yet) — run_best should train on 7d.
+    _seed_labeled(make_item, n=30, horizon=7)
+    summary = learn.run_best(horizons=(30, 7))
+    assert summary["model_id"] is not None
+    assert summary["horizon_days"] == 7
+    assert summary["scored"] == 30
+
+
+def test_run_best_returns_note_when_no_horizon_has_data(fresh_db, make_item):
+    summary = learn.run_best(horizons=(30, 7))
+    assert summary.get("model_id") is None

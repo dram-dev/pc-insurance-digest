@@ -103,7 +103,7 @@ def test_weekly_runs_calibration_then_dashboard(fresh_db, monkeypatch):
     from digest import outcomes
     monkeypatch.setattr(outcomes, "run_outcomes",
                         lambda *a, **k: calls.append("outcomes") or {})
-    monkeypatch.setattr(learn_mod, "run", lambda *a, **k: calls.append("learn") or {})
+    monkeypatch.setattr(learn_mod, "run_best", lambda *a, **k: calls.append("learn") or {})
 
     res = CliRunner().invoke(cli.main, ["weekly"])
     assert res.exit_code == 0

@@ -125,3 +125,83 @@ def test_run_outcomes_skips_already_checked(fresh_db, make_item, monkeypatch):
     _matured_item(make_item, "rss", "x", "Plain item", 40, topic="cyber", scored=True)
     assert outcomes.run_outcomes(horizons=(7,))[7] == 1
     assert outcomes.run_outcomes(horizons=(7,))[7] == 0    # nothing left to check
+
+
+# ── price feed (multi-source) ─────────────────────────────────────────────
+
+
+def test_fetch_yahoo_parses_chart(monkeypatch):
+    class FakeResp:
+        def raise_for_status(self): pass
+        def json(self):
+            return {"chart": {"result": [{
+                "timestamp": [1704067200, 1704153600],          # 2024-01-01, -02 UTC
+                "indicators": {"quote": [{"close": [100.0, None]}]},  # None close skipped
+            }]}}
+    monkeypatch.setattr(outcomes.requests, "get", lambda *a, **k: FakeResp())
+    assert outcomes._fetch_yahoo("PGR") == {"2024-01-01": 100.0}
+
+
+def test_fetch_daily_closes_falls_back_to_stooq(monkeypatch):
+    def boom(_t): raise RuntimeError("429 rate limited")
+    monkeypatch.setattr(outcomes, "_fetch_yahoo", boom)
+    monkeypatch.setattr(outcomes, "_fetch_stooq", lambda _t: {"2024-01-01": 50.0})
+    assert outcomes.fetch_daily_closes("PGR") == {"2024-01-01": 50.0}
+
+
+def test_fetch_daily_closes_empty_on_total_failure(monkeypatch):
+    def boom(_t): raise RuntimeError("blocked")
+    monkeypatch.setattr(outcomes, "_fetch_yahoo", boom)
+    monkeypatch.setattr(outcomes, "_fetch_stooq", boom)
+    assert outcomes.fetch_daily_closes("PGR") == {}
+
+
+# ── discriminating label (the fix that makes the learned scorer trainable) ──
+
+
+def test_followon_threshold_creates_label_balance(fresh_db, make_item, monkeypatch):
+    monkeypatch.setattr(outcomes, "fetch_daily_closes", lambda t: {})
+    ids = [_matured_item(make_item, "rss", f"i{i}", f"Plain item {i}", 40,
+                         topic="cyber", scored=True) for i in range(4)]
+    counts = {ids[0]: 100, ids[1]: 80, ids[2]: 5, ids[3]: 1}
+    monkeypatch.setattr(outcomes, "_followon_count", lambda it, *a: counts[it["id"]])
+
+    outcomes.run_outcomes(horizons=(7,))
+    with db.get_conn() as conn:
+        corr = {r["item_id"]: r["corroborated"] for r in conn.execute(
+            "SELECT item_id, corroborated FROM outcome_backtest WHERE horizon_days=7")}
+    # median([1,5,80,100]) → threshold 80: only the elevated two corroborate.
+    assert corr[ids[0]] == 1 and corr[ids[1]] == 1
+    assert corr[ids[2]] == 0 and corr[ids[3]] == 0
+
+
+def test_regime_shift_alone_does_not_corroborate(fresh_db, make_item, monkeypatch):
+    monkeypatch.setattr(outcomes, "fetch_daily_closes", lambda t: {})
+    monkeypatch.setattr(outcomes, "_followon_count", lambda *a: 0)      # no follow-on
+    monkeypatch.setattr(outcomes, "_regime_shifted", lambda s, e: True)  # regime shifts
+    x = _matured_item(make_item, "rss", "x", "Plain item, no insurer", 40,
+                      topic="cyber", scored=True)
+    outcomes.run_outcomes(horizons=(7,))
+    with db.get_conn() as conn:
+        row = conn.execute(
+            "SELECT corroborated, regime_shifted FROM outcome_backtest WHERE item_id=?",
+            (x,)).fetchone()
+    assert row["regime_shifted"] == 1        # recorded …
+    assert row["corroborated"] == 0          # … but a window property doesn't corroborate
+
+
+def test_edgar_item_resolves_ticker_from_source_id(fresh_db, make_item, monkeypatch):
+    # An EDGAR title ('PGR 8-K') has no insurer NAME alias, so match_insurer would
+    # miss it — the ticker must come from source_id ('PGR:acc') for stock/edgar to fire.
+    monkeypatch.setattr(outcomes, "_followon_count", lambda *a: 0)
+    monkeypatch.setattr(outcomes, "fetch_daily_closes", lambda t: {"d": 1.0})
+    monkeypatch.setattr(outcomes, "compute_stock_move", lambda c, t, h: (2.5, "2+"))
+    x = _matured_item(make_item, "edgar", "PGR:acc1", "PGR 8-K", 40,
+                      topic="underwriting_results", scored=True)
+    outcomes.run_outcomes(horizons=(7,))
+    import json
+    with db.get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM outcome_backtest WHERE item_id=?", (x,)).fetchone()
+    assert "stock_move" in json.loads(row["signals_json"])   # ticker resolved → signal fired
+    assert row["stock_move_z"] == 2.5
