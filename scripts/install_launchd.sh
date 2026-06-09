@@ -33,8 +33,11 @@ for label in am pm weekly learn; do
         -e "s|__UV_PATH__|$UV_PATH|g" \
         "$src" > "$dst"
 
-    launchctl unload "$dst" 2>/dev/null || true
-    launchctl load "$dst"
+    # Use the modern bootstrap/bootout API. The legacy `launchctl load` is
+    # deprecated and silently no-ops on macOS 11+ (confirmed on macOS 26 /
+    # Darwin 25), so a plain `load` leaves the job un-registered.
+    launchctl bootout "gui/$(id -u)/com.dr.pcdigest.${label}" 2>/dev/null || true
+    launchctl bootstrap "gui/$(id -u)" "$dst"
     echo "✓ Loaded $label job"
 done
 
