@@ -31,13 +31,17 @@ warehouse now carries them as structured XBRL facts: `insurer_xbrl_facts`
 dataset=`premiums` (field `premiums_earned_net`) and dataset=`combined_ratio`
 (field `losses_and_lae_incurred`), by segment × period, for the top-10 SEC
 insurers (`fundamentals(ticker)` or `digest.fundamentals.combined_ratio_components`).
-For the **headline** trade-basis ratios straight from those facts, `digest
-combined-ratio` / `digest.fundamentals.combined_ratio(ticker)` gives loss&LAE /
-expense / combined per insurer (plausibility-gated; pure-play P&C writers extract
-cleanly, multi-line writers show none). This skill is for the step beyond that —
-stripping cats and prior-year development to expose the *underlying* current-AY
-ratio, which the structured facts don't carry: those come from the EDGAR text the
-pipeline extracts (`_financial_excerpt` / `_reserve_excerpt`); pair with
+`digest loss-ratio` / `digest.fundamentals.loss_ratio(ticker)` gives the
+consolidated **loss & LAE ratio** straight from those facts (sound — one clean
+incurred-claims+ALAE line over earned premium, pure-play P&C writers only). It
+deliberately does NOT synthesize a combined ratio: the structured XBRL doesn't
+carry the proper expense component lines, so a reconstructed combined understates
+by 10-20 points, and backing into it from a GAAP underwriting-profit line is
+unsound (it nets in investment income). Build the COMBINED ratio here from proper
+per-LOB loss / LAE / expense components rolled up at a meaningful level (LAE in
+losses OR expense, never both), or from the carrier-REPORTED figure in the EX-99.1
+earnings release — plus the EDGAR text the pipeline extracts (`_financial_excerpt`
+/ `_reserve_excerpt`) for cats and prior-year development; pair with
 [[bornhuetter-ferguson]] when the development line needs its own reserve view.
 For the bases, the AY-vs-CY mechanics, and the YoY/QoQ bridge, see
 [reference.md](reference.md).

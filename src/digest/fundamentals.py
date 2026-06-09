@@ -93,37 +93,37 @@ def _consolidated(insurer: str, field: str) -> float | None:
     return rows[0]["value"] if rows else None
 
 
-def combined_ratio(insurer: str) -> dict:
-    """Loss&LAE / expense / combined ratio from the consolidated XBRL components.
+def loss_ratio(insurer: str) -> dict:
+    """Consolidated loss & LAE ratio from the XBRL components — NOT a combined ratio.
 
-    Each ratio is plausibility-gated and returns None when out of band — the
-    consolidated incurred-loss line is tagged inconsistently across filers
-    (multi-line writers bury P&C losses in a broader 'benefits, losses and
-    expenses' total), so this honestly covers the pure-play P&C writers and
-    leaves the rest to the combined-ratio-bridge skill fed with EDGAR-text
-    figures. Trade-basis combined = loss&LAE ratio + expense ratio; cats and
-    prior-year development are NOT in the structured facts — strip those via
-    the skill for the *underlying* combined ratio."""
+    The loss&LAE ratio is one clean line (incurred claims + ALAE, ASC 944) over
+    earned premium, so it's sound and not double-counted; it's plausibility-gated
+    and returns None where the consolidated incurred-loss line isn't cleanly tagged
+    (multi-line writers bury P&C losses in a broader total).
+
+    A COMBINED ratio is deliberately NOT synthesized here. Validation showed the
+    structured XBRL doesn't carry the proper component lines (underwriting expense
+    is tagged for only a few filers, and inconsistently), so summing what's present
+    understates the combined ratio by 10-20 points — and backing into it from a
+    GAAP operating-profit line is unsound (it nets in investment income). A correct
+    combined ratio is built from per-LOB loss/LAE/expense components rolled up at a
+    meaningful level; feed those (or the carrier-reported figure from the EX-99.1
+    earnings release) into the combined-ratio-bridge skill. The raw expense
+    components below are surfaced for transparency only — not summed into a ratio."""
     tk = insurer.upper()
     prem = _consolidated(tk, "premiums_earned_net")
     losses = _consolidated(tk, "losses_and_lae_incurred")
-    expense = _consolidated(tk, "underwriting_expense")
 
-    def gated(num, lo, hi):
-        if not prem or not num:
-            return None
-        r = num / prem
-        return round(r, 4) if lo <= r <= hi else None
-
-    loss_ratio = gated(losses, 0.15, 1.5)
-    expense_ratio = gated(expense, 0.03, 0.6)
-    combined = (round(loss_ratio + expense_ratio, 4)
-                if loss_ratio is not None and expense_ratio is not None else None)
+    lr = None
+    if prem and losses and 0.15 <= losses / prem <= 1.5:
+        lr = round(losses / prem, 4)
     return {
         "insurer": tk, "earned_premium_musd": prem,
-        "losses_lae_musd": losses, "underwriting_expense_musd": expense,
-        "loss_lae_ratio": loss_ratio, "expense_ratio": expense_ratio,
-        "combined_ratio": combined,
+        "losses_lae_musd": losses, "loss_lae_ratio": lr,
+        # raw, for transparency — NOT a complete expense ratio (see docstring).
+        "other_underwriting_expense_musd": _consolidated(tk, "underwriting_expense"),
+        "acquisition_cost_amort_musd": _consolidated(tk, "dac_amortization"),
+        "combined_ratio": None,  # not soundly reconstructable from these facts
     }
 
 
@@ -161,7 +161,7 @@ def insurer_fundamentals(insurer: str) -> dict:
         "insurer": tk,
         "datasets": datasets,
         "total_earned_premium_musd": (premium[0]["total_earned_musd"] if premium else None),
-        "underwriting": combined_ratio(tk),
+        "loss_ratio": loss_ratio(tk),
         "triangles_by_canonical_lob": triangles,
         "reserve_development": reserving,
     }

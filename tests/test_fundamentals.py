@@ -65,30 +65,31 @@ def test_statutory_top_writers_includes_mutuals(fresh_db):
     assert tw[0]["dpw_musd"] == 67748.0 and tw[0]["market_share_pct"] == 18.9
 
 
-def test_combined_ratio_computes_loss_expense_combined(fresh_db):
+def test_loss_ratio_computes_and_surfaces_components(fresh_db):
     db.upsert_xbrl_facts([
         _xf("p", "premiums", "premiums_earned_net", 1000.0),
         _xf("l", "combined_ratio", "losses_and_lae_incurred", 660.0),
         _xf("l0", "combined_ratio", "losses_and_lae_incurred", 0.0),   # sibling 0 — magnitude wins
         _xf("e", "combined_ratio", "underwriting_expense", 140.0),
+        _xf("d", "dac", "dac_amortization", 75.0),
     ])
-    d = f.combined_ratio("PGR")
+    d = f.loss_ratio("PGR")
     assert d["loss_lae_ratio"] == 0.66       # 660/1000, not the 0-valued sibling
-    assert d["expense_ratio"] == 0.14
-    assert d["combined_ratio"] == 0.80
+    assert d["other_underwriting_expense_musd"] == 140.0    # surfaced raw
+    assert d["acquisition_cost_amort_musd"] == 75.0
+    assert d["combined_ratio"] is None       # never synthesized from incomplete expense
 
 
-def test_combined_ratio_gates_implausible_loss_line(fresh_db):
+def test_loss_ratio_gates_implausible_loss_line(fresh_db):
     db.upsert_xbrl_facts([
         _xf("p", "premiums", "premiums_earned_net", 1000.0),
         _xf("l", "combined_ratio", "losses_and_lae_incurred", 30.0),   # 3% → implausible
     ])
-    d = f.combined_ratio("PGR")
+    d = f.loss_ratio("PGR")
     assert d["losses_lae_musd"] == 30.0      # raw value still surfaced
     assert d["loss_lae_ratio"] is None       # but the ratio is gated out
-    assert d["combined_ratio"] is None
 
 
-def test_combined_ratio_none_without_premium(fresh_db):
-    d = f.combined_ratio("ZZZ")
-    assert d["earned_premium_musd"] is None and d["combined_ratio"] is None
+def test_loss_ratio_none_without_premium(fresh_db):
+    d = f.loss_ratio("ZZZ")
+    assert d["earned_premium_musd"] is None and d["loss_lae_ratio"] is None
