@@ -136,3 +136,13 @@ def test_has_edge_requires_positive_ic_beating_baseline():
     assert alpha.has_edge(0.01, 0.05) is False        # positive but worse than baseline
     assert alpha.has_edge(0.0, None) is False         # zero is not an edge
     assert alpha.has_edge(None, None) is False
+
+
+def test_learn_loop_runs_clean_on_empty_db(fresh_db):
+    """The weekly learn-loop must never abort — every stage gates gracefully
+    when there's no data yet (the normal early-on state)."""
+    from click.testing import CliRunner
+    from digest import cli
+    result = CliRunner().invoke(cli.main, ["learn-loop"])
+    assert result.exit_code == 0, result.output
+    assert "1/3 outcomes" in result.output and "3/3 return model" in result.output

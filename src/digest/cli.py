@@ -437,6 +437,63 @@ def forecast_predict(horizon: int) -> None:
         console.print(f"  {f['ticker']:<5} excess {_fmt(f['pred_excess'])}  P(beat) {prob}")
 
 
+@main.command(name="learn-loop")
+@click.option("--horizon", default=20, help="Alpha-model forward horizon (days)")
+def learn_loop(horizon: int) -> None:
+    """Hands-off learning loop: outcomes → learn → forecast train → predict.
+
+    Meant for the weekly launchd job (com.dr.pcdigest.learn). Each stage is
+    best-effort — a stage that has too little data (the usual early-on case)
+    logs a note and the loop continues, so the job never aborts. As the daily
+    pipeline accumulates matured, insurer-mapped signals, this is what turns
+    them into a refreshed learned scorer + return forecasts without you running
+    anything by hand.
+    """
+    from digest.outcomes import run_outcomes
+    from digest import learn as learn_mod
+    from digest import alpha
+
+    db.init_db()
+
+    # 1. Label matured items at both horizons (feeds the learned scorer).
+    console.rule("[bold cyan]1/3 outcomes")
+    try:
+        counts = run_outcomes(horizons=(7, 30))
+        console.print("  [green]✓[/green] " +
+                      ", ".join(f"{h}d checked={n}" for h, n in counts.items()))
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"  [yellow]outcomes skipped:[/yellow] {exc}")
+
+    # 2. Learned relevance scorer — run_best self-starts on whichever horizon
+    #    has matured labels (tries 30d, falls back to 7d).
+    console.rule("[bold cyan]2/3 learned scorer")
+    try:
+        s = learn_mod.run_best(horizons=(30, 7))
+        if s.get("model_id"):
+            console.print(f"  [green]✓[/green] model #{s['model_id']} "
+                          f"(h={s.get('horizon_days')}d, AUC {_fmt(s.get('auc'))}); "
+                          f"scored {s.get('scored', 0)} items")
+        else:
+            console.print(f"  [yellow]{s.get('note', 'skipped')}[/yellow]")
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"  [yellow]learn skipped:[/yellow] {exc}")
+
+    # 3. Alpha return model — train (honest walk-forward) then write forecasts.
+    console.rule("[bold cyan]3/3 return model")
+    try:
+        a = alpha.run(horizon=horizon)
+        if a.get("model_id"):
+            edge = alpha.has_edge(a.get("ic"), a.get("baseline_ic"))
+            console.print(f"  [green]✓[/green] model #{a['model_id']} ({a.get('algo')}), "
+                          f"OOS IC {_fmt(a.get('ic'))} vs baseline {_fmt(a.get('baseline_ic'))} "
+                          f"→ {'edge' if edge else 'no edge (noise)'}; "
+                          f"{a.get('forecasts', 0)} forecasts")
+        else:
+            console.print(f"  [yellow]{a.get('note', 'training skipped')}[/yellow] (n={a.get('n', 0)})")
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"  [yellow]forecast skipped:[/yellow] {exc}")
+
+
 @main.command()
 def canonicalize() -> None:
     """Backfill canonical_lob across loss_triangles + statutory_facts.
