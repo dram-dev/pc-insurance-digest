@@ -1,63 +1,91 @@
-"""Regression test for regime's summarizer-backend call.
+"""Regime detector — Markov-switching filter properties + backend-call regression.
 
+The PR4 forward filter must reproduce the old hysteresis BEHAVIOR as posterior
+dynamics: one contrarian LLM reading can't flip the reported state, two
+consecutive ones can, and with no observation the posterior only diffuses.
 compute_market_cycle must call the backend with the lifted 3-arg signature
-(system_prompt, user_prompt, cfg) and pass regime's own system prompt. This
-guards against the break where regime still called backend_fn(full) with the
-pre-lift single-arg signature (which nothing else exercised).
+(system_prompt, user_prompt, cfg) and pass regime's own system prompt.
 """
 from __future__ import annotations
 
 import json
 
+import pytest
+
 from digest import regime, summarize
+from digest.regime import (
+    MARKET_CYCLES,
+    market_cycle_filter,
+    posterior_multiplier,
+    _prior_posterior,
+)
 
 
-def _sig(market_cycle, cat_load, proposed=None):
-    """Fake regime_signals row: held (effective) state + recorded proposal."""
-    ev = {"proposed": {"market_cycle": proposed[0], "cat_load": proposed[1]}} if proposed else {}
-    return {"market_cycle": market_cycle, "cat_load": cat_load,
-            "evidence_json": json.dumps(ev)}
+def _one_hot(state: str) -> list[float]:
+    return [1.0 if s == state else 0.0 for s in MARKET_CYCLES]
 
 
-def test_hysteresis_no_history_confirms(monkeypatch):
-    monkeypatch.setattr(regime.db, "recent_regime_signals", lambda n=1: [])
-    assert regime._apply_hysteresis("hard_market", "low_season") == ("hard_market", "low_season", True)
+def _mode(posterior: list[float]) -> str:
+    return MARKET_CYCLES[max(range(len(posterior)), key=posterior.__getitem__)]
 
 
-def test_hysteresis_matches_active_state_confirms(monkeypatch):
-    monkeypatch.setattr(regime.db, "recent_regime_signals",
-                        lambda n=1: [_sig("hard_market", "post_major_event")])
-    assert regime._apply_hysteresis("hard_market", "post_major_event")[2] is True
+# ── filter dynamics (the hysteresis property, now structural) ─────────────
 
 
-def test_hysteresis_first_disagreeing_proposal_is_pending(monkeypatch):
-    # Stable hard baseline (its recorded proposal == itself); a fresh soft
-    # proposal must NOT flip on the first reading — holds hard, pending.
-    monkeypatch.setattr(regime.db, "recent_regime_signals",
-        lambda n=1: [_sig("hard_market", "post_major_event",
-                          proposed=("hard_market", "post_major_event"))])
-    mc, cl, confirmed = regime._apply_hysteresis("transitioning_to_soft", "post_major_event")
-    assert (mc, cl) == ("hard_market", "post_major_event")
-    assert confirmed is False
+def test_kernel_rows_are_distributions():
+    for matrix in (regime.TRANSITION, regime.EMISSION):
+        for row in matrix:
+            assert sum(row) == pytest.approx(1.0)
+            assert all(v > 0 for v in row)
 
 
-def test_hysteresis_second_agreeing_proposal_confirms(monkeypatch):
-    # Prior run HELD hard but RECORDED a soft proposal (pending). A second soft
-    # proposal now confirms the transition — the bug was this never happening.
-    monkeypatch.setattr(regime.db, "recent_regime_signals",
-        lambda n=1: [_sig("hard_market", "post_major_event",
-                          proposed=("transitioning_to_soft", "post_major_event"))])
-    mc, cl, confirmed = regime._apply_hysteresis("transitioning_to_soft", "post_major_event")
-    assert (mc, cl) == ("transitioning_to_soft", "post_major_event")
-    assert confirmed is True
+def test_single_contrarian_reading_does_not_flip_mode():
+    pi = market_cycle_filter(_one_hot("stable"), ["hard_market"])
+    assert _mode(pi) == "stable"                  # sticky prior holds
+    assert pi[MARKET_CYCLES.index("hard_market")] > 0.05   # but mass shifted
 
 
-def test_hysteresis_flapping_proposal_stays_pending(monkeypatch):
-    # Prior recorded proposal differs from the new one → noise, stays pending.
-    monkeypatch.setattr(regime.db, "recent_regime_signals",
-        lambda n=1: [_sig("hard_market", "post_major_event",
-                          proposed=("soft_market", "low_season"))])
-    assert regime._apply_hysteresis("transitioning_to_soft", "post_major_event")[2] is False
+def test_two_consecutive_readings_flip_mode():
+    pi = market_cycle_filter(_one_hot("stable"), ["hard_market"])
+    pi = market_cycle_filter(pi, ["hard_market"])
+    assert _mode(pi) == "hard_market"             # matches the old 2-agree rule
+
+
+def test_no_observation_is_a_pure_predict_step():
+    pi = market_cycle_filter(_one_hot("hard_market"), [])
+    assert _mode(pi) == "hard_market"
+    assert pi[MARKET_CYCLES.index("hard_market")] == pytest.approx(
+        regime.TRANSITION[MARKET_CYCLES.index("hard_market")][MARKET_CYCLES.index("hard_market")])
+
+
+def test_agreeing_emissions_sharpen_the_posterior():
+    one = market_cycle_filter(_one_hot("stable"), ["hard_market"])
+    two = market_cycle_filter(_one_hot("stable"), ["hard_market", "hard_market"])
+    ih = MARKET_CYCLES.index("hard_market")
+    assert two[ih] > one[ih]                      # the priced hint corroborating the LLM
+
+
+def test_unknown_observation_is_ignored():
+    pi = market_cycle_filter(_one_hot("stable"), ["not_a_state"])
+    assert _mode(pi) == "stable"
+
+
+def test_posterior_multiplier_is_expected_value_and_continuous():
+    assert posterior_multiplier(_one_hot("hard_market")) == pytest.approx(1.20)
+    mixed = market_cycle_filter(_one_hot("stable"), ["hard_market"])
+    mult = posterior_multiplier(mixed)
+    assert 1.00 < mult < 1.20                     # smooth glide, not a cliff
+
+
+def test_prior_posterior_prefers_stored_then_one_hot_then_stable():
+    stored = {"posterior": {s: (0.6 if s == "soft_market" else 0.1) for s in MARKET_CYCLES}}
+    row = {"market_cycle": "hard_market", "evidence_json": json.dumps(stored)}
+    pi = _prior_posterior(row)
+    assert _mode(pi) == "soft_market"             # stored posterior wins
+    assert sum(pi) == pytest.approx(1.0)
+    legacy = {"market_cycle": "hard_market", "evidence_json": json.dumps({})}
+    assert _prior_posterior(legacy) == _one_hot("hard_market")   # pre-PR4 row
+    assert _prior_posterior(None) == _one_hot("stable")
 
 
 def test_compute_market_cycle_calls_backend_with_three_args(monkeypatch):
