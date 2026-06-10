@@ -332,6 +332,54 @@ def learn(horizon: int) -> None:
     console.print(f"  top-{s.get('k', 5)} precision — heuristic {_p(h)} vs learned {_p(learned)}{arrow}")
     console.print(f"  [green]✓[/green] learned_score written for {s.get('scored', 0)} items")
 
+    cal = s.get("calibrator") or {}
+    if cal.get("calibrator_id"):
+        console.print(f"  [green]✓[/green] materiality calibrator #{cal['calibrator_id']} "
+                      f"(n={cal.get('n_samples')}, base rate {_p(cal.get('base_rate'))})")
+    elif cal.get("note"):
+        console.print(f"  [dim]calibrator: {cal['note']}[/dim]")
+
+    ll = s.get("loglinear") or {}
+    if ll.get("eval_id"):
+        verdict = "[green]PASS[/green]" if ll.get("passed") else "[yellow]fail[/yellow]"
+        eligible = " · [bold green]ELIGIBLE (×2)[/bold green]" if ll.get("eligible") else ""
+        console.print(f"  log-linear gate #{ll['eval_id']}: {verdict} — "
+                      f"AUC {_p(ll.get('auc_weighted'))} vs {_p(ll.get('auc_heuristic'))}, "
+                      f"diff CI {ll.get('diff_ci')}{eligible}")
+    elif ll.get("note"):
+        console.print(f"  [dim]log-linear gate: {ll['note']}[/dim]")
+
+
+@main.command()
+@click.option("--horizon", default=30, help="Outcome horizon the rates are read at (days)")
+def credibility(horizon: int) -> None:
+    """Bühlmann–Straub source credibility — experience-rate the trust tiers.
+
+    Per-source observed corroboration rates shrunk toward the book mean with
+    Z = n/(n+k), and the implied source multiplier next to the hand-set one.
+    Report-only: scoring keeps the hand-set multipliers until you set
+    `credibility: {apply: 1}` in _meta/Scoring Weights.md.
+    """
+    from digest.credibility import credibility_table
+
+    db.init_db()
+    rows = credibility_table(horizon_days=horizon)
+    if not rows:
+        console.print("[dim]No outcome labels yet — run `digest outcomes` first.[/dim]")
+        return
+    table = Table(title=f"Source credibility (horizon {horizon}d)")
+    for col, justify in (("Source", "left"), ("n", "right"), ("Raw rate", "right"),
+                         ("Z", "right"), ("Cred rate", "right"),
+                         ("Hand mult", "right"), ("Implied", "right")):
+        table.add_column(col, justify=justify)
+    for r in rows:
+        drift = " ▲" if r.implied_mult > r.hand_mult else (
+            " ▼" if r.implied_mult < r.hand_mult else "")
+        table.add_row(r.source, str(r.n), f"{r.raw_rate:.2f}", f"{r.z:.2f}",
+                      f"{r.cred_rate:.2f}", f"{r.hand_mult:.2f}",
+                      f"{r.implied_mult:.2f}{drift}")
+    console.print(table)
+
 
 @main.group()
 def forecast() -> None:

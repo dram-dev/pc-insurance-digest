@@ -277,6 +277,11 @@ _DEFAULT_WEIGHTS: dict[str, dict[str, float]] = {
                          "high_quantile": 0.90, "medium_quantile": 0.60,
                          "min_n": 80},
     "recency_half_lives": dict(RECENCY_HALF_LIVES_DEFAULT),
+    # PR3 activation flags — both REPORT-ONLY at 0 (the default). credibility
+    # swaps in Bühlmann-implied source multipliers; loglinear applies the
+    # learned exponents once its two-consecutive-pass gate is also met.
+    "credibility": {"apply": 0.0, "gamma": 0.5, "horizon_days": 30.0},
+    "loglinear":   {"apply": 0.0},
 }
 
 # Cache shape: (path, mtime, weights). Re-read only when the file's
@@ -725,6 +730,7 @@ def score_item(
     litigation_pressure: float | None = None,
     calibrator: Any | None = None,
     tier_cutoffs: tuple[float, float] | None = None,
+    exponents: dict[str, float] | None = None,
 ) -> Score:
     """Compute the leaderboard score for one item row.
 
@@ -799,12 +805,26 @@ def score_item(
     # until reserving_signals has data (reserve_map empty → no-op).
     reserve_boost    = _reserve_deterioration_boost(blob, reserve_map or {})
 
-    score = (
-        src_mult * rg_mult * topic_rel * rec
-        * llm_j * topic_boost * burden_boost
-        * insurer_boost * inflation_boost * regulatory_boost
-        * tplf_boost * reserve_boost
-    )
+    # The score is Π fᵢ^wᵢ — wᵢ ≡ 1 (the default) is the plain product. The
+    # log-linear gate (loglinear.py) supplies learned exponents only when it
+    # has passed twice consecutively AND the user flipped `loglinear.apply`;
+    # factor columns persist RAW either way, so exponents stay auditable.
+    factors = {
+        "source_mult": src_mult, "regime_mult": rg_mult,
+        "topic_relevance": topic_rel, "recency": rec, "llm_judgment": llm_j,
+        "topic_boost": topic_boost, "burden_boost": burden_boost,
+        "insurer_boost": insurer_boost, "inflation_boost": inflation_boost,
+        "regulatory_boost": regulatory_boost, "tplf_boost": tplf_boost,
+        "reserve_boost": reserve_boost,
+    }
+    if exponents:
+        score = 1.0
+        for name, val in factors.items():
+            score *= max(val, 1e-6) ** float(exponents.get(name, 1.0))
+    else:
+        score = 1.0
+        for val in factors.values():
+            score *= val
     if tier_cutoffs is not None:
         tier = tier_for_score(score, tier_cutoffs[0], tier_cutoffs[1])
     else:
@@ -844,6 +864,20 @@ def run_signals() -> dict[str, int]:
     # once even when scoring hundreds of items. Edits to Scoring Weights.md
     # land on the next run, not mid-batch.
     weights = _load_scoring_weights()
+    # PR3 — credibility apply (user opt-in, default report-only): swap the
+    # hand-set source multipliers for the Bühlmann-implied ones. A copy, never
+    # a mutation — the weights cache must keep the hand map.
+    if float(weights.get("credibility", {}).get("apply", 0.0)) >= 1.0:
+        from digest.credibility import adjusted_source_multipliers
+        adjusted = adjusted_source_multipliers(weights)
+        if adjusted:
+            weights = {**weights, "sources": adjusted}
+            logger.info("signals: credibility-adjusted source multipliers in force")
+    # PR3 — log-linear exponents: None unless gate passed twice AND user opted in.
+    from digest.loglinear import active_weights as _loglinear_active
+    exponents = _loglinear_active(weights.get("loglinear"))
+    if exponents:
+        logger.info("signals: log-linear exponents in force (gate passed ×2 + apply flag)")
     reserve_map = db.reserving_severity_map()      # Option 5 (empty until data)
     from digest.severity_tape import severity_regime
     severity_z = severity_regime()                 # Lead 3 (None until tape runs)
@@ -871,7 +905,8 @@ def run_signals() -> dict[str, int]:
     for row in rows:
         s = score_item(row, regime, weights=weights, reserve_map=reserve_map,
                        severity_z=severity_z, litigation_pressure=litigation_pressure,
-                       calibrator=calibrator, tier_cutoffs=(tier_high, tier_medium))
+                       calibrator=calibrator, tier_cutoffs=(tier_high, tier_medium),
+                       exponents=exponents)
         d = s.as_row(computed_at)
         if model is not None:
             feat = dict(d)
