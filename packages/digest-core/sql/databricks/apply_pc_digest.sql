@@ -172,6 +172,19 @@ PARTITIONED BY (index_name);
 -- Operational telemetry per pipeline stage. Spots pipeline degradation,
 -- enables source-level SLO dashboards. Subsumes SQLite run_log + summarizer_log.
 -- `errors` defaulting to 0 is handled in the sink wiring, not via column DEFAULT.
+-- Alpha engine — daily insurer/benchmark closes (yahoo/stooq price store).
+CREATE TABLE IF NOT EXISTS bronze.prices (
+    ticker     STRING NOT NULL,
+    date       DATE   NOT NULL,
+    close      DOUBLE NOT NULL,
+    kind       STRING,                 -- 'insurer' | 'benchmark'
+    source     STRING,
+    fetched_at TIMESTAMP,
+    CONSTRAINT bronze_prices_pk PRIMARY KEY (ticker, date)
+)
+USING DELTA
+PARTITIONED BY (ticker);
+
 CREATE TABLE IF NOT EXISTS bronze.pipeline_telemetry (
     run_id        STRING NOT NULL,    -- UUID per pipeline invocation
     stage         STRING NOT NULL,    -- ingest|triage|summarize|publish|signals
@@ -288,8 +301,10 @@ CREATE TABLE IF NOT EXISTS silver.outcome_backtest (
     edgar_filed     BOOLEAN,
     regime_shifted  BOOLEAN,
     manual_rating   DOUBLE,
-    stock_move_z    DOUBLE,                       -- signed σ of the insurer's return
+    stock_move_z    DOUBLE,                       -- signed σ of the insurer's RAW return (own vol)
     stock_move_band STRING,                       -- 0.5/0.75/1.0/1.25/1.5/1.75/2.0/2+
+    stock_move_excess_z DOUBLE,                   -- σ of the IAK/SPY-EXCESS return (idiosyncratic)
+    stock_move_p    DOUBLE,                       -- two-sided p of the gating z (BH-FDR input)
     CONSTRAINT silver_backtest_pk PRIMARY KEY (item_hash, horizon_days)
 )
 USING DELTA;
@@ -438,6 +453,20 @@ CREATE TABLE IF NOT EXISTS silver.capital_flows (
     CONSTRAINT silver_capital_flows_pk PRIMARY KEY (item_hash)
 )
 USING DELTA;
+
+-- Alpha engine — per-(ticker, as_of, horizon) forward excess-return forecasts.
+CREATE TABLE IF NOT EXISTS silver.return_forecasts (
+    ticker       STRING NOT NULL,
+    as_of        DATE   NOT NULL,
+    horizon_days INT    NOT NULL,
+    pred_excess  DOUBLE,
+    pred_prob    DOUBLE,
+    model_id     BIGINT,
+    scored_at    TIMESTAMP,
+    CONSTRAINT silver_return_forecasts_pk PRIMARY KEY (ticker, as_of, horizon_days)
+)
+USING DELTA
+PARTITIONED BY (horizon_days);
 
 -- ============ gold.sql ============
 -- Gold layer — curated views for read consumption. These are views, not
