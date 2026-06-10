@@ -420,6 +420,23 @@ MIGRATIONS = [
         curve_json   TEXT NOT NULL
     )""",
     "CREATE INDEX IF NOT EXISTS idx_calibrators_name ON calibrators(name, id DESC)",
+    # ── Scoring-math wave 1, PR3 (2026-06-09) ────────────────────────────────
+    # Log-linear weight gate (A2): one row per weekly evaluation of the
+    # ridge-toward-1 reweighted score vs the heuristic (w=1). The reweighting
+    # becomes ELIGIBLE only after two consecutive passes; it still applies only
+    # when the user sets `loglinear: {apply: 1}` in Scoring Weights.md.
+    """CREATE TABLE IF NOT EXISTS loglinear_evals (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        evaluated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        horizon_days  INTEGER,
+        n_samples     INTEGER,
+        auc_weighted  REAL,
+        auc_heuristic REAL,
+        diff_ci_low   REAL,
+        diff_ci_high  REAL,
+        passed        INTEGER NOT NULL DEFAULT 0,
+        weights_json  TEXT NOT NULL
+    )""",
 ]
 
 
@@ -2102,7 +2119,7 @@ def upsert_backtest_outcome(item_id: int, horizon_days: int, outcome: dict) -> N
 _LEARN_FACTORS = (
     "s.score, s.source_mult, s.regime_mult, s.topic_relevance, s.recency, "
     "s.llm_judgment, s.topic_boost, s.burden_boost, s.insurer_boost, "
-    "s.inflation_boost, s.regulatory_boost, s.tplf_boost"
+    "s.inflation_boost, s.regulatory_boost, s.tplf_boost, s.reserve_boost"
 )
 
 
@@ -2246,6 +2263,46 @@ def latest_calibrator(name: str = "materiality") -> sqlite3.Row | None:
             "SELECT * FROM calibrators WHERE name = ? ORDER BY id DESC LIMIT 1",
             (name,),
         ).fetchone()
+
+
+# ── Source credibility + log-linear gate (PR3) ───────────────────────────
+
+
+def source_outcome_stats(horizon_days: int = 30) -> list[sqlite3.Row]:
+    """Per-source corroboration counts at one horizon: (source, n, positives).
+    Fuel for the Bühlmann–Straub source-credibility table."""
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT i.source, COUNT(*) AS n, COALESCE(SUM(o.corroborated), 0) AS positives
+               FROM outcome_backtest o JOIN items i ON i.id = o.item_id
+               WHERE o.horizon_days = ?
+               GROUP BY i.source ORDER BY n DESC""",
+            (horizon_days,),
+        ).fetchall()
+
+
+def save_loglinear_eval(meta: dict) -> int:
+    """Persist one weekly log-linear gate evaluation; returns the row id."""
+    with get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO loglinear_evals
+                 (horizon_days, n_samples, auc_weighted, auc_heuristic,
+                  diff_ci_low, diff_ci_high, passed, weights_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (meta.get("horizon_days"), meta.get("n_samples"),
+             meta.get("auc_weighted"), meta.get("auc_heuristic"),
+             meta.get("diff_ci_low"), meta.get("diff_ci_high"),
+             1 if meta.get("passed") else 0, meta["weights_json"]),
+        )
+        return cur.lastrowid
+
+
+def recent_loglinear_evals(n: int = 2) -> list[sqlite3.Row]:
+    """The latest `n` gate evaluations, newest first."""
+    with get_conn() as conn:
+        return conn.execute(
+            "SELECT * FROM loglinear_evals ORDER BY id DESC LIMIT ?", (n,),
+        ).fetchall()
 
 
 def upsert_learned_score(

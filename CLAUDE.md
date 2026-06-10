@@ -251,7 +251,8 @@ across the pipeline:
   fall back to defaults silently with a warning. Unknown keys ignored.
   Sections: `sources`, `topics`, `insurer_priority`, `insurer_names`,
   `keyword_boosts` (incl. `stack_cap`), `burden_intensity`, `signal_tiers`,
-  `recency_half_lives`. Regex patterns for the keyword boosts stay
+  `recency_half_lives`, `credibility` (`apply`/`gamma`/`horizon_days`),
+  `loglinear` (`apply`). Regex patterns for the keyword boosts stay
   code-side; only the boost VALUES are tunable.
 
 - **Scoring-math wave 1 (2026-06-09):**
@@ -271,6 +272,18 @@ across the pipeline:
     across the run cohort — never a fixed 1σ trigger. `learn.py` trains on
     a chronological + embargoed split (random splits leaked time) and
     reports bootstrap CIs.
+  - *Source credibility* (`credibility.py`, PR3): Bühlmann–Straub shrinkage
+    of per-source corroboration rates (Z = n/(n+k), k = EPV/VHM); implied
+    multiplier = hand-set × clamped `(r̂/r̄)^0.5` (±25% max). REPORT-ONLY —
+    weekly-note "Source Credibility" table + `digest credibility`; the
+    `credibility: {apply: 1}` weights flag swaps the implied multipliers
+    into live scoring.
+  - *Log-linear exponents* (`loglinear.py`, PR3): `log S = Σ w·log f`,
+    w=1 ≡ heuristic; logistic fit with ridge toward w=1 on corroboration.
+    Weekly gate from `digest learn` (≥300 labeled, OOS AUC beats heuristic
+    with bootstrap CI of the difference clear of 0); ELIGIBLE after two
+    consecutive passes, APPLIED only with `loglinear: {apply: 1}`. Factor
+    columns always persist raw.
 
 - **LLM materiality anchors** (`summarize.py` SYSTEM_PROMPT, sharpened
   2026-05-24 after Score Higher review): the 1.5 tier now explicitly

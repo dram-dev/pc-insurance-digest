@@ -275,6 +275,8 @@ def run(horizon_days: int = 30) -> dict:
         summary["scored"] = score(summary["model_id"]).get("scored", 0)
     from digest.calibration import train_materiality_calibrator
     summary["calibrator"] = train_materiality_calibrator(horizon_days=horizon_days)
+    from digest.loglinear import evaluate as loglinear_evaluate
+    summary["loglinear"] = loglinear_evaluate(horizon_days=horizon_days)
     return summary
 
 

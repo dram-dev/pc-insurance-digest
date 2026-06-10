@@ -391,6 +391,33 @@ def _render_source_quality_table(rows: list) -> list[str]:
     return out
 
 
+def _render_source_credibility_table(rows: list) -> list[str]:
+    """PR3 — experience-rated trust tiers. `rows` are credibility.SourceCredibility.
+    Report-only: the implied multiplier is what Bühlmann–Straub credibility says
+    the source's trust tier should be; the hand-set one still drives scoring
+    until `credibility: {apply: 1}` is set in Scoring Weights.md."""
+    if not rows:
+        return []
+    out = ["## 🎓 Source Credibility (Bühlmann–Straub)", "",
+           "_Observed corroboration per source, shrunk toward the book mean by "
+           "Z = n/(n+k). Report-only — hand-set multipliers still drive scoring; "
+           "watch the implied column converge before flipping `credibility.apply`._", "",
+           "| Source | n | Raw rate | Z | Cred rate | Hand mult | Implied mult |",
+           "|---|---:|---:|---:|---:|---:|---:|"]
+    for r in rows:
+        drift = ""
+        if r.implied_mult > r.hand_mult:
+            drift = " ▲"
+        elif r.implied_mult < r.hand_mult:
+            drift = " ▼"
+        out.append(
+            f"| {r.source} | {r.n} | {r.raw_rate:.2f} | {r.z:.2f} "
+            f"| {r.cred_rate:.2f} | {r.hand_mult:.2f} | {r.implied_mult:.2f}{drift} |"
+        )
+    out.append("")
+    return out
+
+
 def _render_unsummarized_item(row: sqlite3.Row) -> str:
     """One-line bullet for kept-but-not-summarized items."""
     title  = _safe(row["title"]) or "(untitled)"
@@ -783,6 +810,7 @@ def render_weekly_note(
     regime_md: str | None = None,
     top_signals: list | None = None,
     source_quality: list | None = None,
+    source_credibility: list | None = None,
 ) -> str:
     """Build the Markdown for a weekly digest note."""
     period = f"{monday.isoformat()} – {sunday.isoformat()}"
@@ -816,6 +844,10 @@ def render_weekly_note(
     # ── Per-source signal quality (Wave 2) ───────────────────────────
     if source_quality:
         lines.extend(_render_source_quality_table(source_quality))
+
+    # ── Source credibility (PR3 — Bühlmann–Straub, report-only) ──────
+    if source_credibility:
+        lines.extend(_render_source_credibility_table(source_credibility))
 
     # ── Themes ──────────────────────────────────────────────────────
     themes = synthesis.get("themes") or []
@@ -969,6 +1001,15 @@ def publish_weekly(date_iso: str | None = None) -> dict:
         logger.warning("weekly: source-quality fetch failed (%s)", exc)
         source_quality = []
 
+    # PR3: Bühlmann source credibility — experience-rated trust tiers. Empty
+    # (section omitted) until the outcome backtest has labels.
+    try:
+        from digest.credibility import credibility_table
+        source_credibility = credibility_table()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("weekly: credibility table failed (%s)", exc)
+        source_credibility = []
+
     # Wave 3 Phase 2 item 5: weekly synthesis port. Calls Claude with a P&C
     # reader persona to produce themes, must-reads, contrarian, carrier-of-the-
     # week, burden-trend states, and inflation pulse. Returns {} on failure;
@@ -988,6 +1029,7 @@ def publish_weekly(date_iso: str | None = None) -> dict:
         regime_md=regime_md,
         top_signals=top_signals,
         source_quality=source_quality,
+        source_credibility=source_credibility,
     )
     target = paths.weekly_dir / f"{week_iso}.md"
     target.write_text(text, encoding="utf-8")
