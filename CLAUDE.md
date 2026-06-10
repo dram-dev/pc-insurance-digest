@@ -110,6 +110,45 @@ concrete what-moves-where map (definite-core / definite-domain / tricky
 seams) authored while Wave 2 divergence is fresh. The actual code lift
 waits for the dogfooding window to close.
 
+### Next ideas (captured 2026-06-09, post scoring-math wave)
+
+1. **Historical backfill to open the learning gates.** The calibrator
+   (≥100 labels), log-linear gate (≥300) and Bühlmann credibility table
+   wait on outcome labels that accrue ~daily — but the expensive half of
+   each label already exists historically: EDGAR archives go back years,
+   the price store holds ~2y of closes, so 7d/30d outcomes for historical
+   items are ALREADY matured. Sketch: `digest backfill` ingests historical
+   EDGAR (deterministic, auto-keep), scores with AS-OF timestamps (recency
+   must use the historical as-of, not now), runs outcomes immediately →
+   hundreds of labels in one overnight MLX run. Disciplines: provenance-tag
+   backfilled rows for live-vs-backfill A/B; the EDGAR-heavy mix is fine
+   for per-source Bühlmann but the pooled log-linear gate should also
+   require live-mix labels.
+
+2. **Rate filings × financial statements → freq/sev/pure premium.** The
+   ASC 944 XBRL tables already ingested (`insurer_xbrl_facts`: triangles +
+   claim_counts + premiums) contain cumulative incurred AND claim counts
+   by accident year → severity = incurred/counts; frequency proxy =
+   counts / on-leveled earned premium (true exposure isn't in GAAP);
+   pure-premium trend = the product. Cross-checks are the distinctive
+   analytic: carrier-derived severity vs the FRED severity tape, and the
+   carrier's SERFF requested change vs the indication implied by its OWN
+   disclosed freq/sev (ratemaking-indication skill does the math). PGR has
+   every dataset ingested today. Candidate: `freq_sev.py` /
+   `digest pure-premium`.
+
+3. **Schedule P start plan.** Key fact: ONE statutory annual statement
+   contains full 10×10 triangles per LOB (Part 2 incurred, Part 3 paid) —
+   no statement time-series needed. Phase A (free, CSV): the CAS Loss
+   Reserve Database (Meyers/Shi, casact.org — hundreds of carriers ×
+   6 LOBs, AY 1988–1997) straight into `loss_triangles`; exercises
+   run_reserving at scale + validates a future Mack-σ + doubles as idea-1
+   backfill. Phase B: published annual-statement PDFs (mutuals first)
+   parsed with the proven `parse/pdf_tables.py` + `parse/triangles.py`
+   pattern; `config/naic_schedp_sources.yaml` scaffold exists; statutory
+   filings are per LEGAL ENTITY, not group → needs an entity→group map.
+   Phase C (paid upgrade): NAIC InsData / S&P MI.
+
 ## Locked design decisions
 
 ### Topic taxonomy (17 topics + 1 sub-tag)
