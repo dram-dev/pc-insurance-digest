@@ -100,19 +100,41 @@ def test_market_cycle_hint_firm_only():
     assert reinsurance.market_cycle_hint({}) is None
 
 
-def test_apply_pricing_hint_takes_the_firmer_call(fresh_db):
+def test_compute_regime_collects_pricing_hint_observation(fresh_db, monkeypatch):
+    # PR4: the priced hint is an OBSERVATION for the Markov-switching filter,
+    # not a max() against the LLM call. With priced firming stored (and the LLM
+    # stubbed to an unobserved fallback), compute_regime must feed the hint to
+    # the filter — shifting the posterior without flipping the mode on one read.
     from digest import regime
-    # Priced firming upgrades a softer LLM call …
+
     db.upsert_reinsurance_pricing([{
         "index_name": "guycarp_us_property_cat_rol", "observation_date": "2026-01-01",
         "value": 250.0, "zscore_12m": 2.5, "trend": "firming", "is_anomaly": 1,
         "segment": "us_property_cat", "source": "guycarp", "fetched_at": "2026-01-01",
     }])
-    assert regime._apply_pricing_hint("stable") == "hard_market"
-    # … but never softens an already-harder LLM call.
-    assert regime._apply_pricing_hint("hard_market") == "hard_market"
+    monkeypatch.setattr(regime, "compute_market_cycle", lambda window_days=60: {
+        "market_cycle": "stable", "observed": False, "n_items": 0,
+        "combined_ratio_dir": "stable", "capacity_tone": "balanced",
+        "evidence": "insufficient evidence",
+    })
+    monkeypatch.setattr(regime, "compute_cat_load",
+                        lambda: ("low_season", {"active_nhc": 0}))
+    sig = regime.compute_regime(force=True)
+    assert sig.evidence["observations"] == ["hard_market"]
+    assert sig.market_cycle == "stable"               # one priced read ≠ a flip
+    assert 1.0 < sig.market_cycle_mult < 1.20         # but the multiplier glides up
 
 
-def test_apply_pricing_hint_neutral_without_data(fresh_db):
+def test_compute_regime_no_hint_without_pricing_data(fresh_db, monkeypatch):
     from digest import regime
-    assert regime._apply_pricing_hint("stable") == "stable"
+
+    monkeypatch.setattr(regime, "compute_market_cycle", lambda window_days=60: {
+        "market_cycle": "stable", "observed": False, "n_items": 0,
+        "combined_ratio_dir": "stable", "capacity_tone": "balanced",
+        "evidence": "insufficient evidence",
+    })
+    monkeypatch.setattr(regime, "compute_cat_load",
+                        lambda: ("low_season", {"active_nhc": 0}))
+    sig = regime.compute_regime(force=True)
+    assert sig.evidence["observations"] == []         # pure predict step
+    assert sig.market_cycle == "stable"

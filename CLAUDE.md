@@ -284,6 +284,13 @@ across the pipeline:
     with bootstrap CI of the difference clear of 0); ELIGIBLE after two
     consecutive passes, APPLIED only with `loglinear: {apply: 1}`. Factor
     columns always persist raw.
+  - *Severity tape* (PR4): the blended composite is loss-cost-WEIGHTED
+    (parts .30 / labor .30 / medical .20 / used_vehicle .10 / property
+    .10, per-series weight = category share ÷ series in category;
+    re-normalized over present components). Tunable via a top-level
+    `severity_weights:` mapping in `config/fred_series.yaml`;
+    `severity_robust_z: true` switches the rolling z to median/MAD
+    (×1.4826).
 
 - **LLM materiality anchors** (`summarize.py` SYSTEM_PROMPT, sharpened
   2026-05-24 after Score Higher review): the 1.5 tier now explicitly
@@ -355,7 +362,7 @@ Scope is US state + federal only. No international.
 - Weekly note: "Regulatory Sonar — top burden trends, by state, with
   citations" section (Wave 3).
 
-### Regime concept (Wave 2, two-dimensional)
+### Regime concept (Wave 2, two-dimensional; PR4 Markov-switching)
 
 PC Digest has two regime axes (vs. macro digest's one):
 - **Market cycle:** hard_market (1.20×) · transitioning_to_hard (1.10×) ·
@@ -363,8 +370,21 @@ PC Digest has two regime axes (vs. macro digest's one):
 - **CAT load:** low_season (1.00×) · active_season (1.10×) · post_major_event (1.20×)
 - Combined regime multiplier = `market_cycle × cat_load`
 
-Detector inputs (when implemented): combined-ratio trend, capacity narrative
-from trade press, ILS pricing, active NHC advisories, recent EQ M ≥ 6.0.
+**PR4 (2026-06-09): market cycle is a hidden state.** A 5-state forward
+filter with a sticky transition prior (self ≈ 0.90) treats the LLM
+classification as a noisy emission (confusion kernel 0.70 diagonal /
+0.125 adjacent) and the priced reinsurance hint (Lead 1) as a second
+emission. `market_cycle_mult` is the posterior-expected multiplier
+(continuous — Σ πₛ·multₛ); the reported state is the posterior mode and
+the full posterior persists in `evidence_json`. The old two-agree
+hysteresis rule is gone — persistence is structural (one contrarian
+reading shifts the posterior, two consecutive flip the mode). LLM
+fallback paths return `observed: false` and become pure predict steps.
+Cat load stays mechanical: NHC/USGS/NIFC thresholds + the nowcast
+escalation, now driven by a **per-calendar-month Poisson/negative-binomial
+tail probability** over ~10y of OpenFEMA history (p < 0.05 →
+active_season, p < 0.005 → post_major_event; stored as a parallel
+`declaration_tail_p` metric row; legacy z thresholds remain the fallback).
 
 ### MLX scheduling (no contention with macro digest)
 

@@ -79,6 +79,36 @@ def test_tape_stores_a_trendable_level_series(fresh_db):
     assert all(b > a for a, b in zip(vals, vals[1:]))        # monotone → trend-fit-able
 
 
+def test_blended_rows_respect_loss_cost_weights():
+    # Component A doubles, component B is flat. At 0.9/0.1 weights the blend
+    # must sit near A; equal weights (None) reproduce the pre-PR4 midpoint.
+    levels_a = {"2025-01-01": 100.0, "2025-02-01": 200.0}
+    levels_b = {"2025-01-01": 50.0, "2025-02-01": 50.0}      # different base → rebased
+    weighted = severity_tape._blended_rows(
+        [levels_a, levels_b], [{}, {}], "now", [0.9, 0.1])
+    assert weighted[-1]["value"] == 0.9 * 200.0 + 0.1 * 100.0   # rebased to 100 each
+    equal = severity_tape._blended_rows([levels_a, levels_b], [{}, {}], "now")
+    assert equal[-1]["value"] == 150.0
+
+
+def test_blended_z_is_weight_renormalized_over_present_components():
+    levels = [{"2025-01-01": 100.0, "2025-02-01": 101.0}] * 2
+    zs = [{"2025-02-01": 2.0}, {}]                            # only A has a z
+    rows = severity_tape._blended_rows(levels, zs, "now", [0.3, 0.7])
+    assert rows[-1]["zscore_12m"] == 2.0                      # renormalized to A alone
+
+
+def test_rolling_z_robust_resists_outlier_inflation():
+    # One 10% outlier print inflates the classic σ and masks the next hot
+    # print; the median/MAD z does not get fooled.
+    pcts = [0.0, 0.2, 0.0, 0.2, 0.0, 10.0, 0.2, 0.0, 0.2, 0.0, 0.2, 1.5]
+    mom = [(f"2025-{m:02d}-01", p) for m, p in enumerate(pcts, start=1)]
+    classic = severity_tape._rolling_z(mom)["2025-12-01"]
+    robust = severity_tape._rolling_z(mom, robust=True)["2025-12-01"]
+    assert classic < 1.0          # outlier-inflated σ hides the 1.5% print
+    assert robust > 3.0           # MAD scale flags it
+
+
 def test_severity_regime_none_without_data(fresh_db):
     assert severity_tape.severity_regime() is None
 

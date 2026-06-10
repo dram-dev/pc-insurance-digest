@@ -1,9 +1,9 @@
-"""Wave 2 — PC two-axis regime detector.
+"""Wave 2 — PC two-axis regime detector (PR4: Markov-switching market cycle).
 
 Computes the current insurance-market regime as the product of two axes:
 
     market_cycle  ∈ {hard_market, transitioning_to_hard, stable,
-                     transitioning_to_soft, soft_market}     (LLM-judged)
+                     transitioning_to_soft, soft_market}     (latent, filtered)
     cat_load      ∈ {low_season, active_season, post_major_event}  (mechanical)
 
 The combined multiplier (`market_cycle_mult × cat_load_mult`) becomes the
@@ -11,15 +11,28 @@ The combined multiplier (`market_cycle_mult × cat_load_mult`) becomes the
 ordering in the daily/weekly notes.
 
 Cadence: 3 days. Triggered from the AM job when `latest_regime_signal().as_of`
-is > 72h old. Hysteresis: a regime transition requires two consecutive
-recomputes to agree before becoming the active state — so the minimum
-real shift is 6 days, which keeps a single noisy reading from flipping
-the multiplier.
+is > 72h old.
+
+MARKET CYCLE IS A HIDDEN STATE (PR4). The underwriting cycle is a textbook
+regime-switching process, so the detector runs a discrete forward filter over
+the five ordered states:
+
+  * a STICKY transition prior (self-transition ≈ 0.90, adjacent ≈ 0.045) makes
+    persistence structural — the old two-consecutive-recomputes hysteresis rule
+    falls out as a property of the posterior instead of an if-statement;
+  * the LLM classification is a NOISY EMISSION (confusion kernel: 0.70 on the
+    diagonal, 0.125 one state off), never the state itself — one contrarian
+    reading shifts the posterior, it cannot flip the mode;
+  * the priced reinsurance hint (Lead 1), when present, is a second emission;
+  * `market_cycle_mult` is the POSTERIOR-EXPECTED multiplier Σ πₛ·multₛ —
+    continuous, so the leaderboard sees a smooth glide between regimes rather
+    than a ±10-point cliff. The reported state is the posterior mode; the full
+    posterior is persisted in evidence_json.
 
 Manual override: `config/regime_override.yaml`, if present, supersedes the
-detector. Useful for known events (a confirmed Cat-4 landfall, an admitted
-hard-market cycle turn from a major reinsurer's earnings call) without
-waiting for the LLM to catch up.
+detector (posterior collapses to the override state). Useful for known events
+(a confirmed Cat-4 landfall, an admitted hard-market cycle turn from a major
+reinsurer's earnings call) without waiting for the filter to catch up.
 """
 from __future__ import annotations
 
@@ -63,6 +76,86 @@ STALE_HOURS          = 72   # recompute if last signal is older than this
 OVERRIDE_PATH = Path(__file__).resolve().parents[2] / "config" / "regime_override.yaml"
 
 
+# ── Markov-switching market cycle (PR4) ───────────────────────────────
+#
+# Both kernels are indexed by |i−j| over the ordered state axis (hardest →
+# softest) and row-normalized at the edges, so an end state's lost mass goes
+# back to itself proportionally rather than leaking.
+
+# Sticky transition prior: the cycle turns over quarters, not 72h recomputes.
+_TRANSITION_KERNEL = (0.90, 0.045, 0.005, 0.002, 0.001)
+# LLM-as-noisy-sensor confusion kernel: right ~70% of the time, one state off
+# ~12.5% per side. Also used for the priced reinsurance hint emission.
+_EMISSION_KERNEL = (0.70, 0.125, 0.025, 0.008, 0.004)
+
+
+def _kernel_matrix(kernel: tuple[float, ...]) -> list[list[float]]:
+    """n×n row-normalized matrix from a |i−j| kernel over MARKET_CYCLES."""
+    n = len(MARKET_CYCLES)
+    rows: list[list[float]] = []
+    for i in range(n):
+        row = [kernel[abs(i - j)] for j in range(n)]
+        total = sum(row)
+        rows.append([v / total for v in row])
+    return rows
+
+
+TRANSITION = _kernel_matrix(_TRANSITION_KERNEL)
+EMISSION   = _kernel_matrix(_EMISSION_KERNEL)
+_STATE_IX  = {s: i for i, s in enumerate(MARKET_CYCLES)}
+
+
+def market_cycle_filter(
+    prior: list[float], observations: list[str],
+) -> list[float]:
+    """One forward-filter step: predict through the sticky transition prior,
+    then update on each observation through the emission kernel.
+
+    `observations` are state labels (the LLM call, the priced hint) — an empty
+    list is a pure predict step, so with no evidence the posterior just
+    diffuses slowly toward the prior's neighbors. Degenerate posteriors
+    (zero mass) fall back to uniform rather than NaN.
+    """
+    n = len(MARKET_CYCLES)
+    pi = [sum(prior[i] * TRANSITION[i][j] for i in range(n)) for j in range(n)]
+    for obs in observations:
+        k = _STATE_IX.get(obs)
+        if k is None:
+            continue
+        pi = [pi[s] * EMISSION[s][k] for s in range(n)]
+        total = sum(pi)
+        pi = [p / total for p in pi] if total > 0 else [1.0 / n] * n
+    total = sum(pi)
+    return [p / total for p in pi] if total > 0 else [1.0 / n] * n
+
+
+def _prior_posterior(row: Any) -> list[float]:
+    """The previous recompute's posterior, from its evidence_json. Falls back
+    to one-hot on the previously reported state (pre-PR4 rows), then to one-hot
+    `stable` when no history exists."""
+    n = len(MARKET_CYCLES)
+    if row is not None:
+        raw = row["evidence_json"] if "evidence_json" in row.keys() else None
+        if raw:
+            try:
+                stored = (json.loads(raw) or {}).get("posterior") or {}
+            except (TypeError, json.JSONDecodeError):
+                stored = {}
+            pi = [float(stored.get(s, 0.0)) for s in MARKET_CYCLES]
+            if sum(pi) > 0:
+                total = sum(pi)
+                return [p / total for p in pi]
+        last_state = row["market_cycle"]
+        if last_state in _STATE_IX:
+            return [1.0 if s == last_state else 0.0 for s in MARKET_CYCLES]
+    return [1.0 if s == DEFAULT_MARKET_CYCLE else 0.0 for s in MARKET_CYCLES]
+
+
+def posterior_multiplier(posterior: list[float]) -> float:
+    """Posterior-expected market-cycle multiplier Σ πₛ·multₛ (continuous)."""
+    return sum(p * MARKET_CYCLE_MULT[s] for p, s in zip(posterior, MARKET_CYCLES))
+
+
 # ── Dataclass ─────────────────────────────────────────────────────────
 
 
@@ -75,7 +168,7 @@ class RegimeSignal:
     cat_load_mult: float
     multiplier: float
     evidence: dict[str, Any] = field(default_factory=dict)
-    source: str = "detector"   # 'detector' | 'override' | 'hysteresis_pending'
+    source: str = "detector"   # 'detector' | 'override' ('hysteresis_pending' pre-PR4)
 
     @classmethod
     def from_row(cls, row: Any) -> "RegimeSignal":
@@ -201,8 +294,10 @@ def _build_market_cycle_user_prompt(rows: list[Any]) -> str:
 def compute_market_cycle(window_days: int = 60) -> dict[str, Any]:
     """Run Qwen3.5 on the trailing window. Returns dict with cycle + evidence.
 
-    Falls back to {"market_cycle": "stable", ...} if the LLM call fails or
-    the window has too few items.
+    Falls back to {"market_cycle": "stable", ...} if the LLM call fails or the
+    window has too few items — with `observed: False`, so the filter treats the
+    fallback as NO observation (a pure predict step) rather than a real
+    "stable" reading pulling the posterior toward the middle.
     """
     rows = db.items_for_market_cycle(window_days=window_days)
     if len(rows) < 5:
@@ -213,6 +308,7 @@ def compute_market_cycle(window_days: int = 60) -> dict[str, Any]:
             "capacity_tone":      "balanced",
             "evidence":           f"insufficient evidence ({len(rows)} items)",
             "n_items":            len(rows),
+            "observed":           False,
         }
 
     # Lazy import to keep regime usable in test/dev environments without MLX.
@@ -231,6 +327,7 @@ def compute_market_cycle(window_days: int = 60) -> dict[str, Any]:
             "capacity_tone":      "balanced",
             "evidence":           "no summarizer backend configured",
             "n_items":            len(rows),
+            "observed":           False,
         }
 
     user_prompt = _build_market_cycle_user_prompt(rows)
@@ -244,37 +341,24 @@ def compute_market_cycle(window_days: int = 60) -> dict[str, Any]:
             "capacity_tone":      "balanced",
             "evidence":           f"backend error: {exc!s}"[:200],
             "n_items":            len(rows),
+            "observed":           False,
         }
 
     parsed = extract_json(raw) or {}
     cycle = str(parsed.get("market_cycle", "stable")).lower().strip()
     if cycle not in MARKET_CYCLE_MULT:
         cycle = "stable"
-    cycle = _apply_pricing_hint(cycle)
     return {
         "market_cycle":       cycle,
         "combined_ratio_dir": str(parsed.get("combined_ratio_dir", "stable")).lower().strip(),
         "capacity_tone":      str(parsed.get("capacity_tone", "balanced")).lower().strip(),
         "evidence":           str(parsed.get("evidence", ""))[:400],
         "n_items":            len(rows),
+        "observed":           True,
     }
 
 
-def _apply_pricing_hint(llm_cycle: str) -> str:
-    """Lead 1 (Reinsurance Pulse): if priced ROL/ILS shows firming, take the
-    *firmer* of the LLM narrative call and the priced hint. Firm-only — price
-    never softens the call here — and a no-op until reinsurance pricing data
-    exists, so the axis is behavior-preserving by default."""
-    from digest.reinsurance import market_cycle_hint
-    hint = market_cycle_hint()
-    if hint is None:
-        return llm_cycle
-    # MARKET_CYCLES is ordered hardest→softest; lower index = harder.
-    rank = {c: i for i, c in enumerate(MARKET_CYCLES)}
-    return hint if rank.get(hint, 99) < rank.get(llm_cycle, 99) else llm_cycle
-
-
-# ── Override + hysteresis ─────────────────────────────────────────────
+# ── Override ──────────────────────────────────────────────────────────
 
 
 def load_override() -> dict[str, str] | None:
@@ -301,53 +385,6 @@ def load_override() -> dict[str, str] | None:
     if cl in CAT_LOAD_MULT:
         out["cat_load"] = cl
     return out or None
-
-
-def _apply_hysteresis(
-    proposed_market_cycle: str,
-    proposed_cat_load: str,
-) -> tuple[str, str, bool]:
-    """Compare proposed regime to the last 2 stored signals.
-
-    Returns (effective_market_cycle, effective_cat_load, transition_confirmed).
-    A regime change holds only when two consecutive recomputes *propose* the
-    same new state — so a single noisy reading can't flip the multiplier.
-    """
-    history = db.recent_regime_signals(n=1)
-    if not history:
-        return proposed_market_cycle, proposed_cat_load, True
-
-    last = history[0]
-    proposed = (proposed_market_cycle, proposed_cat_load)
-    # Already the active state → nothing to transition.
-    if (last["market_cycle"], last["cat_load"]) == proposed:
-        return proposed_market_cycle, proposed_cat_load, True
-
-    # The proposal differs from the active state. Confirm the change only when
-    # the PREVIOUS recompute proposed the SAME thing — i.e. two consecutive
-    # recomputes agree. Otherwise hold the active state; compute_regime records
-    # this proposal in evidence_json so the next matching recompute confirms it.
-    # Comparing against the prior *proposal* (not the held effective state) is
-    # what lets a transition accumulate out of a stable baseline — comparing
-    # against the effective state left a pending change unable to ever confirm.
-    if _stored_proposal(last) == proposed:
-        return proposed_market_cycle, proposed_cat_load, True
-    return last["market_cycle"], last["cat_load"], False
-
-
-def _stored_proposal(row: Any) -> tuple[str, str] | None:
-    """The (market_cycle, cat_load) the prior recompute *proposed*, from its
-    evidence_json. None when absent/unparseable, so a missing proposal can never
-    spuriously confirm a transition."""
-    raw = row["evidence_json"] if "evidence_json" in row.keys() else None
-    if not raw:
-        return None
-    try:
-        prop = (json.loads(raw) or {}).get("proposed") or {}
-    except (TypeError, json.JSONDecodeError):
-        return None
-    mc, cl = prop.get("market_cycle"), prop.get("cat_load")
-    return (mc, cl) if mc and cl else None
 
 
 # ── Public API ────────────────────────────────────────────────────────
@@ -388,6 +425,12 @@ def current_regime() -> RegimeSignal:
 def compute_regime(force: bool = False) -> RegimeSignal:
     """Compute (or short-circuit) the current regime and persist it.
 
+    Market cycle: one forward-filter step — predict through the sticky
+    transition prior, update on the LLM emission (when it actually observed)
+    and the priced reinsurance hint (when present). The reported state is the
+    posterior mode; `market_cycle_mult` is the posterior-expected multiplier
+    (continuous). Cat load: mechanical thresholds + nowcast escalation, as-is.
+
     Args:
         force: skip the 72h staleness check and recompute anyway.
     """
@@ -395,37 +438,42 @@ def compute_regime(force: bool = False) -> RegimeSignal:
         logger.info("regime: skipped — last signal < 72h old")
         return current_regime()
 
-    proposed_cat_load, cat_counts = compute_cat_load()
-    market_judgment                = compute_market_cycle()
-    proposed_market_cycle          = market_judgment["market_cycle"]
+    effective_cat, cat_counts = compute_cat_load()
+    market_judgment           = compute_market_cycle()
+
+    observations: list[str] = []
+    if market_judgment.get("observed"):
+        observations.append(market_judgment["market_cycle"])
+    from digest.reinsurance import market_cycle_hint
+    hint = market_cycle_hint()                 # Lead 1 — None until pricing data
+    if hint in _STATE_IX:
+        observations.append(hint)
 
     override = load_override()
-    if override:
-        if "market_cycle" in override:
-            proposed_market_cycle = override["market_cycle"]
-        if "cat_load" in override:
-            proposed_cat_load = override["cat_load"]
-
-    if override:
-        effective_market, effective_cat = proposed_market_cycle, proposed_cat_load
-        source = "override"
+    if override and "cat_load" in override:
+        effective_cat = override["cat_load"]
+    if override and "market_cycle" in override:
+        # Override collapses the posterior — the next detector run starts there.
+        posterior = [1.0 if s == override["market_cycle"] else 0.0
+                     for s in MARKET_CYCLES]
     else:
-        effective_market, effective_cat, confirmed = _apply_hysteresis(
-            proposed_market_cycle, proposed_cat_load,
-        )
-        source = "detector" if confirmed else "hysteresis_pending"
+        prior = _prior_posterior(db.latest_regime_signal())
+        posterior = market_cycle_filter(prior, observations)
 
-    mc_mult   = MARKET_CYCLE_MULT[effective_market]
+    source = "override" if override else "detector"
+    effective_market = MARKET_CYCLES[max(range(len(posterior)), key=posterior.__getitem__)]
+    mc_mult   = round(posterior_multiplier(posterior), 4)
     cat_mult  = CAT_LOAD_MULT[effective_cat]
-    mult      = mc_mult * cat_mult
+    mult      = round(mc_mult * cat_mult, 4)
     as_of_iso = datetime.now(timezone.utc).isoformat()
 
     evidence = {
-        "cat_load":           cat_counts,
-        "market_judgment":    market_judgment,
-        "proposed":           {"market_cycle": proposed_market_cycle, "cat_load": proposed_cat_load},
-        "effective":          {"market_cycle": effective_market,      "cat_load": effective_cat},
-        "override":           override,
+        "cat_load":        cat_counts,
+        "market_judgment": market_judgment,
+        "observations":    observations,
+        "posterior":       {s: round(p, 4) for s, p in zip(MARKET_CYCLES, posterior)},
+        "effective":       {"market_cycle": effective_market, "cat_load": effective_cat},
+        "override":        override,
     }
     db.upsert_regime_signal(
         as_of=as_of_iso,
@@ -438,9 +486,9 @@ def compute_regime(force: bool = False) -> RegimeSignal:
         source=source,
     )
     logger.info(
-        "regime: %s × %s → ×%.2f (source=%s, proposed=%s/%s)",
+        "regime: %s × %s → ×%.3f (source=%s, obs=%s, posterior mode p=%.2f)",
         effective_market, effective_cat, mult, source,
-        proposed_market_cycle, proposed_cat_load,
+        observations or "none", max(posterior),
     )
     return RegimeSignal(
         as_of=as_of_iso,

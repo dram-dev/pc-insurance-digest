@@ -9,22 +9,34 @@ quake / large wildfire is in the window:
 
     OpenFEMA DisasterDeclarationsSummaries  (free, no API key)
       → run_cat_nowcast()  → monthly distinct-disaster counts + 12m z-score
+                             + SEASONAL TAIL PROBABILITY for the latest month
       → db.upsert_cat_nowcast()  (local mirror of pc_bronze.cat_load_nowcast)
-      → nowcast_signal()  → {'declaration_z': float|None}
+      → nowcast_signal()  → {'declaration_z': float, 'declaration_p': float}
       → regime.compute_cat_load()  (escalate-only nudge)
+
+PR4: the escalation signal is a PER-CALENDAR-MONTH count model, not a z-score.
+Monthly declaration counts are small, overdispersed, and strongly seasonal — a
+12-month z flags every June against a window containing winter. Instead, the
+latest month is compared to the SAME calendar month across ~10y of history:
+Poisson when the month's variance ≈ its mean, negative binomial (method of
+moments) when overdispersed, and the signal is the tail exceedance probability
+P(N ≥ observed). Escalation: p < 0.05 → at least active_season; p < 0.005 →
+post_major_event. The z-score is still computed and stored (continuity +
+fallback for pre-PR4 stored rows); the tail p is persisted as a parallel
+`declaration_tail_p` metric row in the same table.
 
 Behavior-preserving until `digest cat-nowcast` has run: with no stored row,
 `nowcast_signal()` returns `{}` and `compute_cat_load` is unchanged.
 
 Databricks-native upgrade: Lakeflow DLT maintains the rolling nowcast and
-`ai_forecast()` projects declaration velocity; this local z-score over the
-trailing-12m baseline (the `fred.py` pattern) is the Free-Edition default.
-US Drought Monitor (USDM) is a second documented metric for the same table; the
-OpenFEMA velocity is the v1 signal.
+`ai_forecast()` projects declaration velocity; this local seasonal count model
+is the Free-Edition default. US Drought Monitor (USDM) is a second documented
+metric for the same table; the OpenFEMA velocity is the v1 signal.
 """
 from __future__ import annotations
 
 import logging
+import math
 import statistics
 from datetime import datetime, timezone
 
@@ -36,12 +48,63 @@ logger = logging.getLogger(__name__)
 
 _OPENFEMA_URL = "https://www.fema.gov/api/open/v2/DisasterDeclarationsSummaries"
 _REQUEST_TIMEOUT = 30
-_LOOKBACK_MONTHS = 13          # latest month + a trailing-12m baseline
+_LOOKBACK_MONTHS = 121         # latest month + ~10y of same-calendar-month baseline
 _ANOMALY_Z = 2.0               # |z| at/above this flags an anomalous surge
+_MIN_SEASONAL_POINTS = 3       # same-calendar-month history needed for a tail p
+_MU_FLOOR = 0.25               # count-model mean floor (an all-zero month history
+                               # still yields a finite surprise for obs ≥ 1)
 
 # Escalation thresholds for the cat_load nudge (escalate-only, never lower).
-_ACTIVE_SEASON_Z = 2.0         # surge → at least active_season
-_POST_MAJOR_Z = 3.0            # extreme surge → post_major_event
+# Tail-probability cuts (the PR4 signal):
+_ACTIVE_SEASON_P = 0.05        # unusual for the season → at least active_season
+_POST_MAJOR_P = 0.005          # extreme for the season → post_major_event
+# z fallback (pre-PR4 stored rows that carry no tail p):
+_ACTIVE_SEASON_Z = 2.0
+_POST_MAJOR_Z = 3.0
+
+
+# ── Seasonal count model (Poisson / negative-binomial tail) ───────────────
+
+
+def poisson_sf(k_obs: int, mu: float) -> float:
+    """P(N ≥ k_obs) for N ~ Poisson(mu) — iterative pmf, no scipy."""
+    if k_obs <= 0:
+        return 1.0
+    pmf = math.exp(-mu)
+    cdf = pmf
+    for k in range(1, k_obs):
+        pmf *= mu / k
+        cdf += pmf
+    return max(0.0, min(1.0, 1.0 - cdf))
+
+
+def nb_sf(k_obs: int, mu: float, var: float) -> float:
+    """P(N ≥ k_obs) for an overdispersed count, negative binomial by method of
+    moments: r = μ²/(σ²−μ), p = r/(r+μ). Requires var > mu (caller dispatches)."""
+    if k_obs <= 0:
+        return 1.0
+    r = mu * mu / (var - mu)
+    p = r / (r + mu)
+    pmf = p ** r
+    cdf = pmf
+    for k in range(1, k_obs):
+        pmf *= (k - 1 + r) / k * (1.0 - p)
+        cdf += pmf
+    return max(0.0, min(1.0, 1.0 - cdf))
+
+
+def seasonal_tail_p(history: list[int], obs: int) -> float | None:
+    """Tail exceedance P(N ≥ obs) vs the same-calendar-month history.
+
+    Poisson when the history's variance ≈ its mean, NB when overdispersed.
+    None below _MIN_SEASONAL_POINTS — too thin to define a season."""
+    if len(history) < _MIN_SEASONAL_POINTS:
+        return None
+    mu = max(statistics.fmean(history), _MU_FLOOR)
+    var = statistics.pvariance(history)
+    if var > mu + 1e-9:
+        return nb_sf(obs, mu, var)
+    return poisson_sf(obs, mu)
 
 
 def _month_starts(n: int, now: datetime | None = None) -> list[str]:
@@ -82,8 +145,10 @@ def _distinct_disaster_count(start: str, end: str) -> int:
 
 
 def run_cat_nowcast(_count_fn=_distinct_disaster_count) -> dict[str, int]:
-    """Fetch trailing-13m monthly disaster counts → z-score → store one row per
-    month. `_count_fn` is injectable for tests. Returns a small summary dict."""
+    """Fetch trailing monthly disaster counts (~10y) → per-month z rows + a
+    seasonal tail probability for the latest month. `_count_fn` is injectable
+    for tests; failed months are skipped (warned), so a partial fetch still
+    produces a usable tape. Returns a small summary dict."""
     months = _month_starts(_LOOKBACK_MONTHS)
     counts: list[tuple[str, int]] = []
     for start in months:
@@ -111,34 +176,74 @@ def run_cat_nowcast(_count_fn=_distinct_disaster_count) -> dict[str, int]:
             "zscore_12m": round(z, 3), "is_anomaly": int(abs(z) >= _ANOMALY_Z),
             "source": "openfema", "fetched_at": fetched_at,
         })
+
+    # PR4 — seasonal tail p for the latest month: its count vs the SAME
+    # calendar month in prior years (Poisson/NB). Stored as a parallel metric
+    # row so the fixed cat_load_nowcast schema carries it (value = p).
+    latest_month, latest_value = counts[-1]
+    season = int(latest_month[5:7])
+    history = [v for m, v in counts[:-1] if int(m[5:7]) == season]
+    tail_p = seasonal_tail_p(history, latest_value)
+    if tail_p is not None:
+        rows.append({
+            "metric_name": "declaration_tail_p", "region": "US",
+            "observation_date": latest_month, "value": round(tail_p, 6),
+            "zscore_12m": None, "is_anomaly": int(tail_p < _ACTIVE_SEASON_P),
+            "source": "openfema", "fetched_at": fetched_at,
+        })
+
     written = db.upsert_cat_nowcast(rows)
-    latest_z = rows[-1]["zscore_12m"]
-    logger.info("cat_nowcast: %d months, latest=%d z=%+.2f (baseline μ=%.1f σ=%.1f)",
-                len(counts), values[-1], latest_z, mean, stdev)
+    latest_z = rows[len(counts) - 1]["zscore_12m"]
+    logger.info(
+        "cat_nowcast: %d months, latest=%d z=%+.2f tail_p=%s (season n=%d)",
+        len(counts), latest_value, latest_z,
+        f"{tail_p:.4f}" if tail_p is not None else "n/a", len(history),
+    )
     return {"months": len(counts), "written": written,
-            "anomaly": int(abs(latest_z) >= _ANOMALY_Z)}
+            "anomaly": int(abs(latest_z) >= _ANOMALY_Z),
+            "tail_p": tail_p}
 
 
 def nowcast_signal() -> dict[str, float]:
     """Latest stored disaster-velocity reading for compute_cat_load, or {} when
-    no nowcast has run yet (keeps the regime axis behavior-preserving)."""
+    no nowcast has run yet (keeps the regime axis behavior-preserving).
+
+    Carries the seasonal tail p when one was stored for the same month —
+    escalate_cat_load prefers it; the z is the pre-PR4 fallback."""
     row = db.latest_cat_nowcast("open_disaster_declarations", "US")
     if row is None or row["zscore_12m"] is None:
         return {}
-    return {"declaration_z": float(row["zscore_12m"])}
+    out = {"declaration_z": float(row["zscore_12m"])}
+    prow = db.latest_cat_nowcast("declaration_tail_p", "US")
+    if (prow is not None and prow["value"] is not None
+            and prow["observation_date"] == row["observation_date"]):
+        out["declaration_p"] = float(prow["value"])
+    return out
 
 
 def escalate_cat_load(state: str, nowcast: dict[str, float]) -> str:
-    """Escalate-only cat_load nudge from the disaster-velocity z-score. Never
-    lowers the state, and is a no-op when no nowcast reading exists."""
-    z = nowcast.get("declaration_z")
-    if z is None:
-        return state
+    """Escalate-only cat_load nudge. Never lowers the state; no-op when no
+    nowcast reading exists.
+
+    Prefers the seasonal tail probability (PR4): p < 0.005 → post_major_event,
+    p < 0.05 → active_season — 'how unusual for THIS calendar month', honest
+    about count overdispersion. Falls back to the legacy z thresholds for
+    stored rows that predate the tail p."""
     order = ["low_season", "active_season", "post_major_event"]
     rank = {s: i for i, s in enumerate(order)}
     proposed = state
-    if z >= _POST_MAJOR_Z:
-        proposed = "post_major_event"
-    elif z >= _ACTIVE_SEASON_Z:
-        proposed = "active_season"
+    p = nowcast.get("declaration_p")
+    if p is not None:
+        if p < _POST_MAJOR_P:
+            proposed = "post_major_event"
+        elif p < _ACTIVE_SEASON_P:
+            proposed = "active_season"
+    else:
+        z = nowcast.get("declaration_z")
+        if z is None:
+            return state
+        if z >= _POST_MAJOR_Z:
+            proposed = "post_major_event"
+        elif z >= _ACTIVE_SEASON_Z:
+            proposed = "active_season"
     return proposed if rank.get(proposed, 0) > rank.get(state, 0) else state
