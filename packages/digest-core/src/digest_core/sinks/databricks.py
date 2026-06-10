@@ -67,6 +67,7 @@ _PRIMARY_KEYS: dict[str, tuple[str, ...]] = {
     "silver.outcome_backtest":   ("item_hash", "horizon_days"),
     "silver.learned_scores":     ("item_hash", "model_id"),
     "silver.reserving_signals":  ("insurer", "lob", "metric", "as_of"),
+    "silver.freq_sev_signals":   ("insurer", "grain", "lob", "accident_year", "as_of"),
     # Wave 4 — Insurance EKG leads.
     "bronze.reinsurance_pricing":  ("index_name", "observation_date"),
     "bronze.cat_load_nowcast":     ("metric_name", "region", "observation_date"),
@@ -391,6 +392,13 @@ class DatabricksSink:
             "direction":         sig.get("direction"),
         }
         self._insert("silver.reserving_signals", [row])
+
+    def write_freq_sev(self, rows: Iterable[dict[str, Any]]) -> None:
+        """Frequency × severity × pure-premium accident-year rows (digest.freq_sev)
+        → silver.freq_sev_signals. Insurer/LOB-keyed derived facts, like reserving."""
+        if not self._enabled:
+            return
+        self._insert("silver.freq_sev_signals", [dict(r) for r in rows])
 
     def write_learned_score(self, source: str, source_id: str, ls: dict[str, Any]) -> None:
         """Per-item learned relevance score (Option 4) → silver.learned_scores,
