@@ -7,7 +7,7 @@ the same Obsidian vault (lands in `81 P&C Digest` next to `80 Digest`).
 For the full design context (locked decisions, scoring formula, regime axes,
 Regulatory Sonar, etc.), see [CLAUDE.md](CLAUDE.md).
 
-## Status (Waves 1–4 shipped · all sources live · digest-core foundation extracted · local Analyst MCP agent)
+## Status (Waves 1–4 shipped · all sources live · digest-core foundation extracted · local Analyst MCP agent · scoring-math wave 2026-06)
 
 **Pipeline:** `ingest → triage (Ollama Qwen2.5:14b) → summarize (MLX Qwen3.5-27B
 local) → score (signals leaderboard) → publish (Obsidian)`. Every stage's LLM is
@@ -61,11 +61,15 @@ When it's absent, those sources skip cleanly; everything else is plain `requests
 
 **Insurance EKG leads** (quantitative vital-signs that harden the regime detector
 and the leaderboard, rather than new architecture): reinsurance ROL · CAT-load
-nowcast (`digest cat-nowcast`) · severity tape (`severity-tape`) · litigation /
-TPLF docket pressure (`litigation`) · capital flows · chain-ladder reserving
-(`reserving`) · disclosure sentiment (`disclosure`) · per-state burden barometer
-(`burden`). Each wires into an existing scoring factor and is behaviour-preserving
-until its data flows.
+nowcast (`digest cat-nowcast` — a per-calendar-month Poisson/negative-binomial
+count model over ~10y of OpenFEMA declarations; escalates on the seasonal tail
+probability, p<0.05 → active_season, p<0.005 → post_major_event) · severity tape
+(`severity-tape` — a **loss-cost-weighted** blend of the FRED cost drivers:
+parts .30 / labor .30 / medical .20 / used-vehicle .10 / property .10, with an
+optional median/MAD robust z) · litigation / TPLF docket pressure (`litigation`)
+· capital flows · chain-ladder reserving (`reserving`) · disclosure sentiment
+(`disclosure`) · per-state burden barometer (`burden`). Each wires into an
+existing scoring factor and is behaviour-preserving until its data flows.
 
 **Triage / summarize / score:**
 - 17-topic P&C taxonomy + `litigation_tplf` sub-tag (canonical list in
@@ -75,18 +79,37 @@ until its data flows.
   DOI bulletins, SERFF rate filings, LegiScan bills, investor supplements, NAIC
   Schedule P); model handles the rest
 - Two-axis regime detector — `market_cycle × cat_load`, 72h cadence with
-  override file
+  override file. The market cycle is a **Markov-switching hidden state**: a
+  5-state forward filter with a sticky transition prior (self ≈ 0.90) treats
+  the LLM classification as a noisy emission (0.70 diagonal confusion kernel)
+  and the priced reinsurance hint as a second emission; the regime multiplier
+  is the posterior-expected value (a continuous glide, not a ±10-point cliff),
+  with the full posterior persisted in `evidence_json`
 - Signal leaderboard — 12-factor score `source × regime × topic_relevance ×
   recency × llm_judgment × topic_priority × burden_intensity × insurer_priority
   × inflation_keyword × regulatory_action × litigation_tplf ×
-  reserve_deterioration`. All boost values are user-editable from the Obsidian
-  vault — see _meta/Scoring Weights.md_. A trained `learned_score` (numpy
-  logistic regression, `digest learn`) rides alongside each row for A/B; the
+  reserve_deterioration`. Recency is exponential decay with **per-topic
+  half-lives** (cat_event 2d · regulatory_rate 14d · reserving 21d · default
+  7d); the three keyword families are disjoint with a 1.6 stack cap (no phrase
+  double-counts); `llm_judgment` swaps to an isotonic-calibrated relativity
+  `P(corroborated)/base_rate` once `digest learn` has ≥100 labeled outcomes.
+  All boost values are user-editable from the Obsidian vault — see
+  _meta/Scoring Weights.md_. Two learned layers ride alongside, gated and
+  advisory: a `learned_score` (numpy logistic regression) per row, and a
+  **log-linear exponent gate** (`log S = Σ w·log f`, ridge-shrunk toward the
+  hand-set w=1) that becomes eligible only after two consecutive weekly
+  out-of-sample wins and applies only with `loglinear: {apply: 1}`; the
   heuristic stays authoritative.
-- Conviction tier — each scored item is tagged 🔴 high / 🟡 medium / 🔵 low by
-  leaderboard score (thresholds in _meta/Scoring Weights.md → `signal_tiers`)
-  and shown as a badge on the daily + weekly leaderboards; persisted to
-  `signal_scores.tier` (and the Databricks silver layer)
+- Conviction tier — each scored item is tagged 🔴 high / 🟡 medium / 🔵 low.
+  Cutoffs are **quantile-calibrated** (trailing-90d P90/P60 of latest scores,
+  once ≥80 exist; quantiles tunable in _meta/Scoring Weights.md →
+  `signal_tiers`, with the fixed values as fallback) and shown as a badge on
+  the daily + weekly leaderboards; the persisted `signal_scores.tier` is
+  authoritative (and mirrors to the Databricks silver layer)
+- Source credibility — Bühlmann–Straub experience rating of the hand-set
+  source multipliers from observed corroboration (`Z = n/(n+k)`,
+  `k = EPV/VHM`); report-only in the weekly note + `digest credibility` until
+  `credibility: {apply: 1}` swaps the implied multipliers into scoring
 - Regulatory Sonar **lite** — `burden_direction` / `burden_intensity` on
   `regulatory_rate` items, with leaderboard boost and a daily-note callout on
   high-intensity items
@@ -181,8 +204,9 @@ leaderboard and **never feeds it**. Opt-in deps: `uv sync --extra ml`
 LightGBM is an optional accelerator; pandas builds the panel). Optional Apple
 **MLX** neural head (`--extra ml-mlx`, Mac-only) and **shap** (`--extra ml-explain`).
 
-- **`digest forecast prices`** — daily close store for the 14 insurers + IAK/SPY
-  benchmarks ([src/digest/prices.py](src/digest/prices.py)), via **Tiingo**
+- **`digest forecast prices`** — daily close store for the modeled insurer
+  universe + IAK/SPY benchmarks ([src/digest/prices.py](src/digest/prices.py)),
+  via **Tiingo**
   (set `TIINGO_API_TOKEN` — the reliable source; Yahoo 429s and Stooq challenges
   unauthenticated traffic), with a Yahoo cookie+crumb session + backoff fallback.
 - **`digest forecast backtest`** — the honest scorecard: a **purged + embargoed
@@ -269,21 +293,25 @@ uv run digest pipeline --run-type manual
 ```
 
 CLI commands: `ingest`, `sources`, `models`, `brief`, `rate`, `calibration`,
-`embed`, `related`, `ask`, `outcomes`, `learn`, `reserving`, `disclosure`,
-`cat-nowcast`, `severity-tape`, `litigation`, `burden`, `triage`, `summarize`,
-`regime`, `signals`, `pipeline`, `publish`, `weekly`, `stats`, `recent`,
-`health`, `viz`, `dashboard`, `init-db`.
+`credibility`, `embed`, `related`, `ask`, `outcomes`, `learn`, `forecast`,
+`reserving`, `disclosure`, `cat-nowcast`, `severity-tape`, `litigation`,
+`burden`, `triage`, `summarize`, `regime`, `signals`, `pipeline`, `publish`,
+`weekly`, `stats`, `recent`, `health`, `viz`, `dashboard`, `init-db`.
 
 **Scoring feedback loop.** `digest rate <id> <1-5>` records what you thought an
 item was worth; `digest calibration` shows system-vs-you deltas; `digest
-outcomes` backtests whether ranked items actually mattered (follow-on coverage,
-same-insurer EDGAR filing, regime shift, your rating, or a ≥1σ insurer stock
-move at 7d/30d). These populate `gold.score_calibration` / `gold.outcome_hit_rate`,
-and `digest learn` trains a learned relevance scorer on those labels — reporting
-a holdout A/B (top-N precision: heuristic vs learned) and writing a
-`learned_score` alongside the heuristic (which stays authoritative). The learned
-model is a lean numpy logistic regression (no sklearn/MLflow required on Free
-Edition; MLflow logging is used if installed).
+outcomes` backtests whether ranked items actually mattered at 7d/30d —
+follow-on coverage elevated vs the cohort, a same-insurer EDGAR filing, your
+rating, or a **benchmark-excess stock move** (vs the stored IAK/SPY closes)
+that survives **Benjamini–Hochberg FDR control (q=0.10)** across the run's
+cohort, never a fixed-σ trigger. These populate `gold.score_calibration` /
+`gold.outcome_hit_rate`, and the weekly `digest learn` trains on those labels
+with a **chronological + embargoed** holdout (bootstrap CIs on AUC and
+precision@k) — writing a `learned_score` alongside the heuristic, fitting the
+isotonic materiality calibrator, and evaluating the log-linear exponent gate.
+The heuristic stays authoritative throughout; the learned model is a lean
+numpy logistic regression (no sklearn/MLflow required on Free Edition; MLflow
+logging is used if installed).
 
 **Semantic layer (optional, local).** `digest embed` builds per-item embeddings
 via the local Ollama server (`ollama pull nomic-embed-text`); then `digest
@@ -317,8 +345,11 @@ launchctl list | grep com.dr.pcdigest
 These files in the Obsidian vault drive parts of the pipeline directly:
 
 - **`_meta/Scoring Weights.md`** — YAML frontmatter overrides every leaderboard
-  boost factor (sources, topics, insurer priority, keyword boosts, burden
-  intensity). `signals.py` re-reads on mtime change.
+  boost factor (sources, topics, insurer priority, keyword boosts incl.
+  `stack_cap`, burden intensity), plus tier quantiles (`signal_tiers`),
+  per-topic recency half-lives (`recency_half_lives`), and the two activation
+  flags (`credibility: {apply: 1}`, `loglinear: {apply: 1}`). `signals.py`
+  re-reads on mtime change.
 - **`_meta/Score higher.md`** — items the user wants ranked higher; informs
   prompt tuning + Wave 4 manual-ratings feedback loop.
 - **`_meta/Updates.md`** — observation log for items to downvote / drop /
@@ -359,9 +390,12 @@ pc-insurance-digest/
     ├── db.py                          # SQLite schema + auto-keep hooks
     ├── triage.py                      # Ollama prompt + 17-topic taxonomy
     ├── summarize.py                   # P&C prompt + caps (backends/runner in digest_core)
-    ├── regime.py                      # market_cycle × cat_load detector
-    ├── reinsurance.py                 # EKG Lead 1 — ROL pricing → market_cycle
-    ├── signals.py                     # 12-factor leaderboard + conviction tier
+    ├── regime.py                      # market_cycle (Markov-switching filter) × cat_load
+    ├── reinsurance.py                 # EKG Lead 1 — ROL pricing → market_cycle emission
+    ├── signals.py                     # 12-factor leaderboard + quantile conviction tiers
+    ├── calibration.py                 # isotonic (PAVA) materiality → P(corroborated)
+    ├── credibility.py                 # Bühlmann–Straub source credibility (report-only)
+    ├── loglinear.py                   # learned score exponents, gated + opt-in
     ├── obsidian.py                    # daily / weekly / topic-archive writer (primitives in digest_core)
     ├── weekly.py                      # weekly synthesis (themes / must-reads)
     ├── health.py
@@ -400,6 +434,14 @@ have shipped. Still open:
   the Genie space and warehouse dashboards over the gold views are user-side
 - **Cross-feed dedup** — swap triage's title-fuzz dedup for the semantic
   `near_duplicates()` pass
+- **Scoring-math wave 2** (the 2026-06-09 wave shipped labels/FDR, isotonic
+  calibration, quantile tiers, Bühlmann credibility, the log-linear gate, the
+  Markov-switching regime, the seasonal cat nowcast, and the weighted severity
+  tape) — remaining candidates: **Mack-σ-scaled reserve boost** (boost on the
+  z of adverse development, not the point move), **conformal triage band**
+  (uncertain keep/drop → kept-with-flag), **corroboration-calibrated recency
+  half-lives** (fit decay curves from outcome-vs-age once the label store
+  matures), alpha-engine IC bootstrap CIs
 - **digest-core seams** — the foundation is extracted and macro-ai-digest runs on
   the same core; the remaining design seams (score-factor registry, triage
   engine, daily-note hooks; regime deferred) are reactive. See
