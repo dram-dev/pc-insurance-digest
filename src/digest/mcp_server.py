@@ -468,6 +468,29 @@ def fundamentals(insurer: str) -> str:
 
 
 @mcp.tool()
+def pure_premium(insurer: str) -> str:
+    """Frequency × severity × pure-premium decomposition by accident year.
+
+    Derived live from the insurer's XBRL facts (read-only, nothing persisted):
+    severity = incurred/claims per product line; frequency = claims per $M
+    earned premium per segment (EP is the exposure proxy — the trend is net of
+    rate changes); pure premium = incurred/EP. Trends are log-linear over mature
+    accident years (latest AY excluded as still developing); loss_cost_trend =
+    (1+freq)(1+sev)-1 is the rate-need proxy to compare against the carrier's
+    own SERFF rate ask. Cross-check severity trends vs severity_index (the FRED
+    tape) via run_sql.
+    """
+    from digest import freq_sev as fs
+
+    detail = fs.derive_insurer(insurer)
+    return _json({
+        "insurer": insurer.upper(),
+        "accident_year_rows": detail,
+        "trends": fs.trend_rows(detail),
+    })
+
+
+@mcp.tool()
 def return_forecasts(horizon_days: int | None = None, limit: int = 20) -> str:
     """Alpha-engine forecasts: predicted forward excess return per insurer.
 

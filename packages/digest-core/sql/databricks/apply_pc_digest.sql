@@ -324,6 +324,27 @@ CREATE TABLE IF NOT EXISTS silver.reserving_signals (
 )
 USING DELTA;
 
+-- Frequency x severity x pure premium per accident year (digest.freq_sev),
+-- derived from the XBRL facts: 'product' grain carries severity (incurred /
+-- reported claims); 'segment' grain adds the earned-premium denominator
+-- (frequency = claims per $M EP -- EP is the exposure PROXY -- and pure
+-- premium = incurred/EP). Insurer/LOB-keyed derived facts, like reserving.
+CREATE TABLE IF NOT EXISTS silver.freq_sev_signals (
+    insurer             STRING NOT NULL,
+    grain               STRING NOT NULL,          -- 'product' | 'segment'
+    lob                 STRING NOT NULL,
+    accident_year       INT    NOT NULL,
+    reported_claims     DOUBLE,
+    incurred_musd       DOUBLE,
+    earned_premium_musd DOUBLE,                   -- segment grain only
+    severity_usd        DOUBLE,
+    frequency_per_musd  DOUBLE,
+    pure_premium_ratio  DOUBLE,
+    as_of               STRING NOT NULL,
+    CONSTRAINT silver_freq_sev_pk PRIMARY KEY (insurer, grain, lob, accident_year, as_of)
+)
+USING DELTA;
+
 -- Component-level insurer XBRL facts (concept registry — datasets 1-13).
 CREATE TABLE IF NOT EXISTS silver.insurer_xbrl_facts (
     fact_key         STRING NOT NULL,

@@ -756,6 +756,107 @@ def underwriting(tickers: tuple[str, ...]) -> None:
                   f"(`digest ingest investor_supp`), ✓ = the two reconcile.[/dim]")
 
 
+@main.command(name="pure-premium")
+@click.argument("tickers", nargs=-1)
+def pure_premium(tickers: tuple[str, ...]) -> None:
+    """Frequency × severity × pure-premium trends from the XBRL accident-year facts.
+
+    severity = incurred/claims per product line; frequency = claims per $M earned
+    premium per segment (EP is the exposure PROXY, so the trend is net of rate
+    changes); pure premium = incurred/EP, reconciling exactly to freq × sev.
+    Trends are log-linear over MATURE accident years (the latest AY is excluded —
+    its counts/incurred are still developing). The blended FRED severity tape z
+    is shown as the external cross-check on the carrier-derived severity trends.
+    """
+    from digest import freq_sev as fs
+    from digest.severity_tape import severity_regime
+
+    db.init_db()
+    console.rule("[bold cyan]pure premium (frequency × severity)")
+    counts = fs.run_freq_sev(list(tickers) or None)
+    if counts["rows"] == 0:
+        console.print("[yellow]No freq/sev data[/yellow] — needs claim_counts + "
+                      "incurred-triangle facts (run `digest ingest-xbrl`).")
+        return
+    console.print(f"[green]✓[/green] {counts['rows']} accident-year rows across "
+                  f"{counts['insurers']} insurers")
+    detail = [dict(r) for r in db.freq_sev_detail()]
+    if tickers:
+        want = {t.upper() for t in tickers}
+        detail = [r for r in detail if r["insurer"] in want]
+    trends = fs.trend_rows(detail)
+
+    def short(lob: str) -> str:
+        return (lob.replace("property_and_casualty_", "")
+                   .replace("_insurance_product_line", "")
+                   .replace("_product_line", "").replace("_segment", ""))
+
+    def pct(x, hot_high: bool = True, yoy: bool = False):
+        if x is None:
+            return "[dim]—[/dim]"
+        colour = ("red" if x > 0 else "green") if hot_high else "cyan"
+        return f"[{colour}]{x * 100:+.1f}%{'ʸ' if yoy else ''}[/{colour}]"
+
+    def trend_or_yoy(t, key, hot_high: bool = True):
+        # A 10-K carries only 3 years of EP, so freq/PP trend fits start life
+        # short of points — fall back to the latest YoY change, marked ʸ.
+        if t[f"{key}_trend"] is not None:
+            return pct(t[f"{key}_trend"], hot_high)
+        return pct(t.get(f"{key}_yoy"), hot_high, yoy=True)
+
+    seg = [t for t in trends if t["grain"] == "segment"]
+    if seg:
+        table = Table(title="Pure-premium decomposition — segment grain (mature AYs)")
+        table.add_column("Ticker", no_wrap=True)
+        table.add_column("Segment", no_wrap=True)
+        table.add_column("AYs", style="dim")
+        table.add_column("Freq %/yr", justify="right")
+        table.add_column("Sev %/yr", justify="right")
+        table.add_column("PP %/yr", justify="right")
+        table.add_column("Loss-cost %/yr", justify="right")
+        for t in seg:
+            loss_cost = (pct(t["loss_cost_trend"]) if t["loss_cost_trend"] is not None
+                         else pct(t.get("pure_premium_yoy"), yoy=True))
+            table.add_row(t["insurer"], short(t["lob"]), t["ay_span"] or "—",
+                          trend_or_yoy(t, "frequency", hot_high=False),
+                          pct(t["severity_trend"]), trend_or_yoy(t, "pure_premium"),
+                          loss_cost)
+        console.print(table)
+        if any(t["frequency_trend"] is None and t.get("frequency_yoy") is not None
+               for t in seg):
+            console.print("[dim]ʸ = latest mature-AY YoY change — a 10-K carries only "
+                          "3 years of earned premium, so the freq/PP trend fit needs "
+                          "another year (or a historical backfill) to activate.[/dim]")
+
+    prod = sorted((t for t in trends if t["grain"] == "product"
+                   and t["severity_trend"] is not None),
+                  key=lambda t: abs(t["severity_trend"]), reverse=True)[:12]
+    if prod:
+        table = Table(title="Severity hotspots — product grain, by |trend|")
+        table.add_column("Ticker", no_wrap=True)
+        table.add_column("Line")
+        table.add_column("AYs", style="dim")
+        table.add_column("Severity $", justify="right")
+        table.add_column("Trend %/yr", justify="right")
+        table.add_column("r²", justify="right", style="dim")
+        for t in prod:
+            sev = t["latest_mature_severity_usd"]
+            table.add_row(t["insurer"], short(t["lob"]), t["ay_span"] or "—",
+                          f"{sev:,.0f}" if sev else "—", pct(t["severity_trend"]),
+                          f"{t['severity_r2']:.2f}" if t["severity_r2"] is not None else "—")
+        console.print(table)
+
+    z = severity_regime()
+    if z is not None:
+        console.print(f"[dim]Cross-check: FRED severity tape blended z={z:+.2f} "
+                      f"(`digest severity-tape`) — carrier severity trends well above "
+                      f"the tape suggest carrier-specific deterioration, not just "
+                      f"economy-wide loss-cost inflation.[/dim]")
+    console.print("[dim]Frequency = claims per $M earned premium (exposure proxy) — "
+                  "its trend is net of rate; loss-cost = (1+freq)(1+sev)-1, the "
+                  "rate-need proxy to hold against the carrier's SERFF ask.[/dim]")
+
+
 @main.command()
 def reserving() -> None:
     """Chain-ladder reserving over stored loss triangles (Option 5).

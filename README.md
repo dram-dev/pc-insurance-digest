@@ -190,6 +190,16 @@ per filer plus statutory feeds:
   candidate that **reconciles with the independent XBRL figure** (PGR: computed
   87.4% vs reported 87.4%) — never a guessed value. Reported figures land in
   `statutory_facts` and surface in `digest underwriting` (✓ = the two agree).
+- **`digest pure-premium`** — **frequency × severity × pure-premium** decomposition
+  per accident year from those same facts: severity = incurred/claims per product
+  line, frequency = claims per $M earned premium per segment (EP is the exposure
+  *proxy*, so the trend is net of rate), pure premium = incurred/EP — reconciling
+  exactly to freq × sev. Log-linear trends fit over **mature** accident years only
+  (the latest AY is still developing), with a YoY fallback while the EP history is
+  short. The annualized **loss-cost trend** `(1+freq)(1+sev)−1` is the rate-need
+  proxy to hold against a carrier's own SERFF ask, and the carrier severity trends
+  cross-check against the FRED severity tape (`digest severity-tape`). Rows land in
+  `freq_sev_signals`; the `pure_premium(ticker)` MCP tool serves the same read.
 
 The cross-insurer figures and the `fundamentals(ticker)` MCP tool give the Analyst
 a structured read of each carrier's underwriting results alongside the method skills.

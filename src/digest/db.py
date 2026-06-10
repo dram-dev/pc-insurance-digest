@@ -331,6 +331,26 @@ MIGRATIONS = [
     )""",
     "CREATE INDEX IF NOT EXISTS idx_xbrl_facts_insurer ON insurer_xbrl_facts(insurer, dataset)",
     "CREATE INDEX IF NOT EXISTS idx_xbrl_facts_dataset ON insurer_xbrl_facts(dataset)",
+    # Frequency × severity × pure premium per accident year, derived from the
+    # XBRL facts (digest.freq_sev) — 'product' grain carries severity (incurred
+    # ÷ reported claims); 'segment' grain adds the earned-premium denominator
+    # (frequency = claims/$M EP, pure premium = incurred/EP). EP is the exposure
+    # PROXY; true car-years live in statutory page 14 / Fast Track, not GAAP.
+    """CREATE TABLE IF NOT EXISTS freq_sev_signals (
+        insurer             TEXT NOT NULL,
+        grain               TEXT NOT NULL,          -- 'product' | 'segment'
+        lob                 TEXT NOT NULL,
+        accident_year       INTEGER NOT NULL,
+        reported_claims     REAL,
+        incurred_musd       REAL,
+        earned_premium_musd REAL,                   -- segment grain only
+        severity_usd        REAL,
+        frequency_per_musd  REAL,
+        pure_premium_ratio  REAL,
+        as_of               TEXT NOT NULL,
+        PRIMARY KEY (insurer, grain, lob, accident_year, as_of)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_freq_sev_insurer ON freq_sev_signals(insurer)",
     # Statutory high-level facts for insurers NOT in SEC XBRL (the big mutuals) —
     # from NAIC InsData (Schedule P summary) and free annual-report / market-share
     # sources. Triangles go to loss_triangles; this holds premiums / combined
@@ -2413,6 +2433,48 @@ def xbrl_facts_coverage() -> list[sqlite3.Row]:
                       COUNT(DISTINCT field) AS fields
                FROM insurer_xbrl_facts GROUP BY insurer, dataset
                ORDER BY insurer, dataset"""
+        ).fetchall()
+
+
+_FREQ_SEV_COLUMNS = (
+    "insurer", "grain", "lob", "accident_year", "reported_claims", "incurred_musd",
+    "earned_premium_musd", "severity_usd", "frequency_per_musd",
+    "pure_premium_ratio", "as_of",
+)
+
+
+def upsert_freq_sev(rows: list[dict]) -> int:
+    """Bulk-upsert freq/sev/pure-premium accident-year rows; mirror to silver."""
+    if not rows:
+        return 0
+    cols = ", ".join(_FREQ_SEV_COLUMNS)
+    placeholders = ", ".join(f":{c}" for c in _FREQ_SEV_COLUMNS)
+    with get_conn() as conn:
+        conn.executemany(
+            f"INSERT OR REPLACE INTO freq_sev_signals ({cols}) VALUES ({placeholders})",
+            rows,
+        )
+    sink.write_freq_sev(rows)
+    return len(rows)
+
+
+def freq_sev_detail(insurer: str | None = None) -> list[sqlite3.Row]:
+    """Latest-as_of freq/sev detail rows, optionally for one insurer."""
+    where = "WHERE f.insurer=?" if insurer else ""
+    params = (insurer.upper(),) if insurer else ()
+    with get_conn() as conn:
+        return conn.execute(
+            f"""
+            WITH latest AS (
+                SELECT insurer, MAX(as_of) AS as_of
+                FROM freq_sev_signals GROUP BY insurer
+            )
+            SELECT f.* FROM freq_sev_signals f
+            JOIN latest l ON f.insurer=l.insurer AND f.as_of=l.as_of
+            {where}
+            ORDER BY f.insurer, f.grain, f.lob, f.accident_year
+            """,
+            params,
         ).fetchall()
 
 
