@@ -19,8 +19,10 @@ ingest → triage (Ollama Qwen3.6-35B-A3B) → summarize (MLX Qwen3.6-27B) → p
 ```
 (Models swapped 2026-06-11 from Qwen2.5:14b / Qwen3.5-27B — `.env`-only via the
 backend registry; `OLLAMA_THINK=false` suppresses qwen3.6's default reasoning.
-The MLX server swaps models per request, so macro digest's Qwen3.5-27B default
-is unaffected. Regime + weekly also ride `MLX_MODEL` → Qwen3.6-27B.)
+Regime + weekly also ride `MLX_MODEL` → Qwen3.6-27B. 2026-06-12: macro digest
+aligned on Qwen3.6-27B too (its `.env` MLX_MODEL) — the per-request 3.5↔3.6
+swap on the shared server Metal-OOM'd it during PC's AM run, so both digests
+now request a single resident MLX model.)
 
 Both Ollama and the MLX server are **shared with macro-ai-digest** and
 run as launchd jobs managed by that project. PC Digest only writes its
