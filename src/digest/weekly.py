@@ -1,18 +1,25 @@
 """Weekly synthesis — produces a P&C briefing across the full week's summarized items.
 
 Called by `digest weekly` (CLI) → `obsidian.publish_weekly()`. Separate from
-obsidian.py to keep the Claude call logic in one layer and rendering in
-another. Mirrors the structure of macro-ai-digest's weekly.py with a P&C
-reader persona and P&C-specific synthesis fields (carrier-of-the-week,
-burden-trend states, inflation pulse).
+obsidian.py to keep the LLM call logic in one layer and rendering in another.
+Mirrors the structure of macro-ai-digest's weekly.py with a P&C reader persona
+and P&C-specific synthesis fields (carrier-of-the-week, burden-trend states,
+inflation pulse).
+
+The synthesis call routes through the SAME pluggable backend registry as the
+summarizer (SUMMARIZER_BACKEND, mlx_local in this deployment). It previously
+shelled out to the Claude CLI with `--model settings.summarizer_model` — an
+MLX model id here — so the call failed every week and the note silently
+rendered without its synthesis sections.
 """
 from __future__ import annotations
 
 import json
 import logging
 import re
-import subprocess
 from typing import Any
+
+from digest_core.summarize.backends import BACKENDS, BackendError
 
 from digest.config import settings
 
@@ -55,26 +62,24 @@ Constraints:
   No markdown fences, no prose outside the JSON object."""
 
 
-def _call_claude(prompt: str) -> str:
-    full = f"{SYSTEM_PROMPT}\n\n{prompt}"
-    cmd = ["claude", "-p", "--model", settings.summarizer_model, "--output-format", "json"]
-    result = subprocess.run(
-        cmd,
-        input=full,
-        capture_output=True,
-        text=True,
-        timeout=180,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"claude exit {result.returncode}: {result.stderr.strip()[:300]}"
+def _call_llm(prompt: str) -> str:
+    """Run the weekly synthesis prompt through the configured summarizer backend.
+
+    A synthesis JSON (3-5 themes + 5 must-reads + state trends) is several times
+    an item summary, so the output cap and timeout are raised above the
+    per-item defaults."""
+    backend_fn = BACKENDS.get(settings.summarizer_backend)
+    if backend_fn is None:
+        raise BackendError(
+            f"Unknown SUMMARIZER_BACKEND: {settings.summarizer_backend!r}. "
+            f"Available: {', '.join(sorted(BACKENDS))}"
         )
-    try:
-        envelope = json.loads(result.stdout)
-        return envelope.get("result") or envelope.get("response") or result.stdout
-    except json.JSONDecodeError:
-        return result.stdout
+    from digest.summarize import _backend_config
+
+    cfg = _backend_config()
+    cfg.max_tokens = 2400
+    cfg.timeout_sec = max(cfg.timeout_sec, 300)
+    return backend_fn(SYSTEM_PROMPT, prompt, cfg)
 
 
 def _parse_synthesis(raw: str) -> dict[str, Any]:
@@ -137,9 +142,9 @@ def synthesize_week(
     prompt = header + "\n" + "\n\n".join(item_lines)
 
     try:
-        raw = _call_claude(prompt)
+        raw = _call_llm(prompt)
     except Exception as exc:  # noqa: BLE001
-        logger.error("weekly: Claude call failed: %s", exc)
+        logger.error("weekly: synthesis LLM call failed: %s", exc)
         return {}
 
     synthesis = _parse_synthesis(raw)
