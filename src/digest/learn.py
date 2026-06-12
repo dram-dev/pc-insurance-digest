@@ -36,6 +36,15 @@ _DEFAULTS["score"] = 0.0
 _DEFAULTS["materiality_score"] = 0.0
 
 
+def is_backfill_row(row) -> bool:
+    """True when a learning_dataset row came from the historical backfill.
+    Rows predating the is_backfill column (or synthetic test rows) read live."""
+    try:
+        return bool(row["is_backfill"])
+    except (IndexError, KeyError):
+        return False
+
+
 def row_to_features(row) -> list[float]:
     out = []
     for f in FEATURES:
@@ -245,8 +254,10 @@ def train(horizon_days: int = 30, test_frac: float = 0.3, seed: int = 42) -> dic
         "features_json": json.dumps(FEATURES), "model_json": model.to_json(),
     })
     _log_mlflow({"horizon_days": horizon_days, "n_samples": n, "model": "logreg-numpy"}, metrics)
-    return {"model_id": model_id, "n_samples": n, "k": k, "split": split_note,
-            **metrics, **cis}
+    n_backfill = sum(1 for r in rows if is_backfill_row(r))
+    return {"model_id": model_id, "n_samples": n,
+            "n_backfill": n_backfill, "n_live": n - n_backfill,
+            "k": k, "split": split_note, **metrics, **cis}
 
 
 def score(model_id: int | None = None) -> dict:

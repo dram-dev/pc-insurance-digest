@@ -35,7 +35,7 @@ import logging
 import numpy as np
 
 from digest import db
-from digest.learn import _temporal_split, auc, bootstrap_ci
+from digest.learn import _temporal_split, auc, bootstrap_ci, is_backfill_row
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +47,12 @@ FACTORS = [
 ]
 
 MIN_LABELED = 300      # labeled rows before an evaluation is even attempted
+# The historical backfill can supply MIN_LABELED rows overnight, but its mix is
+# EDGAR-heavy by construction. Fine for per-source Bühlmann credibility; NOT a
+# basis for re-weighting the pooled formula — so a pass additionally requires
+# this many LIVE (non-backfill) labels. Until then evaluations still run and
+# persist (the AUC trend is informative) but cannot pass.
+MIN_LIVE_LABELED = 100
 PASSES_REQUIRED = 2    # consecutive passing evaluations → eligible
 _EPS = 1e-6            # factor floor before log (factors are ≥0.1 by design)
 # Shrinkage toward w=1. Log-factors are small (|log f| ≲ 0.6), so the data
@@ -115,9 +121,12 @@ def evaluate(horizon_days: int = 30, test_frac: float = 0.3, seed: int = 0) -> d
         lambda yy, idx: _auc_diff(yy, idx, s_weighted, s_heuristic),
         y_te, np.arange(len(y_te), dtype=float), seed=seed,
     )
+    n_live = sum(1 for r in rows if not is_backfill_row(r))
+    live_mix_ok = n_live >= MIN_LIVE_LABELED
     passed = (
         auc_w is not None and auc_h is not None and auc_w > auc_h
         and diff_ci is not None and diff_ci[0] > 0
+        and live_mix_ok
     )
     weights_map = {f: round(float(x), 4) for f, x in zip(FACTORS, w)}
     eval_id = db.save_loglinear_eval({
@@ -128,10 +137,15 @@ def evaluate(horizon_days: int = 30, test_frac: float = 0.3, seed: int = 0) -> d
         "passed": passed, "weights_json": json.dumps(weights_map),
     })
     summary = {
-        "eval_id": eval_id, "n_samples": n, "split": split_note,
+        "eval_id": eval_id, "n_samples": n, "n_live": n_live, "split": split_note,
         "auc_weighted": auc_w, "auc_heuristic": auc_h, "diff_ci": diff_ci,
         "passed": passed, "eligible": is_eligible(), "weights": weights_map,
     }
+    if not live_mix_ok:
+        summary["note"] = (
+            f"live-mix gate: need ≥{MIN_LIVE_LABELED} live (non-backfill) labels "
+            f"(have {n_live}) — backfill labels alone cannot re-weight the formula"
+        )
     logger.info(
         "loglinear: eval #%d %s (AUC %.3f vs %.3f, diff CI %s, eligible=%s)",
         eval_id, "PASS" if passed else "fail",
