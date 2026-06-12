@@ -482,6 +482,49 @@ def upsert_items(items: Iterable["IngestedItem"]) -> int:  # noqa: F821
     return inserted
 
 
+def insert_backfill_items(
+    items: Iterable["IngestedItem"],  # noqa: F821
+    ingested_at_offset_hours: float = 16.0,
+) -> int:
+    """Insert historical items with an explicit HISTORICAL ingested_at.
+
+    The normal upsert path lets SQLite stamp ingested_at = now, which is right
+    for live ingest but wrong for backfill: outcome windows, label maturity and
+    the chronological train/test split all key off ingested_at, so a backfilled
+    filing must enter the warehouse at its filing date. ingested_at is derived
+    as published_at + offset (~market close); items without published_at are
+    skipped (a backfilled row with a wall-clock timestamp would be worse than
+    no row). INSERT OR IGNORE — a filing already captured live keeps its live
+    timestamp. Returns count of new rows.
+    """
+    sql = """
+        INSERT OR IGNORE INTO items
+            (source, source_id, url, title, author, content,
+             published_at, ingested_at, metadata_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """
+    inserted = 0
+    items_list = list(items)
+    with get_conn() as conn:
+        for item in items_list:
+            if item.published_at is None:
+                logger.warning("backfill: skipping %s:%s — no published_at",
+                               item.source, item.source_id)
+                continue
+            published = item.published_at
+            ingested = published + timedelta(hours=ingested_at_offset_hours)
+            cur = conn.execute(sql, (
+                item.source, item.source_id, item.url, item.title, item.author,
+                item.content, published.isoformat(), ingested.isoformat(),
+                json.dumps(item.metadata or {}),
+            ))
+            if cur.rowcount:
+                inserted += 1
+    # Bronze sink mirrors live ingest (best-effort; no-op when disabled).
+    sink.write_ingested(items_list)
+    return inserted
+
+
 def log_run(
     run_type: str,
     source: str,
@@ -564,20 +607,53 @@ def items_needing_triage(limit: int = 200) -> list[sqlite3.Row]:
         return conn.execute(sql, (lookback, limit)).fetchall()
 
 
-def items_for_signals() -> list[sqlite3.Row]:
-    """All summarized, kept items for signal scoring (no limit — scored in Python)."""
-    sql = """
-        SELECT id, source, url, title, author,
+# Column list shared by the live and backfill signal-scoring selects.
+_SIGNAL_ITEM_COLUMNS = """id, source, url, title, author,
                published_at, ingested_at,
                topic, summary, why_it_matters, confidence, see_also,
                triage_score, materiality_score,
                burden_direction, burden_intensity, sub_tags, metadata_json,
                ensemble_consensus, ensemble_dispersion, cluster_id,
-               sentiment_label, sentiment_score
+               sentiment_label, sentiment_score"""
+
+
+def items_for_signals() -> list[sqlite3.Row]:
+    """All summarized, kept items for signal scoring (no limit — scored in Python).
+
+    Backfilled items are excluded: their score row was computed AS-OF the
+    historical filing date (backfill.score_backfilled), and a live rescore
+    would clobber it with a recency-floored, current-regime row — destroying
+    exactly the as-of discipline the backfill exists to preserve.
+    """
+    sql = f"""
+        SELECT {_SIGNAL_ITEM_COLUMNS}
         FROM items
         WHERE triage_decision = 'keep'
           AND summary IS NOT NULL
+          AND COALESCE(json_extract(metadata_json, '$.backfill'), 0) != 1
         ORDER BY triage_score DESC, ingested_at DESC
+    """
+    with get_conn() as conn:
+        return conn.execute(sql).fetchall()
+
+
+def backfill_items_for_signals() -> list[sqlite3.Row]:
+    """Kept+summarized BACKFILL items not yet scored — the as-of scoring queue.
+
+    The not-yet-scored filter makes backfill scoring idempotent: a re-run after
+    a partial failure scores only the remainder, and never stacks a second
+    as-of row on items already scored.
+    """
+    sql = f"""
+        SELECT {_SIGNAL_ITEM_COLUMNS}
+        FROM items
+        WHERE triage_decision = 'keep'
+          AND summary IS NOT NULL
+          AND COALESCE(json_extract(metadata_json, '$.backfill'), 0) = 1
+          AND NOT EXISTS (
+              SELECT 1 FROM signal_scores s WHERE s.item_id = items.id
+          )
+        ORDER BY ingested_at ASC
     """
     with get_conn() as conn:
         return conn.execute(sql).fetchall()
@@ -2082,6 +2158,17 @@ def regime_state_at(iso: str) -> sqlite3.Row | None:
         ).fetchone()
 
 
+def regime_signal_at(iso: str) -> sqlite3.Row | None:
+    """Full regime_signals row in force at `iso` (latest at/before it) —
+    RegimeSignal.from_row-compatible, for as-of backfill scoring."""
+    with get_conn() as conn:
+        return conn.execute(
+            """SELECT * FROM regime_signals
+               WHERE datetime(as_of) <= datetime(?) ORDER BY as_of DESC LIMIT 1""",
+            (iso,),
+        ).fetchone()
+
+
 def manual_rating_for(item_id: int) -> float | None:
     """Highest manual rating recorded for an item, or None."""
     with get_conn() as conn:
@@ -2154,6 +2241,8 @@ def learning_dataset(horizon_days: int) -> list[sqlite3.Row]:
                 FROM signal_scores GROUP BY item_id
             )
             SELECT i.id AS item_id, i.materiality_score, i.ingested_at,
+                   COALESCE(json_extract(i.metadata_json, '$.backfill'), 0)
+                       AS is_backfill,
                    {_LEARN_FACTORS}, o.corroborated
             FROM outcome_backtest o
             JOIN latest l        ON l.item_id = o.item_id

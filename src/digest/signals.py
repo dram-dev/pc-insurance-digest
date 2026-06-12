@@ -633,6 +633,7 @@ def _recency(
     ingested_iso: str | None,
     topic: str | None = None,
     half_lives: dict[str, float] | None = None,
+    as_of: datetime | None = None,
 ) -> float:
     """True exponential decay 2^(−age/h) with a PER-TOPIC half-life h.
 
@@ -642,6 +643,10 @@ def _recency(
     weights section (cat_event 2d, regulatory_rate 14d, reserving 21d,
     default 7d). Uses published_at if present, otherwise ingested_at; floored
     at RECENCY_FLOOR; missing/unparseable timestamps → 0.6 (unchanged).
+
+    `as_of` replaces "now" as the age reference — the historical backfill
+    scores items as-of their filing date, so recency must decay from then,
+    not from the wall clock. None (the live path) keeps now().
     """
     hl = half_lives if half_lives is not None else RECENCY_HALF_LIVES_DEFAULT
     h = float(hl.get((topic or "").lower()) or hl.get("default", 7.0))
@@ -654,7 +659,10 @@ def _recency(
         return 0.6
     if ts.tzinfo is None:
         ts = ts.replace(tzinfo=timezone.utc)
-    age_days = max(0.0, (datetime.now(timezone.utc) - ts).total_seconds() / 86400.0)
+    ref = as_of if as_of is not None else datetime.now(timezone.utc)
+    if ref.tzinfo is None:
+        ref = ref.replace(tzinfo=timezone.utc)
+    age_days = max(0.0, (ref - ts).total_seconds() / 86400.0)
     decay = max(RECENCY_FLOOR, 2.0 ** (-age_days / max(h, 0.1)))
     return round(decay, 3)
 
@@ -731,6 +739,7 @@ def score_item(
     calibrator: Any | None = None,
     tier_cutoffs: tuple[float, float] | None = None,
     exponents: dict[str, float] | None = None,
+    as_of: datetime | None = None,
 ) -> Score:
     """Compute the leaderboard score for one item row.
 
@@ -743,6 +752,8 @@ def score_item(
     replaces the raw materiality clamp when fitted; None → raw clamp (the
     pre-calibration behavior). `tier_cutoffs` lets run_signals stamp tiers
     from the batch's quantile-calibrated thresholds; None → fixed weights.
+    `as_of` makes recency decay from a historical timestamp instead of now
+    (the backfill path); the caller must also pass the regime in force then.
     """
     if weights is None:
         weights = _load_scoring_weights()
@@ -759,6 +770,7 @@ def score_item(
         row["ingested_at"]  if "ingested_at"  in row.keys() else None,
         topic=topic,
         half_lives=weights.get("recency_half_lives"),
+        as_of=as_of,
     )
 
     materiality = row["materiality_score"] if "materiality_score" in row.keys() else None

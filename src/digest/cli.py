@@ -299,6 +299,55 @@ def outcomes(horizons: str, limit: int) -> None:
 
 
 @main.command()
+@click.option("--since", default=None,
+              help="Earliest filing date YYYY-MM-DD (default ~18 months back, "
+                   "clamped to price-store coverage)")
+@click.option("--ticker", "tickers", multiple=True,
+              help="Limit to these insurer tickers (default: full universe)")
+@click.option("--skip-content", is_flag=True,
+              help="Skip body-content fetches (faster; summaries become stubs)")
+@click.option("--skip-summarize", is_flag=True,
+              help="Ingest + score only; leave summaries to scheduled runs "
+                   "(scoring then sees no materiality — run backfill again after)")
+@click.option("--skip-outcomes", is_flag=True, help="Don't run the outcome backtest")
+def backfill(since: str | None, tickers: tuple[str, ...], skip_content: bool,
+             skip_summarize: bool, skip_outcomes: bool) -> None:
+    """Historical EDGAR backfill — matured outcome labels in one overnight run.
+
+    Ingests historical 8-K/10-Q/10-K filings for the insurer universe with
+    ingested_at = filing date, auto-keeps them, summarizes via MLX, scores them
+    AS-OF the filing date (historical recency + the regime in force then), and
+    runs the 7d/30d outcome backtest immediately — the windows have already
+    matured. Backfilled rows are provenance-tagged and excluded from the live
+    leaderboard; the pooled log-linear gate still requires live-mix labels.
+    Re-runnable: every stage skips work already done.
+    """
+    from digest.backfill import run_backfill
+
+    db.init_db()
+    console.rule("[bold cyan]historical backfill")
+    s = run_backfill(
+        since=since,
+        tickers=tickers,
+        fetch_content=not skip_content,
+        do_summarize=not skip_summarize,
+        do_outcomes=not skip_outcomes,
+    )
+    console.print(f"  since: {s['since']}")
+    console.print(f"  [green]✓[/green] filings fetched={s['fetched']} new={s['new']} "
+                  f"auto-kept={s['auto_kept']}")
+    if "summarize" in s:
+        sm = s["summarize"]
+        console.print(f"  [green]✓[/green] summarized: {sm.get('succeeded', 0)} ok, "
+                      f"{sm.get('failed', 0)} failed of {sm.get('ready', 0)} ready")
+    console.print(f"  [green]✓[/green] scored as-of: {s['score'].get('scored', 0)}")
+    if "outcomes" in s:
+        for h, n in s["outcomes"].items():
+            console.print(f"  [green]✓[/green] outcomes horizon={h}d: checked={n}")
+    console.print("  next: `digest learn` to retrain on the enlarged label set")
+
+
+@main.command()
 @click.option("--horizon", default=30, help="Outcome horizon to train against (days)")
 def learn(horizon: int) -> None:
     """Train the learned relevance scorer + A/B it vs the heuristic (Option 4).
@@ -346,6 +395,8 @@ def learn(horizon: int) -> None:
         console.print(f"  log-linear gate #{ll['eval_id']}: {verdict} — "
                       f"AUC {_p(ll.get('auc_weighted'))} vs {_p(ll.get('auc_heuristic'))}, "
                       f"diff CI {ll.get('diff_ci')}{eligible}")
+        if ll.get("note"):
+            console.print(f"  [dim]log-linear gate: {ll['note']}[/dim]")
     elif ll.get("note"):
         console.print(f"  [dim]log-linear gate: {ll['note']}[/dim]")
 
