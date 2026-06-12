@@ -39,6 +39,11 @@ class BackendConfig:
     gemini_model: str = "gemini-2.0-flash"
     ollama_host: str = "http://localhost:11434"
     ollama_model: str = ""
+    # Ollama `think` field — None omits it entirely (required for models with
+    # no thinking support, e.g. qwen2.5, where sending it is a 400); False
+    # suppresses reasoning on thinking-default models (qwen3.x) so format=json
+    # output stays clean and fast.
+    ollama_think: bool | None = None
     mlx_server_url: str = "http://localhost:8080"
     mlx_model: str = ""
 
@@ -138,18 +143,17 @@ def call_gemini_flash(system_prompt: str, user_prompt: str, cfg: BackendConfig) 
 def call_local_qwen(system_prompt: str, user_prompt: str, cfg: BackendConfig) -> str:
     """Ollama generate endpoint (same instance triage uses)."""
     url = cfg.ollama_host.rstrip("/") + "/api/generate"
-    r = requests.post(
-        url,
-        json={
-            "model": cfg.ollama_model,
-            "system": system_prompt,
-            "prompt": user_prompt,
-            "stream": False,
-            "format": "json",
-            "options": {"temperature": cfg.temperature, "num_predict": cfg.max_tokens, "num_ctx": 8192},
-        },
-        timeout=cfg.timeout_sec,
-    )
+    payload: dict = {
+        "model": cfg.ollama_model,
+        "system": system_prompt,
+        "prompt": user_prompt,
+        "stream": False,
+        "format": "json",
+        "options": {"temperature": cfg.temperature, "num_predict": cfg.max_tokens, "num_ctx": 8192},
+    }
+    if cfg.ollama_think is not None:
+        payload["think"] = cfg.ollama_think
+    r = requests.post(url, json=payload, timeout=cfg.timeout_sec)
     r.raise_for_status()
     return r.json().get("response", "")
 

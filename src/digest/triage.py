@@ -270,6 +270,7 @@ def _triage_backend_config() -> BackendConfig:
         temperature=0.1,
         ollama_host=settings.ollama_host,
         ollama_model=settings.ollama_model,
+        ollama_think=settings.ollama_think,
         mlx_server_url=settings.mlx_server_url,
         mlx_model=settings.mlx_model,
     )

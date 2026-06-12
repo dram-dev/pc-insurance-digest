@@ -70,6 +70,10 @@ class Settings(BaseSettings):
     triage_max_tokens: int = Field(default=384, alias="TRIAGE_MAX_TOKENS")
     ollama_host: str = Field(default="http://localhost:11434", alias="OLLAMA_HOST")
     ollama_model: str = Field(default="qwen2.5:14b", alias="OLLAMA_MODEL")
+    # Ollama think field: unset → omitted from the request (required for
+    # non-thinking models like qwen2.5); false → suppress reasoning on
+    # thinking-default models (qwen3.x). Set OLLAMA_THINK=false with qwen3.6.
+    ollama_think: bool | None = Field(default=None, alias="OLLAMA_THINK")
     triage_min_score: float = Field(default=0.5, alias="TRIAGE_MIN_SCORE")
     triage_lookback_hours: int = Field(default=24, alias="TRIAGE_LOOKBACK_HOURS")
 

@@ -193,6 +193,7 @@ def _backend_config() -> BackendConfig:
         gemini_api_key=settings.gemini_api_key,
         ollama_host=settings.ollama_host,
         ollama_model=settings.ollama_model,
+        ollama_think=settings.ollama_think,
         mlx_server_url=settings.mlx_server_url,
         mlx_model=settings.mlx_model,
     )
