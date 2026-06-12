@@ -36,6 +36,12 @@ logger = logging.getLogger(__name__)
 
 MIN_LABELED = 100   # labeled items with a materiality score before fitting
 MIN_CLASS = 10      # each class (corroborated / not) must have at least this many
+# Unlike the advisory learned model, a fitted calibrator goes straight into
+# live scoring (llm_judgment), so — like the log-linear gate — it must not be
+# unlocked by historical-backfill labels alone: their EDGAR-heavy mix has a
+# different corroboration base rate than the live feed the calibrator will be
+# applied to. Backfill labels still enlarge the fit once live labels unlock it.
+MIN_LIVE_LABELED = 50
 JUDGMENT_MIN, JUDGMENT_MAX = 0.5, 1.5   # the llm_judgment clamp signals.py uses
 
 
@@ -113,6 +119,8 @@ def train_materiality_calibrator(horizon_days: int = 30) -> dict:
     """Fit + persist the materiality calibrator from the labeled backtest set.
     Returns a summary dict; calibrator_id is None (with a note) under the
     small-n gates — same discipline as learn.train."""
+    from digest.learn import is_backfill_row
+
     rows = db.learning_dataset(horizon_days)
     pairs = [
         (float(r["materiality_score"]), int(r["corroborated"]))
@@ -125,6 +133,14 @@ def train_materiality_calibrator(horizon_days: int = 30) -> dict:
         return {"calibrator_id": None, "n_samples": n,
                 "note": (f"need ≥{MIN_LABELED} labeled items with ≥{MIN_CLASS} per class "
                          f"(have {n}: {n_pos}+/{n_neg}−) — raw materiality clamp stays")}
+    n_live = sum(
+        1 for r in rows
+        if r["materiality_score"] is not None and not is_backfill_row(r)
+    )
+    if n_live < MIN_LIVE_LABELED:
+        return {"calibrator_id": None, "n_samples": n, "n_live": n_live,
+                "note": (f"live-mix gate: need ≥{MIN_LIVE_LABELED} live (non-backfill) "
+                         f"labels (have {n_live}) — raw materiality clamp stays")}
 
     xs = [m for m, _ in pairs]
     ys = [y for _, y in pairs]
@@ -139,8 +155,8 @@ def train_materiality_calibrator(horizon_days: int = 30) -> dict:
         "calibration: materiality curve fitted (id=%d, n=%d, base_rate=%.3f, %d blocks)",
         cal_id, n, base_rate, len(block_x),
     )
-    return {"calibrator_id": cal_id, "n_samples": n, "base_rate": round(base_rate, 4),
-            "blocks": len(block_x)}
+    return {"calibrator_id": cal_id, "n_samples": n, "n_live": n_live,
+            "base_rate": round(base_rate, 4), "blocks": len(block_x)}
 
 
 def latest_materiality_calibrator() -> IsotonicCalibrator | None:

@@ -193,6 +193,29 @@ def test_loglinear_gate_blocks_backfill_only_labels(monkeypatch):
     assert "note" not in out or "live-mix" not in out.get("note", "")
 
 
+def test_calibrator_blocks_backfill_only_labels(monkeypatch):
+    from digest import calibration
+
+    def _rows(is_backfill: int):
+        return [
+            {"item_id": i, "materiality_score": 0.5 + (i % 10) * 0.1,
+             "corroborated": i % 2, "is_backfill": is_backfill,
+             "ingested_at": "2024-09-01T00:00:00"}
+            for i in range(200)
+        ]
+
+    monkeypatch.setattr(calibration.db, "learning_dataset", lambda h: _rows(1))
+    out = calibration.train_materiality_calibrator()
+    assert out["calibrator_id"] is None
+    assert "live-mix gate" in out["note"]
+
+    monkeypatch.setattr(calibration.db, "learning_dataset", lambda h: _rows(0))
+    monkeypatch.setattr(calibration.db, "save_calibrator", lambda d: 99)
+    out = calibration.train_materiality_calibrator()
+    assert out["calibrator_id"] == 99
+    assert out["n_live"] == 200
+
+
 def test_select_historical_filings_filters_form_and_date():
     pages = [
         {   # recent-shaped parallel arrays
