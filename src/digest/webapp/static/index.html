@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PC Digest — Observatory</title>
+<meta name="description" content="Read-only visual observatory over the PC Digest P&C insurance warehouse.">
+<link rel="icon" href="data:image/svg+xml,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'&gt;&lt;text y='.9em' font-size='90'&gt;⛈&lt;/text&gt;&lt;/svg&gt;">
+<link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+<div id="app">
+  <aside id="sidebar">
+    <div class="wordmark">
+      <div class="wordmark-glyph">⛈</div>
+      <div>
+        <div class="wordmark-title">PC Digest</div>
+        <div class="wordmark-sub">Observatory</div>
+      </div>
+    </div>
+    <nav id="nav">
+      <a href="#/pulse" data-view="pulse"><span class="nav-ico">◉</span>Pulse</a>
+      <a href="#/signals" data-view="signals"><span class="nav-ico">⚡︎</span>Signals</a>
+      <a href="#/market" data-view="market"><span class="nav-ico">↗</span>Market</a>
+      <a href="#/losslab" data-view="losslab"><span class="nav-ico">◬</span>Loss Lab</a>
+      <a href="#/ops" data-view="ops"><span class="nav-ico">♺</span>Operations</a>
+    </nav>
+    <div id="sidebar-foot">
+      <div id="freshness" class="freshness"></div>
+      <div class="fineprint">All times UTC · read-only view of the local warehouse</div>
+    </div>
+  </aside>
+  <main id="main">
+    <header id="topbar">
+      <h1 id="view-title"></h1>
+      <div id="range-control" class="seg" role="group" aria-label="time range"></div>
+    </header>
+    <div id="view"></div>
+    <footer id="page-foot">
+      <span>Scores are the pipeline's heuristic formula — source × regime × relevance × recency × LLM judgment × boosts.</span>
+      <span>Backfilled (historical) rows are flagged ◌. News timing uses published time, falling back to ingest time where the feed gives none.</span>
+    </footer>
+  </main>
+</div>
+<div id="tooltip" role="tooltip"></div>
+<script src="/vendor/d3.v7.min.js"></script>
+<script type="module" src="/js/main.js"></script>
+</body>
+</html>

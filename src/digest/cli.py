@@ -1557,5 +1557,20 @@ def init_db_cmd() -> None:
     console.print(f"[green]✓[/green] DB initialized at {settings.db_path}")
 
 
+@main.command()
+@click.option("--host", default="127.0.0.1", show_default=True)
+@click.option("--port", default=8787, show_default=True)
+@click.option("--open", "open_browser", is_flag=True, help="Open the app in the default browser")
+def web(host: str, port: int, open_browser: bool) -> None:
+    """Serve the web observatory — local, read-only data viz over the warehouse.
+
+    Zero extra dependencies (stdlib HTTP + vendored D3). News timing, signal
+    anatomy, prices vs. filings, loss triangles, pipeline ops.
+    """
+    from digest.webapp.server import serve
+
+    serve(host=host, port=port, open_browser=open_browser)
+
+
 if __name__ == "__main__":
     sys.exit(main())

@@ -563,7 +563,7 @@ Folder layout:
 ```
 src/digest/
 ├── cli.py        # Click commands: ingest, triage, summarize, regime, signals,
-│                 # pipeline, publish, weekly, stats, recent, health, init-db
+│                 # pipeline, publish, weekly, stats, recent, health, init-db, web
 ├── config.py     # pydantic-settings; reads .env
 ├── db.py         # SQLite schema + queries; shares schema with macro for portability
 ├── triage.py     # P&C system prompt, 17-topic enum, Python auto-keep hook for EDGAR 8-K
@@ -597,6 +597,14 @@ src/digest/
     ├── state_doi.py          # Wave 3 — direct state DOI press scrapers; all states enabled:false; TODO validate selectors + enable CA first
     ├── industry_research.py  # Wave 3 — LexisNexis Risk + JD Power direct scraper; config/industry_research_sources.yaml; all disabled pending selector validation
     └── serff.py              # Wave 3 Phase 2 — state SERFF rate filings ≥5%; portal dispatch (serff_standard / cdi_prior_approval / floir_irfa); all states enabled:false pending selector + POST validation
+
+src/digest/webapp/     # Web observatory — `uv run digest web` → http://127.0.0.1:8787
+├── api.py             # pure query layer over a read-only conn (testable sans HTTP)
+├── server.py          # stdlib ThreadingHTTPServer: /api/* JSON + static; mode=ro SQLite
+└── static/            # no-build SPA: vendored D3 v7, 5 views (Pulse news-timing hero,
+                       # Signals score anatomy, Market prices×filings, Loss Lab triangles
+                       # + freq/sev, Operations). All times UTC; backfill rows flagged;
+                       # zero new deps. Tests: tests/test_webapp.py
 
 src/digest/sinks/      # Wave 3 Phase 1 — secondary write destinations
 ├── __init__.py        # exports module-level `sink` singleton
