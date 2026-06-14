@@ -138,6 +138,21 @@ def _fact_key(f: dict) -> str:
     return hashlib.sha256(s.encode()).hexdigest()[:24]
 
 
+def _document_period_end(root) -> str | None:
+    """The filing's fiscal period-end (dei:DocumentPeriodEndDate) — the authoritative
+    'as-of' for an annual 10-K. Preferred over max(period_ends) because some filings
+    carry a post-close *instant* fact (audit / subsequent-event / Q1-declared date)
+    dated weeks AFTER year-end, which would otherwise push the snapshot label past
+    Dec 31 (seen on CB → 2025-02-27, CINF → 2025-03-31 prior diagonals) and mislabel
+    the period-over-period reserve-deterioration comparison."""
+    for el in root:
+        if _localname(el.tag) == "DocumentPeriodEndDate":
+            text = (el.text or "").strip()
+            if text:
+                return text
+    return None
+
+
 def extract_facts(instance_xml: str, *, insurer: str) -> list[dict]:
     """Component-level facts for the registry concepts, one row per dimensional
     context. Monetary values → USD millions; claim counts kept raw."""
@@ -184,7 +199,7 @@ def extract_facts(instance_xml: str, *, insurer: str) -> list[dict]:
             period_ends.append(period_end)
         facts.append(row)
 
-    as_of = max(period_ends) if period_ends else None
+    as_of = _document_period_end(root) or (max(period_ends) if period_ends else None)
     for f in facts:
         f["as_of"] = as_of
         f["fact_key"] = _fact_key(f)
