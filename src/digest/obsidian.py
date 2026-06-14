@@ -141,6 +141,14 @@ def topic_filename(slug: str) -> str:
 class Paths(_CorePaths):
     """PC vault paths — settings-driven resolve() over the core layout."""
 
+    @property
+    def brief_dir(self) -> Path:
+        return self.digest_root / "Brief"
+
+    def ensure(self) -> None:
+        super().ensure()
+        self.brief_dir.mkdir(parents=True, exist_ok=True)
+
     @classmethod
     def resolve(cls) -> "Paths":
         if not settings.obsidian_vault_path:
@@ -261,7 +269,12 @@ def _render_regime_callout(regime) -> str:
     ]
     market_judgment = (regime.evidence or {}).get("market_judgment", {})
     evidence_txt = market_judgment.get("evidence") if isinstance(market_judgment, dict) else None
-    if evidence_txt:
+    # Skip the LLM's stored error string ("backend error: MLX server not
+    # reachable …") — it's plumbing noise, not regime evidence.
+    if evidence_txt and not (
+        evidence_txt.lower().startswith("backend error")
+        or "not reachable" in evidence_txt.lower()
+    ):
         lines.append(f"> _{evidence_txt}_")
     return "\n".join(lines)
 
@@ -281,9 +294,12 @@ def _daily_frontmatter_extra(regime, top_signals) -> dict:
         except Exception:  # noqa: BLE001
             pass
     try:
+        # The blended z (zscore_12m), not value (the rebased index LEVEL ~100+):
+        # the timeline tracks the severity *signal*, and value jumping to ~140
+        # after the loss-cost rebase would blow out the dashboard chart scale.
         sev = db.latest_severity_index("blended_severity")
-        if sev is not None:
-            extra["severity_index"] = round(float(sev["value"]), 3)
+        if sev is not None and sev["zscore_12m"] is not None:
+            extra["severity_index"] = round(float(sev["zscore_12m"]), 3)
     except Exception:  # noqa: BLE001
         pass
     try:
@@ -763,6 +779,16 @@ def publish(date_iso: str | None = None) -> dict[str, int | str]:
     daily_path, daily_count = write_daily_note(date_iso, paths)
     logger.info("obsidian: wrote daily %s (%d items)", daily_path.name, daily_count)
 
+    # Mobile-first Brief front page — best-effort: never let it break publish.
+    brief_path = ""
+    try:
+        from digest.brief import write_brief_note
+        bpath, n_picks = write_brief_note(date_iso, paths)
+        brief_path = str(bpath)
+        logger.info("obsidian: wrote brief %s (%d top picks)", bpath.name, n_picks)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("obsidian: brief write failed: %s", exc)
+
     # Topic archives — only those with summaries
     topic_results: list[tuple[str, Path, int]] = []
     for slug in db.topics_with_summaries():
@@ -786,6 +812,7 @@ def publish(date_iso: str | None = None) -> dict[str, int | str]:
     return {
         "date": date_iso,
         "daily_path": str(daily_path),
+        "brief_path": brief_path,
         "daily_items": daily_count,
         "topic_archives": len(topic_results),
         "items_stamped": len(stamped),

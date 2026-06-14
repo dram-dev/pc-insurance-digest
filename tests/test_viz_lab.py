@@ -114,3 +114,60 @@ def test_write_viz_lab_writes_meta_note(fresh_db, tmp_path, monkeypatch):
     assert out.exists()
     assert out.parent.name == "_meta"
     assert out.read_text(encoding="utf-8").startswith("---")
+
+
+# ── Reserve heat-grid — width control (XBRL LOB explosion guard) ──────────────
+
+def _put_reserve(insurer, lob, direction="flat", pct=0.0):
+    db.upsert_reserving_signal({
+        "insurer": insurer, "lob": lob, "metric": "incurred", "as_of": "2026-05-01",
+        "ultimate": 100.0, "latest": 90.0, "ibnr": 10.0, "prior_ibnr": 9.0,
+        "deterioration_pct": pct, "direction": direction,
+    })
+
+
+def _grid_lob_cols(out: str) -> int:
+    """LOB columns in the header (excludes the 'insurer \\ LOB' label column)."""
+    return out.splitlines()[0].count("|") - 2
+
+
+def test_reserve_heatgrid_drops_neutral_noise_columns(fresh_db):
+    # One real (adverse) LOB on PGR, plus a wall of flat noise from the XBRL ingest.
+    _put_reserve("PGR", "personal_auto", "adverse", 0.12)
+    for i in range(40):
+        _put_reserve("AIG", f"raw_xbrl_member_{i}", "flat", 0.0)
+    out = viz_lab.render_reserve_heatgrid()
+    assert _grid_lob_cols(out) == 1          # only the developing LOB survives
+    assert "PGR" in out
+    assert "AIG" not in out                   # an all-neutral insurer is dropped too
+
+
+def test_reserve_heatgrid_caps_column_count(fresh_db):
+    for i in range(viz_lab.MAX_RESERVE_LOBS + 5):
+        _put_reserve("PGR", f"lob_{i:02d}", "adverse", 0.10 + i * 0.001)
+    out = viz_lab.render_reserve_heatgrid()
+    assert _grid_lob_cols(out) == viz_lab.MAX_RESERVE_LOBS
+    assert "more LOB(s) developing" in out
+
+
+def test_reserve_heatgrid_all_neutral_reads_as_no_data(fresh_db):
+    _put_reserve("AIG", "some_lob", "flat", 0.0)
+    out = viz_lab.render_reserve_heatgrid()
+    assert out.startswith("_No data yet")    # skipped by the EKG panel
+
+
+# ── Severity blocks read the z (zscore_12m), never the raw level (value) ──────
+
+def test_severity_drivers_use_zscore_not_raw_level(fresh_db):
+    # Mimic the post-rebase tape: value is a 100+ index level, z is small.
+    db.upsert_severity_index([
+        {"index_name": "fred_X", "observation_date": "2026-05-01", "value": 452.38,
+         "zscore_12m": 0.36, "is_anomaly": 0, "category": "labor", "source": "fred",
+         "fetched_at": "2026-05-02"},
+        {"index_name": "blended_severity", "observation_date": "2026-05-01",
+         "value": 140.20, "zscore_12m": 0.05, "is_anomaly": 0, "category": "blended",
+         "source": "fred", "fetched_at": "2026-05-02"},
+    ])
+    out = viz_lab.render_severity_drivers()
+    assert "+0.36σ" in out and "+0.05σ" in out      # z-scores, not the levels
+    assert "452" not in out and "140" not in out     # raw levels never shown as σ

@@ -156,13 +156,17 @@ def _severity_drivers() -> list[tuple[str, float]]:
         if not latest:
             return []
         rows = conn.execute(
-            "SELECT category, value FROM severity_index "
+            "SELECT category, zscore_12m FROM severity_index "
             "WHERE index_name LIKE 'fred_%' AND observation_date=?",
             (latest,),
         ).fetchall()
+    # `value` is the raw CPI/PPI LEVEL (100+); the m/m z is in zscore_12m
+    # (see severity_tape.py). Reading value here printed "+650σ" drivers.
     agg: dict[str, float] = {}
     for r in rows:                       # several series can share a category → keep the hottest
-        cat, z = (r["category"] or "other"), float(r["value"] or 0.0)
+        if r["zscore_12m"] is None:
+            continue
+        cat, z = (r["category"] or "other"), float(r["zscore_12m"])
         if cat not in agg or abs(z) > abs(agg[cat]):
             agg[cat] = z
     return sorted(agg.items(), key=lambda kv: kv[1], reverse=True)
@@ -181,8 +185,10 @@ def render_severity_drivers() -> str:
         bar = "█" * min(10, round(abs(z) * 6))
         lines.append(f"- {_z_chip(z)} `{cat:<12}` {z:+.2f}σ  {bar}")
     blended = db.latest_severity_index("blended_severity")
-    if blended is not None:
-        bz = float(blended["value"])
+    # `value` is the rebased index LEVEL (~100+); the z lives in zscore_12m
+    # (see severity_tape.py). Read the z — reading value here printed "+140σ".
+    if blended is not None and blended["zscore_12m"] is not None:
+        bz = float(blended["zscore_12m"])
         lines += ["", f"**Blended:** {bz:+.2f}σ  `{gauge_bar((bz + 3) / 6)}`"]
     hist = _severity_history()           # add a trend braille once >1 month accumulates
     if len(hist) > 1:
@@ -266,17 +272,41 @@ def _reserve_cell(direction: str, pct: float | None) -> str:
     return "⬜"
 
 
+# Hard column cap so the daily-header grid can never blow out horizontally —
+# the XBRL component-facts ingest lands 80+ raw, un-canonicalized LOB members
+# (e.g. `berkshire_hathaway_insurance_group_auto_liability_insurance_geico`),
+# and an N-wide markdown table does not render in Obsidian. Only LOBs with real
+# adverse|favorable development survive; flat/missing noise columns are dropped.
+MAX_RESERVE_LOBS = 16
+
+
 def render_reserve_heatgrid() -> str:
     rows = db.latest_reserving_signals(limit=200)
     if not rows:
         return _no_data("digest reserving")
-    insurers = sorted({r["insurer"] for r in rows})
-    lobs = sorted({r["lob"] for r in rows})
     cell: dict[tuple[str, str], str] = {}
+    worst: dict[tuple[str, str], float] = {}   # most-severe |Δ| seen per (insurer, lob)
+    sev_by_lob: dict[str, float] = {}          # rank/cap columns by max |Δ|
+    material_lobs: set[str] = set()
+    material_insurers: set[str] = set()
     for r in rows:
-        # keep the most severe cell per (insurer, lob)
-        c = _reserve_cell(r["direction"], r["deterioration_pct"])
-        cell[(r["insurer"], r["lob"])] = c
+        key = (r["insurer"], r["lob"])
+        pct = abs(r["deterioration_pct"] or 0.0)
+        if pct >= worst.get(key, -1.0):        # keep the most severe cell per (insurer, lob)
+            worst[key] = pct
+            cell[key] = _reserve_cell(r["direction"], r["deterioration_pct"])
+        if r["direction"] in ("adverse", "favorable"):
+            material_lobs.add(r["lob"])
+            material_insurers.add(r["insurer"])
+            sev_by_lob[r["lob"]] = max(sev_by_lob.get(r["lob"], 0.0), pct)
+    # Nothing actually developing → skip the block (treated as "no data" by the
+    # EKG panel) rather than print a wall of neutral ⬜ cells.
+    if not material_lobs:
+        return _no_data("digest reserving")
+
+    ranked = sorted(material_lobs, key=lambda l: sev_by_lob.get(l, 0.0), reverse=True)
+    lobs = sorted(ranked[:MAX_RESERVE_LOBS])    # alpha display order after the top-N cut
+    insurers = sorted(material_insurers)
     header = "| insurer \\ LOB | " + " | ".join(_abbrev_lob(l) for l in lobs) + " |"
     sep = "|" + "---|" * (len(lobs) + 1)
     lines = [header, sep]
@@ -284,6 +314,9 @@ def render_reserve_heatgrid() -> str:
         cells = " | ".join(cell.get((ins, lob), "·") for lob in lobs)
         lines.append(f"| **{ins}** | {cells} |")
     lines.append("")
+    hidden = len(material_lobs) - len(lobs)
+    if hidden > 0:
+        lines.append(f"_+{hidden} more LOB(s) developing — full grid via `digest reserving`._")
     lines.append("_🟥 adverse ≥10% · 🟧 ≥3% · 🟨 mild · 🟩 favorable · ⬜ neutral_")
     return "\n".join(lines)
 
