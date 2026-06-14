@@ -235,7 +235,7 @@ WITH latest AS (
 )
 SELECT r.insurer, r.lob, r.metric, r.as_of,
        r.ultimate, r.latest, r.ibnr, r.prior_ibnr,
-       r.deterioration_pct, r.direction
+       r.cy_development, r.deterioration_pct, r.direction
 FROM pc_silver.reserving_signals r
 JOIN latest l ON r.insurer = l.insurer AND r.lob = l.lob
              AND r.metric = l.metric AND r.as_of = l.as_of

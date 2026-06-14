@@ -37,8 +37,9 @@ def test_reserve_boost_neutral_without_data(fresh_db, make_item):
 def test_reserve_boost_applies_for_named_insurer(fresh_db, make_item):
     db.upsert_reserving_signal({
         "insurer": "PGR", "lob": "auto", "metric": "incurred", "as_of": "2026-05-01",
-        "ultimate": 600.0, "latest": 500.0, "ibnr": 100.0, "prior_ibnr": 80.0,
-        "deterioration_pct": 0.25, "direction": "adverse",
+        "ultimate": 600.0, "latest": 500.0, "ibnr": 100.0, "prior_ibnr": None,
+        # 30/600 = 5% one-year incurred development → K×0.05 = 0.25 boost-scale severity.
+        "cy_development": 30.0, "deterioration_pct": 0.05, "direction": "adverse",
     })
     iid = _kept_summarized(make_item, "p1", "Progressive posts adverse reserve development")
     other = _kept_summarized(make_item, "o1", "Generic cyber market update")
@@ -67,27 +68,18 @@ def _triangle_table(scale: float) -> Table:
 
 
 def test_triangle_pipeline_activates_reserve_boost(fresh_db, make_item):
-    """End-to-end Lead 6: PDF-table triangles → upsert → run_reserving →
-    severity_map → score_item produces a reserve_boost > 1.0 for the insurer.
-
-    Two quarterly snapshots with rising IBNR create adverse development; the
-    boost is 1.0 today only because no triangle data exists yet."""
-    # Q1 snapshot — establishes the prior IBNR baseline.
+    """End-to-end Lead 6: PDF-table triangle → upsert → run_reserving → severity_map
+    → score_item produces reserve_boost > 1.0 for the named insurer — from a SINGLE
+    filing (one-year development read off the within-filing diagonal; no second
+    snapshot needed). A generic item naming no flagged insurer stays neutral."""
     db.upsert_triangle_cells(parse_triangle(
         _triangle_table(1.0), insurer="PGR", lob="auto",
         metric="incurred", as_of="2026-03-31"))
     reserving.run_reserving()
-    assert db.reserving_severity_map() == {}     # no prior yet → no adverse signal
-
-    # Q2 snapshot — losses developed 30% higher → adverse vs. the Q1 estimate.
-    db.upsert_triangle_cells(parse_triangle(
-        _triangle_table(1.3), insurer="PGR", lob="auto",
-        metric="incurred", as_of="2026-06-30"))
-    reserving.run_reserving()
     sev = db.reserving_severity_map()
-    assert sev.get("PGR", 0.0) == pytest.approx(0.3, abs=0.02)
+    assert sev.get("PGR", 0.0) == pytest.approx(
+        reserving.DEVELOPMENT_BOOST_K * (70.0 / 544.5), abs=1e-3)
 
-    # An item naming the insurer now inherits the reserve boost; a generic one doesn't.
     pgr = _kept_summarized(make_item, "p1", "Progressive posts adverse reserve development")
     other = _kept_summarized(make_item, "o1", "Generic cyber market update")
     signals.run_signals()
@@ -96,8 +88,7 @@ def test_triangle_pipeline_activates_reserve_boost(fresh_db, make_item):
             "SELECT reserve_boost FROM signal_scores WHERE item_id=?", (pgr,)).fetchone()["reserve_boost"]
         oth_boost = conn.execute(
             "SELECT reserve_boost FROM signal_scores WHERE item_id=?", (other,)).fetchone()["reserve_boost"]
-    assert pgr_boost > 1.0
-    assert pgr_boost == pytest.approx(1.3, abs=0.02)    # 1 + 0.3
+    assert pgr_boost == pytest.approx(1.3, abs=0.02)    # severity 0.64 → capped at 1.3
     assert oth_boost == 1.0
 
 

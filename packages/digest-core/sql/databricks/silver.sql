@@ -130,8 +130,9 @@ CREATE TABLE IF NOT EXISTS pc_silver.reserving_signals (
     ultimate          DOUBLE,
     latest            DOUBLE,
     ibnr              DOUBLE,
-    prior_ibnr        DOUBLE,
-    deterioration_pct DOUBLE,                    -- (ibnr - prior_ibnr) / prior_ibnr
+    prior_ibnr        DOUBLE,                    -- prior snapshot IBNR (reference only)
+    cy_development    DOUBLE,                    -- one-year dev on prior AYs ($M, signed)
+    deterioration_pct DOUBLE,                    -- cy_development / ultimate (signed rate)
     direction         STRING,                    -- 'adverse' | 'favorable' | 'flat'
     CONSTRAINT pc_silver_reserving_pk PRIMARY KEY (insurer, lob, metric, as_of)
 )

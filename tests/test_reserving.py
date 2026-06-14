@@ -121,6 +121,9 @@ def test_chain_ladder_known_triangle():
     assert cl["latest_total"] == pytest.approx(450.0)
     assert cl["ultimate_total"] == pytest.approx(544.5)
     assert cl["ibnr"] == pytest.approx(94.5)
+    # One-year development on prior AYs: AY23 165−150=15, AY24 165−110=55, AY25 one
+    # cell → excluded ⇒ 70 (the newest AY contributes nothing, by construction).
+    assert cl["cy_development"] == pytest.approx(70.0)
 
 
 def test_chain_ladder_too_sparse():
@@ -141,17 +144,28 @@ def test_build_matrix():
 # ── deterioration signal ──────────────────────────────────────────────────
 
 
-def test_reserve_signal_adverse():
-    cl = {"ultimate_total": 544.5, "latest_total": 450.0, "ibnr": 94.5}
-    sig = reserving.reserve_signal("PGR", "auto", "incurred", "2026-05-01", cl, prior_ibnr=80.0)
+def test_reserve_signal_adverse_from_within_filing_development():
+    """deterioration_pct = cy_development / ultimate (signed rate), computed from the
+    single filing — independent of any prior snapshot."""
+    cl = {"ultimate_total": 544.5, "latest_total": 450.0, "ibnr": 94.5, "cy_development": 70.0}
+    sig = reserving.reserve_signal("PGR", "auto", "incurred", "2026-05-01", cl)
     assert sig["direction"] == "adverse"
-    assert sig["deterioration_pct"] == pytest.approx((94.5 - 80) / 80, abs=1e-3)
+    assert sig["cy_development"] == 70.0
+    assert sig["deterioration_pct"] == pytest.approx(70.0 / 544.5, abs=1e-3)
 
 
-def test_reserve_signal_no_prior():
-    cl = {"ultimate_total": 544.5, "latest_total": 450.0, "ibnr": 94.5}
-    sig = reserving.reserve_signal("PGR", "auto", "incurred", "2026-05-01", cl, prior_ibnr=None)
-    assert sig["deterioration_pct"] is None and sig["direction"] is None
+def test_reserve_signal_favorable_and_missing_development():
+    favorable = reserving.reserve_signal(
+        "PGR", "auto", "incurred", "2026-05-01",
+        {"ultimate_total": 544.5, "latest_total": 450.0, "ibnr": 94.5, "cy_development": -30.0})
+    assert favorable["direction"] == "favorable" and favorable["deterioration_pct"] < 0
+
+    # No development reading (e.g. a single-diagonal triangle) → None, regardless of
+    # prior_ibnr; the signal no longer depends on a prior snapshot.
+    none_sig = reserving.reserve_signal(
+        "PGR", "auto", "incurred", "2026-05-01",
+        {"ultimate_total": 544.5, "latest_total": 450.0, "ibnr": 94.5}, prior_ibnr=80.0)
+    assert none_sig["deterioration_pct"] is None and none_sig["direction"] is None
 
 
 # ── boost (pure, not yet wired into the formula) ──────────────────────────
@@ -187,7 +201,11 @@ def test_run_reserving_persists_signal(fresh_db):
     assert len(rows) == 1
     assert rows[0]["insurer"] == "PGR"
     assert rows[0]["ibnr"] == pytest.approx(94.5)
-    assert rows[0]["direction"] is None              # no prior estimate yet
+    # One snapshot now suffices: the within-filing diagonal gives development
+    # (AY23 +15, AY24 +55 ⇒ cy_development 70 on ultimate 544.5 → adverse).
+    assert rows[0]["direction"] == "adverse"
+    assert rows[0]["cy_development"] == pytest.approx(70.0)
+    assert rows[0]["deterioration_pct"] == pytest.approx(70.0 / 544.5, abs=1e-3)
 
 
 # ── triangle_keys: deterioration when both snapshots are loaded in one session ─
@@ -201,19 +219,51 @@ def _scaled_triangle(scale: float) -> Table:
                        ["2025", s(120), "", ""]])
 
 
-def test_reserving_measures_deterioration_when_both_snapshots_loaded(fresh_db):
-    """Regression: run_reserving must compute the prior snapshot too, so
-    deterioration is measured even when two annual snapshots (e.g. FY2024 +
-    FY2025 10-Ks) are loaded in the same session. Previously triangle_keys
-    returned only MAX(as_of), so the prior estimate was missing → always NULL."""
+def test_run_reserving_computes_every_snapshot(fresh_db):
+    """Regression: run_reserving computes EACH stored snapshot, not just MAX(as_of)
+    (triangle_keys returns all). Two annual snapshots loaded in one session → 2
+    estimates. (The deterioration signal itself now reads a single filing.)"""
     db.upsert_triangle_cells(parse_triangle(
-        _scaled_triangle(1.0), insurer="PGR", lob="auto", metric="paid", as_of="2024-12-31"))
+        _scaled_triangle(1.0), insurer="PGR", lob="auto", metric="incurred", as_of="2024-12-31"))
     db.upsert_triangle_cells(parse_triangle(
-        _scaled_triangle(1.3), insurer="PGR", lob="auto", metric="paid", as_of="2025-12-31"))
+        _scaled_triangle(1.3), insurer="PGR", lob="auto", metric="incurred", as_of="2025-12-31"))
 
-    counts = reserving.run_reserving()          # single run, both snapshots present
-    assert counts["computed"] == 2              # prior AND latest, not just latest
+    counts = reserving.run_reserving()
+    assert counts["computed"] == 2              # prior AND latest snapshot
 
-    # The latest snapshot now has a prior to compare against → adverse ~+30%.
-    sev = db.reserving_severity_map()
-    assert sev.get("PGR", 0.0) == pytest.approx(0.3, abs=0.02)
+
+def test_reserving_severity_map_exposure_weighted_within_filing(fresh_db):
+    """The reserve boost reads one-year INCURRED development off a single filing's
+    diagonal, normalized by chain-ladder ultimate and scaled by DEVELOPMENT_BOOST_K.
+    No second snapshot needed."""
+    db.upsert_triangle_cells(parse_triangle(
+        _standard_triangle(), insurer="PGR", lob="auto", metric="incurred",
+        as_of="2025-12-31"))                    # cy_development 70, ultimate 544.5 (> floor)
+    reserving.run_reserving()
+
+    expected = reserving.DEVELOPMENT_BOOST_K * (70.0 / 544.5)   # boost-scale severity
+    assert db.reserving_severity_map().get("PGR", 0.0) == pytest.approx(expected, abs=1e-3)
+
+
+def test_reserving_severity_map_floor_excludes_tiny_lines(fresh_db):
+    """A LOB below the materiality floor (Σ ultimate) can't enter the insurer
+    aggregate, so a small line on a near-zero base never swings the reserve signal."""
+    db.upsert_triangle_cells(parse_triangle(
+        _scaled_triangle(0.1), insurer="XYZ", lob="tiny", metric="incurred",
+        as_of="2025-12-31"))                    # ultimate ≈ 54 < RESERVE_ULTIMATE_FLOOR (250)
+    reserving.run_reserving()
+    assert db.reserving_severity_map().get("XYZ") is None
+
+
+def test_reserving_severity_map_respects_tunables(fresh_db):
+    """k and floor are user-tunable (Scoring Weights.md `reserving` section): k scales
+    the boost-scale severity; a high floor excludes an otherwise-material line."""
+    db.upsert_triangle_cells(parse_triangle(
+        _standard_triangle(), insurer="PGR", lob="auto", metric="incurred",
+        as_of="2025-12-31"))                    # cy_development 70, ultimate 544.5
+    reserving.run_reserving()
+
+    base = reserving.DEVELOPMENT_BOOST_K * (70.0 / 544.5)
+    assert db.reserving_severity_map(k=2 * reserving.DEVELOPMENT_BOOST_K).get("PGR") == \
+        pytest.approx(2 * base, abs=1e-3)       # doubling k doubles the severity
+    assert db.reserving_severity_map(floor=10_000.0).get("PGR") is None   # floor excludes it

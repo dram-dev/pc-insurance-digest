@@ -89,8 +89,9 @@ def test_chain_ladder_dominates_when_larger(fresh_db):
     # Confirmed adverse triangle (0.30) outranks the tone-derived severity (≤0.15).
     db.upsert_reserving_signal({
         "insurer": "PGR", "lob": "auto", "metric": "incurred", "as_of": "2026-03-31",
-        "ultimate": 600.0, "latest": 500.0, "ibnr": 100.0, "prior_ibnr": 80.0,
-        "deterioration_pct": 0.30, "direction": "adverse",
+        "ultimate": 600.0, "latest": 500.0, "ibnr": 100.0, "prior_ibnr": None,
+        # 36/600 = 6% one-year incurred development → K×0.06 = 0.30 boost-scale severity.
+        "cy_development": 36.0, "deterioration_pct": 0.06, "direction": "adverse",
     })
     _adverse_disclosure(score=1.0)
     assert db.reserving_severity_map()["PGR"] == pytest.approx(0.30)
