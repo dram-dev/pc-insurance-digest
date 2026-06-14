@@ -536,11 +536,24 @@ to macro digest's `80 Digest/`).
 
 Folder layout:
 - `Daily/YYYY-MM-DD.md` — one file per day, regenerated each publish
+- `Brief/<YYYY-MM-DD> Brief.md` — mobile-first front page (`brief.py`),
+  written during `publish`: two-axis regime + vitals, per-topic-capped top
+  signals, regulatory-pressure flag, connection threads, link to `[[date]]`.
+  Ported from macro-ai-digest's Brief; the console `digest brief` command is
+  a separate terminal alert view, not this note.
 - `Topics/<Topic Label>.md` — one file per topic with summarized items,
   upserted by ID
 - `Weekly/<YYYY-WW>.md` — Saturday weekly rollup (Wave 1: items grouped
   by topic; Wave 2 will add synthesis)
 - `_meta/Run Log.md` — append-only operations log
+
+**Reserve heat-grid width guard:** the EKG "Reserve adequacy" grid
+(`viz_lab.render_reserve_heatgrid`) shows one column per LOB. The XBRL
+component-facts ingest lands 80+ raw, un-canonicalized LOB segment-members,
+which produced an ~84-column table Obsidian could not render. The grid now
+filters to LOBs/insurers with real adverse|favorable development and hard-caps
+at `MAX_RESERVE_LOBS` (16). **LOB canonicalization (80+ raw members → the
+standard ~10 LOBs) is still the pending deeper fix** — see [[validate-computed-financials]].
 
 ## Known issues / debt
 
@@ -572,6 +585,7 @@ src/digest/
 │                 # + Wave 2 materiality field for leaderboard llm_judgment
 ├── regime.py     # Wave 2 two-axis regime detector (market_cycle × cat_load)
 ├── signals.py    # Wave 2 leaderboard formula + per-item score persistence
+├── brief.py      # Mobile-first Obsidian Brief note (Brief/<date> Brief.md); written in publish()
 ├── prices.py     # Alpha engine — daily price store (14 insurers + IAK/SPY); reuses outcomes.fetch_daily_closes
 ├── features.py   # Alpha engine — leakage-safe (ticker, as-of) feature panel: signal aggregates + warehouse facts + price controls
 ├── alpha.py      # Alpha engine — HistGB/LightGBM returns model; forward excess-return labels; purged walk-forward IC/long-short backtest
