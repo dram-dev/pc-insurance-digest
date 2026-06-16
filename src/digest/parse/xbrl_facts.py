@@ -76,10 +76,32 @@ _CONCEPTS: dict[str, tuple[str, str]] = {
     # triangle (incurred/paid) — also reshaped into loss_triangles for reserving
     "ShortdurationInsuranceContractsIncurredClaimsAndAllocatedClaimAdjustmentExpenseNet": ("triangle", "incurred"),
     "ShortdurationInsuranceContractsCumulativePaidClaimsAndAllocatedClaimAdjustmentExpenseNet": ("triangle", "paid"),
+    # (14) GAAP equity + share counts → book value / per-share / P-B for the
+    # valuation + CFO skills. StockholdersEquity is parent-only; the …Noncontrolling
+    # variant is total incl. NCI. Share concepts are COUNTS (see _COUNT_CONCEPTS).
+    "StockholdersEquity": ("equity", "common_equity"),
+    "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest": ("equity", "equity_incl_nci"),
+    "CommonStockSharesOutstanding": ("equity", "shares_outstanding"),
+    "EntityCommonStockSharesOutstanding": ("equity", "cover_shares"),
+    "WeightedAverageNumberOfDilutedSharesOutstanding": ("equity", "diluted_wavg_shares"),
+    # (15) capital structure — debt + interest expense for cost-of-capital / WACC /
+    # leverage and the liquidity skill's coverage ratios.
+    "LongTermDebtNoncurrent": ("capital_structure", "long_term_debt"),
+    "LongTermDebt": ("capital_structure", "long_term_debt_total"),
+    "InterestExpense": ("capital_structure", "interest_expense"),
+    # (16) liquidity — HoldCo cash + common dividends paid for the liquidity skill's
+    # runway / sources-and-uses / dividend-capacity reads.
+    "CashAndCashEquivalentsAtCarryingValue": ("liquidity", "cash_and_equivalents"),
+    "PaymentsOfDividendsCommonStock": ("liquidity", "dividends_paid"),
 }
 
 # Concepts reported as counts, not USD → never scale to millions.
-_COUNT_CONCEPTS = {"ShortdurationInsuranceContractsNumberOfReportedClaims"}
+_COUNT_CONCEPTS = {
+    "ShortdurationInsuranceContractsNumberOfReportedClaims",
+    "CommonStockSharesOutstanding",
+    "EntityCommonStockSharesOutstanding",
+    "WeightedAverageNumberOfDilutedSharesOutstanding",
+}
 
 # Dimensional axis localname → fact column carrying its member.
 _AXES: dict[str, str] = {
