@@ -1,0 +1,59 @@
+name: CI
+
+# Test + lint gate for the digest pipeline. Without this, dependency drift or a
+# broken import only surfaces when launchd runs the pipeline at 04:00. The test
+# job is the hard gate; lint is advisory until the existing findings are cleaned up.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: tests (py3.12)
+    runs-on: ubuntu-latest
+    env:
+      # The suite is hermetic (conftest forces a temp DB + disables the sink),
+      # but pin this off so nothing can reach Databricks even if a default flips.
+      DATABRICKS_ENABLED: "false"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      # core + ml (pandas/scikit-learn/lightgbm — test_alpha/test_features import
+      # pandas at collection time) + mcp (test_mcp_server). ml-mlx is Mac-only and
+      # test_alpha_mlx self-skips off arm64, so it is intentionally not installed.
+      - name: Sync dependencies
+        run: uv sync --frozen --extra ml --extra mcp
+
+      - name: Run test suite
+        run: uv run --no-sync pytest
+
+  lint:
+    name: ruff (advisory)
+    runs-on: ubuntu-latest
+    # Non-blocking on purpose: the tree currently has ~79 pre-existing ruff
+    # findings. This surfaces them on every run without failing the build. Once a
+    # cleanup pass brings `ruff check` to zero, flip continue-on-error to false.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Ruff lint (advisory)
+        run: uvx ruff@0.15.0 check .
