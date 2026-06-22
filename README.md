@@ -7,6 +7,8 @@ the same Obsidian vault (lands in `81 P&C Digest` next to `80 Digest`).
 For the full design context (locked decisions, scoring formula, regime axes,
 Regulatory Sonar, etc.), see [CLAUDE.md](CLAUDE.md).
 
+[![CI](https://github.com/dram-dev/pc-insurance-digest/actions/workflows/ci.yml/badge.svg)](https://github.com/dram-dev/pc-insurance-digest/actions/workflows/ci.yml)
+
 ## Status (Waves 1–4 shipped · all sources live · digest-core foundation extracted · local Analyst MCP agent · scoring-math wave 2026-06)
 
 **Pipeline:** `ingest → triage (Ollama Qwen2.5:14b) → summarize (MLX Qwen3.5-27B
@@ -342,6 +344,13 @@ calibration views, so analytics work with no warehouse.
 ```bash
 uv run pytest        # hermetic — no MLX / Ollama / network / vault required
 ```
+
+CI (GitHub Actions, `.github/workflows/ci.yml`) runs on every push to `master`
+and every PR: `uv sync --extra ml --extra mcp` then `pytest` as the required
+gate, plus an advisory `ruff` lint. The `digest pipeline` command is gated too —
+the required stages (ingest → triage → summarize → publish) print a run-quality
+summary and exit non-zero on failure, so a broken scheduled run can't be
+mistaken for a healthy one; the enrichment stages stay best-effort.
 
 ## Scheduling
 
