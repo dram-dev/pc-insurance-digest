@@ -1176,7 +1176,14 @@ def summarize(limit: int | None) -> None:
 @click.option("--run-type", default="manual", help="Tag for run_log (am/pm/manual)")
 @click.option("--skip-publish", is_flag=True, help="Don't write to Obsidian (debug)")
 def pipeline(run_type: str, skip_publish: bool) -> None:
-    """Full pipeline: ingest → triage → summarize → regime → signals → publish."""
+    """Full pipeline: ingest → triage → summarize → regime → signals → publish.
+
+    Required stages (ingest, triage, summarize, publish) gate the run: if one
+    fails the pipeline stops, prints a run-quality summary, and exits non-zero so
+    launchd/cron can't mistake a broken run for a good one. Enrichment stages
+    (regime, signals, price store) stay best-effort — a failure is recorded and
+    reported but never blocks the digest.
+    """
     from digest.triage import run_triage
     from digest.summarize import run_summarize
     from digest.obsidian import publish as obs_publish
@@ -1185,64 +1192,98 @@ def pipeline(run_type: str, skip_publish: bool) -> None:
 
     db.init_db()
 
-    console.rule("[bold cyan]stage 1: ingest")
-    run_ingest(INGESTORS, list(INGESTORS), run_type, console, per_source_rule=False)
+    failures: list[str] = []        # "stage (severity): error" for the summary
+    required_failure = False
 
-    console.rule("[bold cyan]stage 2: triage")
-    t = run_triage()
-    console.print(
-        f"  [green]✓[/green] kept={t['kept']} dropped={t['dropped']} errors={t['errors']}"
-    )
+    def _optional(stage_no: str, label: str, run) -> None:
+        """Run a best-effort stage; record + report a failure but never block."""
+        console.rule(f"[bold cyan]stage {stage_no}: {label}")
+        try:
+            run()
+        except Exception as exc:  # noqa: BLE001
+            console.print(f"  [yellow]⚠[/yellow] {label} skipped: {exc}")
+            failures.append(f"{label} (optional): {exc}")
 
-    console.rule("[bold cyan]stage 3: summarize")
-    s = run_summarize()
-    console.print(
-        f"  [green]✓[/green] succeeded={s['succeeded']} failed={s['failed']} ready={s['ready']}"
-    )
-
-    console.rule("[bold cyan]stage 4: regime")
+    # ── required: ingest → triage → summarize (a failure halts the run) ──────
     try:
-        if is_stale():
-            r = compute_regime()
-            console.print(f"  [green]✓[/green] recomputed: {r.summary_line()}")
-        else:
-            r = current_regime()
-            console.print(f"  [dim]✓ cached:[/dim] {r.summary_line()}")
-    except Exception as exc:  # noqa: BLE001
-        console.print(f"  [red]✗[/red] regime failed: {exc}")
+        console.rule("[bold cyan]stage 1: ingest")
+        run_ingest(INGESTORS, list(INGESTORS), run_type, console, per_source_rule=False)
 
-    console.rule("[bold cyan]stage 5: signals")
-    try:
-        sig = run_signals()
-        console.print(f"  [green]✓[/green] scored={sig['scored']}")
-    except Exception as exc:  # noqa: BLE001
-        console.print(f"  [red]✗[/red] signals failed: {exc}")
+        console.rule("[bold cyan]stage 2: triage")
+        t = run_triage()
+        console.print(
+            f"  [green]✓[/green] kept={t['kept']} dropped={t['dropped']} errors={t['errors']}"
+        )
 
-    # Alpha engine — refresh the daily price store (insurers + benchmarks) so the
-    # outcomes σ label and the returns model see fresh closes. Best-effort: a
-    # vendor throttle never blocks the digest.
-    console.rule("[bold cyan]stage 5b: price store")
-    try:
-        from digest.prices import run_prices
-        px = run_prices()
-        console.print(f"  [green]✓[/green] {px['rows']:,} price rows "
-                      f"({len(px['skipped'])} tickers skipped)")
+        console.rule("[bold cyan]stage 3: summarize")
+        s = run_summarize()
+        console.print(
+            f"  [green]✓[/green] succeeded={s['succeeded']} failed={s['failed']} ready={s['ready']}"
+        )
     except Exception as exc:  # noqa: BLE001
-        console.print(f"  [yellow]price store skipped:[/yellow] {exc}")
+        console.print(f"  [red]✗[/red] required stage failed: {exc}")
+        failures.append(f"ingest/triage/summarize (required): {exc}")
+        required_failure = True
 
+    # ── enrichment: best-effort, only if the core succeeded ─────────────────
+    if not required_failure:
+        def _regime() -> None:
+            if is_stale():
+                r = compute_regime()
+                console.print(f"  [green]✓[/green] recomputed: {r.summary_line()}")
+            else:
+                r = current_regime()
+                console.print(f"  [dim]✓ cached:[/dim] {r.summary_line()}")
+        _optional("4", "regime", _regime)
+
+        def _signals() -> None:
+            sig = run_signals()
+            console.print(f"  [green]✓[/green] scored={sig['scored']}")
+        _optional("5", "signals", _signals)
+
+        # Alpha engine — refresh the daily price store (insurers + benchmarks) so
+        # the outcomes σ label and the returns model see fresh closes. A vendor
+        # throttle never blocks the digest.
+        def _prices() -> None:
+            from digest.prices import run_prices
+            px = run_prices()
+            console.print(f"  [green]✓[/green] {px['rows']:,} price rows "
+                          f"({len(px['skipped'])} tickers skipped)")
+        _optional("5b", "price store", _prices)
+
+    # ── required: publish (the run's actual output) ─────────────────────────
+    publish_skipped = skip_publish
     if skip_publish:
         console.rule("[bold yellow]stage 6: publish (skipped)")
-        return
-    console.rule("[bold cyan]stage 6: publish")
-    try:
-        result = obs_publish()
-        console.print(
-            f"  [green]✓[/green] daily={result['daily_items']} items, "
-            f"topic_archives={result['topic_archives']}"
-        )
-        console.print(f"  [dim]→ {result['daily_path']}[/dim]")
-    except Exception as exc:  # noqa: BLE001
-        console.print(f"  [red]✗[/red] publish failed: {exc}")
+    elif required_failure:
+        console.rule("[bold yellow]stage 6: publish (skipped — upstream failure)")
+        publish_skipped = True
+    else:
+        console.rule("[bold cyan]stage 6: publish")
+        try:
+            result = obs_publish()
+            console.print(
+                f"  [green]✓[/green] daily={result['daily_items']} items, "
+                f"topic_archives={result['topic_archives']}"
+            )
+            console.print(f"  [dim]→ {result['daily_path']}[/dim]")
+        except Exception as exc:  # noqa: BLE001
+            console.print(f"  [red]✗[/red] publish failed: {exc}")
+            failures.append(f"publish (required): {exc}")
+            required_failure = True
+
+    # ── run-quality summary + exit code ─────────────────────────────────────
+    console.rule("[bold]run quality")
+    if not failures:
+        suffix = "  [dim](publish skipped)[/dim]" if publish_skipped else ""
+        console.print(f"  [green]✓[/green] all stages ok{suffix}")
+    else:
+        for f in failures:
+            console.print(f"  [red]•[/red] {f}")
+        console.print(f"  [dim]{len(failures)} stage failure(s)[/dim]")
+
+    if required_failure:
+        raise SystemExit(1)
 
 
 @main.command()

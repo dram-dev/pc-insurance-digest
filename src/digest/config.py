@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     #   summarize  SUMMARIZER_BACKEND    MLX_MODEL / SUMMARIZER_MODEL (per backend)
     #   regime     SUMMARIZER_BACKEND    (shares the summarizer backend)
     #   embeddings (Ollama only)         EMBEDDING_MODEL
-    #   weekly     (claude_cli_pro)      SUMMARIZER_MODEL
+    #   weekly     SUMMARIZER_BACKEND    (shares the summarizer backend)
 
     # Summarizer (long-form notes + regime judgment)
     summarizer_backend: str = Field(default="mlx_local", alias="SUMMARIZER_BACKEND")
