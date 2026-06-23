@@ -562,7 +562,7 @@ def learn_loop(horizon: int) -> None:
         console.print("  [green]✓[/green] " +
                       ", ".join(f"{h}d checked={n}" for h, n in counts.items()))
     except Exception as exc:  # noqa: BLE001
-        console.print(f"  [yellow]outcomes skipped:[/yellow] {exc}")
+        console.print(f"  [yellow]outcomes skipped:[/yellow] {escape(str(exc))}")
 
     # 2. Learned relevance scorer — run_best self-starts on whichever horizon
     #    has matured labels (tries 30d, falls back to 7d).
@@ -576,7 +576,7 @@ def learn_loop(horizon: int) -> None:
         else:
             console.print(f"  [yellow]{s.get('note', 'skipped')}[/yellow]")
     except Exception as exc:  # noqa: BLE001
-        console.print(f"  [yellow]learn skipped:[/yellow] {exc}")
+        console.print(f"  [yellow]learn skipped:[/yellow] {escape(str(exc))}")
 
     # 3. Alpha return model — train (honest walk-forward) then write forecasts.
     console.rule("[bold cyan]3/3 return model")
@@ -591,7 +591,7 @@ def learn_loop(horizon: int) -> None:
         else:
             console.print(f"  [yellow]{a.get('note', 'training skipped')}[/yellow] (n={a.get('n', 0)})")
     except Exception as exc:  # noqa: BLE001
-        console.print(f"  [yellow]forecast skipped:[/yellow] {exc}")
+        console.print(f"  [yellow]forecast skipped:[/yellow] {escape(str(exc))}")
 
 
 @main.command()
@@ -1368,7 +1368,7 @@ def publish(date_iso: str | None, topics_only: bool) -> None:
         )
         console.print(f"  [dim]→ {result['daily_path']}[/dim]")
     except Exception as exc:  # noqa: BLE001
-        console.print(f"  [red]✗[/red] {exc}")
+        console.print(f"  [red]✗[/red] {escape(str(exc))}")
 
 
 @main.command()
@@ -1400,7 +1400,7 @@ def weekly(date_iso: str | None, calibration: bool) -> None:
             f"  [green]✓[/green] {st['components']} components, {st['written']} rows"
         )
     except Exception as exc:  # noqa: BLE001
-        console.print(f"  [yellow]severity tape skipped:[/yellow] {exc}")
+        console.print(f"  [yellow]severity tape skipped:[/yellow] {escape(str(exc))}")
 
     console.rule("[bold cyan]weekly digest")
     try:
@@ -1411,7 +1411,7 @@ def weekly(date_iso: str | None, calibration: bool) -> None:
         )
         console.print(f"  [dim]→ {result['path']}[/dim]")
     except Exception as exc:  # noqa: BLE001
-        console.print(f"  [red]✗[/red] {exc}")
+        console.print(f"  [red]✗[/red] {escape(str(exc))}")
 
     # Calibration / learning loop — backtest matured items, then (re)train the
     # learned scorer on the labels. Best-effort: each is wrapped so a failure
@@ -1423,7 +1423,7 @@ def weekly(date_iso: str | None, calibration: bool) -> None:
             oc = run_outcomes()
             console.print(f"  [green]✓[/green] outcomes: {oc}")
         except Exception as exc:  # noqa: BLE001
-            console.print(f"  [yellow]outcomes skipped:[/yellow] {exc}")
+            console.print(f"  [yellow]outcomes skipped:[/yellow] {escape(str(exc))}")
         try:
             from digest import learn as learn_mod
             # Prefer the 30d horizon; fall back to 7d so the learned scorer
@@ -1436,7 +1436,7 @@ def weekly(date_iso: str | None, calibration: bool) -> None:
             else:
                 console.print("  [dim]learn: not enough labeled items yet (need ≥12)[/dim]")
         except Exception as exc:  # noqa: BLE001
-            console.print(f"  [yellow]learn skipped:[/yellow] {exc}")
+            console.print(f"  [yellow]learn skipped:[/yellow] {escape(str(exc))}")
 
     # Refresh the Signal Desk dashboard + Home cockpit so the _meta/ snapshot
     # visuals track the freshest DB state on the weekly cadence. Runs after the
@@ -1448,7 +1448,7 @@ def weekly(date_iso: str | None, calibration: bool) -> None:
         for p in write_dashboard():
             console.print(f"  [green]✓[/green] {p}")
     except Exception as exc:  # noqa: BLE001
-        console.print(f"  [yellow]dashboard skipped:[/yellow] {exc}")
+        console.print(f"  [yellow]dashboard skipped:[/yellow] {escape(str(exc))}")
 
 
 @main.command()
@@ -1506,7 +1506,7 @@ def viz(open_after: bool, lab: bool) -> None:
         for p in write_viz_pages(open_after=open_after):
             console.print(f"  [green]✓[/green] {p}")
     except Exception as exc:  # noqa: BLE001
-        console.print(f"  [red]✗[/red] {exc}")
+        console.print(f"  [red]✗[/red] {escape(str(exc))}")
 
 
 @main.command()
@@ -1525,7 +1525,7 @@ def dashboard(open_after: bool) -> None:
         for p in write_dashboard(open_after=open_after):
             console.print(f"  [green]✓[/green] {p}")
     except Exception as exc:  # noqa: BLE001
-        console.print(f"  [red]✗[/red] {exc}")
+        console.print(f"  [red]✗[/red] {escape(str(exc))}")
 
 
 @main.command()
