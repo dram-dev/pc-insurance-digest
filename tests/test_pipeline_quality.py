@@ -79,3 +79,15 @@ def test_pipeline_skip_publish_exits_zero(stub_stages):
     res = CliRunner().invoke(cli.main, ["pipeline", "--skip-publish"])
     assert res.exit_code == 0, res.output
     assert "all stages ok" in res.output
+
+
+def test_optional_failure_with_markup_chars_stays_non_fatal(stub_stages):
+    # An exception message carrying Rich-markup tokens must not be re-parsed as
+    # markup: "[/]" would raise MarkupError (crashing a best-effort stage) and
+    # "[active]" would be silently swallowed. Escaping keeps the optional failure
+    # non-fatal and preserves the message verbatim.
+    stub_stages.setattr(signals, "run_signals", _boom("broke [/] on [active] items"))
+    res = CliRunner().invoke(cli.main, ["pipeline"])
+    assert res.exit_code == 0, res.output            # optional stage stays non-fatal
+    assert "signals (optional)" in res.output
+    assert "[active]" in res.output                  # bracket content preserved, not eaten
