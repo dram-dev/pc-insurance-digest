@@ -1253,12 +1253,10 @@ def pipeline(run_type: str, skip_publish: bool) -> None:
         _optional("5b", "price store", _prices)
 
     # ── required: publish (the run's actual output) ─────────────────────────
-    publish_skipped = skip_publish
     if skip_publish:
         console.rule("[bold yellow]stage 6: publish (skipped)")
     elif required_failure:
         console.rule("[bold yellow]stage 6: publish (skipped — upstream failure)")
-        publish_skipped = True
     else:
         console.rule("[bold cyan]stage 6: publish")
         try:
@@ -1276,7 +1274,7 @@ def pipeline(run_type: str, skip_publish: bool) -> None:
     # ── run-quality summary + exit code ─────────────────────────────────────
     console.rule("[bold]run quality")
     if not failures:
-        suffix = "  [dim](publish skipped)[/dim]" if publish_skipped else ""
+        suffix = "  [dim](publish skipped)[/dim]" if skip_publish else ""
         console.print(f"  [green]✓[/green] all stages ok{suffix}")
     else:
         for f in failures:
