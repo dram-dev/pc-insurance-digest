@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import math
+from datetime import datetime, timezone
 
 import numpy as np
 import pytest
@@ -42,11 +43,16 @@ def test_score_item_exponents_w1_identity_and_zero_kills_factor():
         published_at=None, ingested_at="2026-06-09T00:00:00+00:00",
         materiality_score=1.2, metadata_json='{"ticker": "PGR"}',
     )
-    plain = signals.score_item(row, regime)
-    w1 = signals.score_item(row, regime, exponents={f: 1.0 for f in FACTORS})
+    # Pin the recency reference so the test is hermetic — score_item otherwise
+    # decays recency from the real clock, drifting the rounded score day to day.
+    as_of = datetime(2026, 6, 20, tzinfo=timezone.utc)
+    plain = signals.score_item(row, regime, as_of=as_of)
+    w1 = signals.score_item(row, regime, exponents={f: 1.0 for f in FACTORS}, as_of=as_of)
     assert w1.score == pytest.approx(plain.score, rel=1e-6)   # w=1 ≡ heuristic
-    no_topic = signals.score_item(row, regime, exponents={"topic_boost": 0.0})
-    assert no_topic.score == pytest.approx(plain.score / plain.topic_boost, rel=1e-4)
+    no_topic = signals.score_item(row, regime, exponents={"topic_boost": 0.0}, as_of=as_of)
+    # score is round(…,4) and topic_boost round(…,3), so the ratio identity holds
+    # only to that rounding — compare at 1e-3, not knife-edge 1e-4.
+    assert no_topic.score == pytest.approx(plain.score / plain.topic_boost, rel=1e-3)
     assert no_topic.topic_boost == plain.topic_boost          # factor persists RAW
 
 
