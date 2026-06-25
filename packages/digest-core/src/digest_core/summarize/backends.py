@@ -27,7 +27,7 @@ _MLX_LOCK_PATH = os.environ.get("MLX_LOCK_PATH", "/tmp/digest-mlx.lock")
 
 
 @contextlib.contextmanager
-def _mlx_serialize():
+def mlx_serialize():
     """Serialize MLX-server requests across processes.
 
     pc-insurance-digest and macro-ai-digest share one mlx_lm.server; two
@@ -205,7 +205,7 @@ def call_mlx_local(system_prompt: str, user_prompt: str, cfg: BackendConfig) -> 
     try:
         # Serialize the generate call so PC + macro never hit the shared server
         # concurrently (held only for this request, not the whole batch).
-        with _mlx_serialize():
+        with mlx_serialize():
             r = requests.post(
                 url,
                 json={
