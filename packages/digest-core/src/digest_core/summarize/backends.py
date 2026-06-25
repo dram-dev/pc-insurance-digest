@@ -14,11 +14,45 @@ Backends:
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
+import os
 import subprocess
 from dataclasses import dataclass
 
 import requests
+
+_MLX_LOCK_PATH = os.environ.get("MLX_LOCK_PATH", "/tmp/digest-mlx.lock")
+
+
+@contextlib.contextmanager
+def _mlx_serialize():
+    """Serialize MLX-server requests across processes.
+
+    pc-insurance-digest and macro-ai-digest share one mlx_lm.server; two
+    concurrent requests get batched with mismatched shapes and can Metal-OOM the
+    shared server. A cross-process flock makes the two digests take turns —
+    uncontended acquire is instant, contention just waits for the in-flight
+    request. Degrades to a no-op if the lock can't be taken (perms / non-POSIX),
+    so it can never block a summary.
+    """
+    fd = None
+    try:
+        fd = os.open(_MLX_LOCK_PATH, os.O_CREAT | os.O_RDWR, 0o666)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+    except OSError:
+        if fd is not None:
+            os.close(fd)
+            fd = None
+    try:
+        yield
+    finally:
+        if fd is not None:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
 
 
 class BackendError(Exception):
@@ -169,20 +203,23 @@ def call_mlx_local(system_prompt: str, user_prompt: str, cfg: BackendConfig) -> 
     """
     url = cfg.mlx_server_url.rstrip("/") + "/v1/chat/completions"
     try:
-        r = requests.post(
-            url,
-            json={
-                "model": cfg.mlx_model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                "max_tokens": cfg.max_tokens,
-                "temperature": cfg.temperature,
-                "chat_template_kwargs": {"enable_thinking": False},
-            },
-            timeout=cfg.timeout_sec,
-        )
+        # Serialize the generate call so PC + macro never hit the shared server
+        # concurrently (held only for this request, not the whole batch).
+        with _mlx_serialize():
+            r = requests.post(
+                url,
+                json={
+                    "model": cfg.mlx_model,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "max_tokens": cfg.max_tokens,
+                    "temperature": cfg.temperature,
+                    "chat_template_kwargs": {"enable_thinking": False},
+                },
+                timeout=cfg.timeout_sec,
+            )
         r.raise_for_status()
     except requests.ConnectionError as exc:
         raise BackendError(
