@@ -184,13 +184,29 @@ def check_launchd() -> dict:
                 }
             else:
                 jobs[label] = {"loaded": False}
+        # A job with a live pid is running NOW, so a nonzero last_exit on it is a
+        # previous instance that KeepAlive already restarted (recovered) — warn,
+        # don't fail. A nonzero exit on a NOT-running job is a genuinely failed run
+        # (e.g. a scheduled pipeline that exited non-zero), which stays a hard fail.
+        def _running(j: dict) -> bool:
+            return str(j.get("pid", "-")).isdigit()
+
         bad_exit = [
             lbl for lbl, j in jobs.items()
-            if j.get("loaded") and j.get("last_exit", "0") not in ("0", "-")
+            if j.get("loaded") and not _running(j)
+            and j.get("last_exit", "0") not in ("0", "-")
+        ]
+        recovered = [
+            lbl for lbl, j in jobs.items()
+            if j.get("loaded") and _running(j)
+            and j.get("last_exit", "0") not in ("0", "-")
         ]
         not_loaded = [lbl for lbl, j in jobs.items() if not j.get("loaded")]
-        status = "fail" if bad_exit else ("warn" if not_loaded else "ok")
-        return {"status": status, "details": {"jobs": jobs, "bad_exit": bad_exit}}
+        status = "fail" if bad_exit else ("warn" if (recovered or not_loaded) else "ok")
+        return {
+            "status": status,
+            "details": {"jobs": jobs, "bad_exit": bad_exit, "recovered": recovered},
+        }
     except Exception as exc:
         return {"status": "fail", "details": {"error": str(exc)}}
 
