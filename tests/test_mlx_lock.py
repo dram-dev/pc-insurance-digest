@@ -16,7 +16,7 @@ from digest_core.summarize import backends
 def test_serialize_acquires_and_releases_repeatedly():
     # Re-acquiring after release in the same process must not deadlock or raise.
     for _ in range(3):
-        with backends._mlx_serialize():
+        with backends.mlx_serialize():
             pass
 
 
@@ -25,7 +25,7 @@ def test_serialize_degrades_to_noop_on_unusable_lock_path(monkeypatch, tmp_path)
     # can never be blocked by the lock itself.
     monkeypatch.setattr(backends, "_MLX_LOCK_PATH", str(tmp_path / "missing-dir" / "x.lock"))
     entered = False
-    with backends._mlx_serialize():
+    with backends.mlx_serialize():
         entered = True
     assert entered
 
@@ -39,7 +39,7 @@ def test_call_mlx_local_holds_the_lock_around_the_post(monkeypatch):
         yield
         state["exited"] = True
 
-    monkeypatch.setattr(backends, "_mlx_serialize", _spy)
+    monkeypatch.setattr(backends, "mlx_serialize", _spy)
 
     def _fake_post(*args, **kwargs):
         state["locked_during_post"] = state.get("entered") and not state.get("exited")
