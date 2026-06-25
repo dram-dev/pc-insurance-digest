@@ -53,7 +53,8 @@ def test_brief_regime_and_vitals_show_zscore_not_raw_level(fresh_db):
     assert "📡" in text and "Transitioning To Hard" in text and "×1.32" in text
     assert "Reinsurance pricing softening" in text           # evidence one-liner
     assert "severity +0.50σ" in text                         # the z, not the level
-    assert "140" not in text                                 # raw level never shown
+    assert "140.2" not in text                               # raw level never shown
+    # (bare "140" would false-match the generated_at timestamp microseconds)
 
 
 def test_brief_suppresses_backend_error_evidence(fresh_db):
