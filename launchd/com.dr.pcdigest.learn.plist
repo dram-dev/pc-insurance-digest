@@ -23,7 +23,7 @@
         <!-- /usr/sbin needed so joblib/sklearn can find `sysctl` for the CPU-core
              count (otherwise it warns + dumps a benign traceback to stderr). -->
         <key>PATH</key>
-        <string>/Users/dramsey/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <string>/Users/dramsey/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/usr/sbin:/sbin:/bin</string>
         <!-- Local-only training job; the alpha-engine warehouse tables aren't
              provisioned, so keep the best-effort sink off to avoid connect
              latency/hangs. Remove once bronze.prices/silver.return_forecasts exist. -->
