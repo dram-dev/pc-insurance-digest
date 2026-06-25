@@ -68,6 +68,46 @@ onto the digest's SQLite warehouse. You cannot write to it.
   settlement lifecycle; subrogation & salvage; fraud signals; litigation rate,
   attorney representation, nuclear verdicts, and social inflation lifting severity.
 
+**Insurance accounting (GAAP & statutory)**
+- Dual-framework literacy: GAAP (10-K, accrual) vs **statutory / SAP** (NAIC annual
+  statement, liquidation-biased). Why the same book shows two capital numbers —
+  shareholders' equity vs **policyholders' surplus** — and the reconciling items: DAC
+  (GAAP asset / SAP expensed), AFS bonds (GAAP fair value + AOCI / SAP amortized cost),
+  non-admitted assets, SSAP-101 DTA admittance, Schedule F provision for reinsurance;
+  the change-in-surplus account.
+- Ceded **reinsurance accounting**: gross→ceded→net, recoverables as an asset and
+  Schedule F credit risk, ceding commission, retroactive (deferred-gain) vs prospective,
+  and the **risk-transfer 10-10 / ERD** line between reinsurance and deposit accounting.
+  Earnings quality — reserve releases and realized-gain timing distorting reported income.
+
+**Corporate finance & valuation**
+- Insurers are valued off **book value and ROE vs cost of equity**, not EBITDA multiples:
+  justified **P/B = (ROE−g)/(Ke−g)**, residual-income / excess-return intrinsic value,
+  reconciling DDM, peer P/B-on-ROE regression, sum-of-the-parts (underwriting +
+  investment), through-the-cycle **normalized** earnings; operating ROE vs reported
+  (strip realized gains / AOCI).
+- **Capital adequacy & solvency**: NAIC **RBC** (R0–R5, covariance, ACL, action levels —
+  R4 reserve risk dominates P&C), AM Best **BCAR**, premium-to-surplus and reserve
+  leverage, IRIS ratios.
+
+**Investment & ALM**
+- The asset side as an insurance problem: **float** and **cost of float** (negative =
+  paid to hold), net investment income, **book yield vs new-money yield** and the
+  reinvestment dynamic, **investment leverage** geared into ROE. Asset-liability
+  **duration matching** and the gap; the **AOCI rate shock** to GAAP equity (and why
+  economic surplus moves less — P&C reserves aren't marked); portfolio credit quality /
+  fair-value hierarchy; realized vs unrealized total return.
+
+**CFO / treasury — cost of capital & liquidity**
+- **Cost of capital**: CAPM cost of equity (insurer betas), after-tax cost of debt,
+  WACC, capital structure and holding-company **double leverage**, **RAROC** / economic
+  capital, the **economic-profit (ROE−Ke)** spread, frictional cost of capital. Ke (not
+  WACC) is the usual insurer hurdle; value is created when ROE > Ke.
+- **Liquidity**: the HoldCo/OpCo split (cash trapped in regulated subs), statutory
+  **dividend capacity**, fixed-charge / interest coverage and holdco **cash runway**,
+  sources & uses, **catastrophe liquidity** and contingent capital (FHLB / revolver /
+  cat bonds), debt maturity ladder. Solvency ≠ liquidity.
+
 **Statistics & data science**
 - GLMs with offsets; credibility as Bayesian shrinkage / hierarchical pooling;
   count models (Poisson / negative-binomial, over-dispersion) and heavy-tailed
@@ -156,6 +196,31 @@ under `.claude/skills/<name>/` and run its script with `Bash`.
 - **`severity-trend-decomposition`** — log-linear loss-cost trend split into
   frequency × severity over `severity_index` / FRED series. Helper:
   `severity_trend.py …`.
+
+*Accounting / finance / investment / CFO (financial-statement & capital lenses):*
+
+- **`statutory-gaap-bridge`** — reconcile GAAP shareholders' equity ↔ NAIC statutory
+  surplus (DAC, AOCI, non-admitted assets) and decompose the change-in-surplus account.
+  Statutory surplus — not GAAP equity — is the denominator for RBC / dividends /
+  leverage. Helper: `statutory_gaap_bridge.py --db … --insurer … [--change]` (`--demo`).
+- **`reinsurance-accounting`** — gross→ceded→net rollup, recoverable-to-surplus leverage,
+  and the risk-transfer 10-10 / ERD test (reinsurance vs deposit accounting). Helper:
+  `reinsurance_accounting.py [--mode risk_transfer] …` (or `--db`, `--demo`).
+- **`insurer-capital-adequacy`** — NAIC RBC (R0–R5 + covariance, action levels), AM Best
+  BCAR, premium-to-surplus / reserve leverage, IRIS. Helper: `capital_adequacy.py --r0 …
+  --r4 … --nwp … --surplus …` (or `--db`, `--demo`).
+- **`insurer-valuation`** — justified P/B (ROE−g)/(Ke−g), residual-income value, DDM,
+  operating-ROE split, peer P/B-on-ROE line, vs market price. Helper:
+  `insurer_valuation.py --book-value … -r … -g … [--peers …]` (or `--db`, `--demo`).
+- **`insurance-investment-portfolio`** — float & cost of float, book vs new-money yield,
+  investment leverage, ALM duration gap + AOCI rate shock. Helper:
+  `investment_portfolio.py --db … --asset-duration … --rate-shock …` (or `--demo`).
+- **`cost-of-capital`** — CAPM Ke, WACC, capital structure / double leverage, RAROC,
+  economic-profit (ROE−Ke) spread; β from the price store. Helper: `cost_of_capital.py
+  --risk-free … --beta … --erp … [--db --compute-beta]` (or `--demo`).
+- **`insurer-liquidity`** — statutory dividend capacity, HoldCo coverage & cash runway,
+  catastrophe liquidity stress. Helper: `insurer_liquidity.py --prior-surplus …
+  --interest … --common-dividends …` (or `--db`, `--demo`).
 
 Each skill folder is `.claude/skills/<name>/` (SKILL.md + reference.md + a
 verified stdlib `scripts/` helper). Reach for one whenever a question needs a

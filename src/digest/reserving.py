@@ -29,6 +29,14 @@ from digest.outcomes import match_insurer
 logger = logging.getLogger(__name__)
 
 RESERVE_BOOST_CAP = 1.3      # max multiplier from adverse reserve development
+# One-year (calendar-year) reserve development is a small rate — ~1-3% adverse in a
+# normal year. Scale it so a few-percent adverse year reads meaningfully while the
+# 1.3 cap stays reserved for genuine double-digit deterioration (asbestos / PFAS /
+# nuclear-verdict-scale). Applied in db.reserving_severity_map (boost-scale severity).
+DEVELOPMENT_BOOST_K = 5.0
+# Exclude immaterial LOBs from the insurer-level aggregate so a tiny line on a near-
+# zero base can't swing a large carrier's reserve signal ($M of chain-ladder ultimate).
+RESERVE_ULTIMATE_FLOOR = 250.0
 
 
 def build_matrix(rows: list) -> tuple[list[int], np.ndarray]:
@@ -68,8 +76,9 @@ def chain_ladder(mat: np.ndarray) -> dict | None:
     for j in range(n_dev - 1):
         cdf[j] = float(np.prod(factors[j:]))
 
-    # Per accident year: develop the latest observed cell to ultimate.
-    latest_total = ultimate_total = 0.0
+    # Per accident year: develop the latest observed cell to ultimate, and read the
+    # one-year calendar-year development (latest valuation − the prior diagonal cell).
+    latest_total = ultimate_total = cy_dev = 0.0
     for i in range(mat.shape[0]):
         observed = np.where(~np.isnan(mat[i]))[0]
         if observed.size == 0:
@@ -78,6 +87,12 @@ def chain_ladder(mat: np.ndarray) -> dict | None:
         latest = float(mat[i, last_j])
         latest_total += latest
         ultimate_total += latest * cdf[last_j]
+        # Development booked on THIS (prior) accident year over the last 12 months =
+        # latest diagonal − second-latest diagonal. The newest accident year has a
+        # single observed cell → contributes nothing, so it's excluded for free
+        # (no maturity-mismatch artifact from a fresh, mostly-unpaid AY).
+        if observed.size >= 2:
+            cy_dev += latest - float(mat[i, int(observed[-2])])
 
     return {
         "dev_factors": factors.tolist(),
@@ -85,22 +100,34 @@ def chain_ladder(mat: np.ndarray) -> dict | None:
         "latest_total": round(latest_total, 2),
         "ultimate_total": round(ultimate_total, 2),
         "ibnr": round(ultimate_total - latest_total, 2),
+        "cy_development": round(cy_dev, 2),
     }
 
 
 def reserve_signal(insurer: str, lob: str, metric: str, as_of: str,
-                   cl: dict, prior_ibnr: float | None) -> dict:
-    """Assemble a reserving_signals row, classifying development vs. the prior IBNR."""
-    ibnr = cl["ibnr"]
+                   cl: dict, prior_ibnr: float | None = None) -> dict:
+    """Assemble a reserving_signals row.
+
+    `deterioration_pct` is the one-year calendar-year development on PRIOR accident
+    years — `cl['cy_development']` (read off the latest-vs-second-latest diagonal of
+    THIS filing's triangle) normalized by the chain-ladder ultimate: a signed
+    development RATE, + adverse / − favorable. This replaces the old cross-snapshot
+    `(ibnr − prior_ibnr)/|prior_ibnr|`, which conflated a fresh immature accident
+    year with genuine re-estimation and exploded on near-zero IBNR bases. The signal
+    needs only the single filing; `prior_ibnr` is kept as a reference column (the
+    prior snapshot's total IBNR) but no longer drives the classification."""
+    ultimate = cl["ultimate_total"]
+    cy_dev = cl.get("cy_development")
     deterioration = direction = None
-    if prior_ibnr is not None and prior_ibnr != 0:
-        deterioration = round((ibnr - prior_ibnr) / abs(prior_ibnr), 4)
-        direction = ("adverse" if ibnr > prior_ibnr
-                     else "favorable" if ibnr < prior_ibnr else "flat")
+    if cy_dev is not None and ultimate and ultimate > 0:
+        deterioration = round(cy_dev / ultimate, 4)
+        direction = ("adverse" if cy_dev > 0
+                     else "favorable" if cy_dev < 0 else "flat")
     return {
         "insurer": insurer, "lob": lob, "metric": metric, "as_of": as_of,
-        "ultimate": cl["ultimate_total"], "latest": cl["latest_total"],
-        "ibnr": ibnr, "prior_ibnr": prior_ibnr,
+        "ultimate": ultimate, "latest": cl["latest_total"],
+        "ibnr": cl["ibnr"], "prior_ibnr": prior_ibnr,
+        "cy_development": cy_dev,
         "deterioration_pct": deterioration, "direction": direction,
     }
 

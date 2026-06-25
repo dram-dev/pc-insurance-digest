@@ -56,6 +56,30 @@ def test_extract_facts_registry_and_scaling():
     assert all(f["as_of"] == "2025-12-31" for f in facts.values())
 
 
+def test_as_of_prefers_document_period_end_over_late_instant():
+    """Regression: a post-close instant fact (e.g. a 2025-03-31 maturity carried in a
+    FY2024 10-K) must NOT push the snapshot label past year-end. dei:DocumentPeriodEndDate
+    is the authoritative fiscal as-of — this is the CB/CINF prior-diagonal leak fixed."""
+    inst = (
+        '<?xml version="1.0"?>'
+        '<xbrl xmlns="http://www.xbrl.org/2003/instance"'
+        ' xmlns:us-gaap="http://fasb.org/us-gaap/2025"'
+        ' xmlns:dei="http://xbrl.sec.gov/dei/2025">'
+        '<context id="fy24"><entity><identifier scheme="s">1</identifier></entity>'
+        '<period><startDate>2024-01-01</startDate><endDate>2024-12-31</endDate></period></context>'
+        '<context id="post"><entity><identifier scheme="s">1</identifier></entity>'
+        '<period><instant>2025-03-31</instant></period></context>'
+        '<dei:DocumentPeriodEndDate contextRef="fy24">2024-12-31</dei:DocumentPeriodEndDate>'
+        # registered concept tagged at a LATER instant than year-end — the pollutant
+        '<us-gaap:ShortdurationInsuranceContractsIncurredClaimsAndAllocatedClaimAdjustmentExpenseNet'
+        ' contextRef="post" unitRef="u" decimals="-6">900000000</us-gaap:ShortdurationInsuranceContractsIncurredClaimsAndAllocatedClaimAdjustmentExpenseNet>'
+        '<us-gaap:PremiumsEarnedNet contextRef="fy24" unitRef="u" decimals="-6">5000000000</us-gaap:PremiumsEarnedNet>'
+        '</xbrl>'
+    )
+    facts = extract_facts(inst, insurer="DEMO")
+    assert facts and all(f["as_of"] == "2024-12-31" for f in facts)
+
+
 def test_triangle_reshape_from_facts():
     cells = triangle_cells_from_facts(extract_facts(_instance(), insurer="DEMO"))
     assert len(cells) == 1

@@ -55,13 +55,33 @@ def _get(url: str, timeout: int = 60) -> requests.Response:
     return r
 
 
-def _latest_10k(cik: str) -> tuple[str, str, str] | tuple[None, None, None]:
+def _nth_10k(
+    cik: str, n: int = 0
+) -> tuple[str, str, str, str] | tuple[None, None, None, None]:
+    """The n-th most recent 10-K's (accession_no_dashes, primary_doc, filing_date,
+    report_date). n=0 is the latest annual filing, n=1 the prior year, etc.
+
+    Returns a 4-tuple of Nones when fewer than n+1 10-Ks sit in the recent-filings
+    window (the last ~2-3 annuals always do). `report_date` is the period-of-report
+    (fiscal year-end) — handy for selection/logging; the loss-triangle `as_of` is
+    derived independently from the XBRL fact contexts downstream."""
     rec = _get(_SUBMISSIONS.format(cik=cik)).json().get("filings", {}).get("recent", {})
-    for i, form in enumerate(rec.get("form", [])):
-        if form == "10-K":
+    forms = rec.get("form", [])
+    report_dates = rec.get("reportDate", [None] * len(forms))
+    seen = 0
+    for i, form in enumerate(forms):
+        if form != "10-K":
+            continue
+        if seen == n:
             return (rec["accessionNumber"][i].replace("-", ""),
-                    rec["primaryDocument"][i], rec["filingDate"][i])
-    return None, None, None
+                    rec["primaryDocument"][i], rec["filingDate"][i], report_dates[i])
+        seen += 1
+    return None, None, None, None
+
+
+def _latest_10k(cik: str) -> tuple[str, str, str] | tuple[None, None, None]:
+    accession, primary, filing_date, _report = _nth_10k(cik, 0)
+    return accession, primary, filing_date
 
 
 def _rfile_candidates(base: str) -> list[tuple[str, str]]:
@@ -81,12 +101,15 @@ def _rfile_candidates(base: str) -> list[tuple[str, str]]:
     return out
 
 
-def fetch_instance_xml(cik: str) -> tuple[str, str]:
-    """(XBRL instance XML, filing_date) for a CIK's latest 10-K — the lean fetch
-    the component-fact ingest needs (no R-files)."""
-    accession, primary, filing_date = _latest_10k(cik)
+def fetch_instance_xml(cik: str, n: int = 0) -> tuple[str, str]:
+    """(XBRL instance XML, filing_date) for a CIK's n-th most recent 10-K — the
+    lean fetch the component-fact ingest needs (no R-files).
+
+    n=0 is the latest annual diagonal, n=1 the prior year, etc. Ingesting n=0 AND
+    n=1 lands the two annual snapshots reserve_deterioration_boost compares."""
+    accession, primary, filing_date, _report = _nth_10k(cik, n)
     if not accession:
-        raise RuntimeError("no 10-K found")
+        raise RuntimeError(f"no 10-K at diagonal n={n}")
     base = f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{accession}"
     instance = _get(f"{base}/{re.sub(r'.htm$', '_htm.xml', primary)}").text
     return instance, filing_date

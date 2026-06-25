@@ -277,9 +277,19 @@ across the pipeline:
 
   `reserve_deterioration_boost` (Databricks Option 5) fires when an item names an
   insurer with adverse reserve development in `reserving_signals`:
-  `min(1 + adverse_IBNR_deterioration, 1.3)`. **Neutral (1.0) until `digest
-  reserving` produces data** (reads `db.reserving_severity_map()`), so the
-  formula is behaviour-preserving until loss-triangle ingestion is live.
+  `min(1 + k·max(insurer_dev_rate, 0), 1.3)`. `insurer_dev_rate` is the
+  **exposure-weighted one-year incurred development** — `Σ_LOB cy_development /
+  Σ_LOB ultimate` over the latest snapshot's incurred LOBs above the materiality
+  floor, where `cy_development` is the within-filing diagonal (latest − second-latest)
+  development on PRIOR accident years (so a fresh immature AY is excluded). `k`
+  (default 5) and the `ultimate_floor` ($250M) are tunable via the `reserving`
+  section of Scoring Weights.md. This replaced the original cross-snapshot
+  `(ibnr − prior_ibnr)/|prior_ibnr|` (2026-06-14), which conflated a green accident
+  year with re-estimation and pinned the boost at cap for most insurers. **Neutral
+  (1.0) until `digest reserving` produces data** (reads `db.reserving_severity_map()`)
+  and when an insurer's book nets favorable, so the formula stays behaviour-preserving
+  until loss-triangle ingestion is live. Needs only ONE 10-K (a second annual diagonal
+  is a cross-check / `prior_ibnr` reference, not required).
 
   Separately, **`learned_score`** (Databricks Option 4) is persisted on each
   `signal_scores` row alongside the heuristic `score` whenever a trained model
@@ -297,8 +307,10 @@ across the pipeline:
   Sections: `sources`, `topics`, `insurer_priority`, `insurer_names`,
   `keyword_boosts` (incl. `stack_cap`), `burden_intensity`, `signal_tiers`,
   `recency_half_lives`, `credibility` (`apply`/`gamma`/`horizon_days`),
-  `loglinear` (`apply`). Regex patterns for the keyword boosts stay
-  code-side; only the boost VALUES are tunable.
+  `loglinear` (`apply`), `reserving` (`development_boost_k`/`ultimate_floor`
+  — the Lead 6 reserve-deterioration boost scale + LOB materiality floor).
+  Regex patterns for the keyword boosts stay code-side; only the boost
+  VALUES are tunable.
 
 - **Scoring-math wave 1 (2026-06-09):**
   - *Recency* is true exponential decay `2^(−age/h)` with per-topic

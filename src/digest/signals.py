@@ -282,6 +282,13 @@ _DEFAULT_WEIGHTS: dict[str, dict[str, float]] = {
     # learned exponents once its two-consecutive-pass gate is also met.
     "credibility": {"apply": 0.0, "gamma": 0.5, "horizon_days": 30.0},
     "loglinear":   {"apply": 0.0},
+    # Reserving (Lead 6) boost calibration — development_boost_k scales the signed
+    # one-year incurred development rate into a boost-scale severity; ultimate_floor
+    # ($M) drops immaterial LOBs from the insurer aggregate. Kept literal here to
+    # avoid importing digest.reserving (and its heavy outcomes dep) at signals load
+    # time; these MIRROR reserving.DEVELOPMENT_BOOST_K / RESERVE_ULTIMATE_FLOOR, which
+    # remain the canonical fallbacks in db.reserving_severity_map.
+    "reserving":   {"development_boost_k": 5.0, "ultimate_floor": 250.0},
 }
 
 # Cache shape: (path, mtime, weights). Re-read only when the file's
@@ -890,7 +897,9 @@ def run_signals() -> dict[str, int]:
     exponents = _loglinear_active(weights.get("loglinear"))
     if exponents:
         logger.info("signals: log-linear exponents in force (gate passed ×2 + apply flag)")
-    reserve_map = db.reserving_severity_map()      # Option 5 (empty until data)
+    _resv = weights.get("reserving") or {}         # Option 5 — k / floor user-tunable
+    reserve_map = db.reserving_severity_map(
+        k=_resv.get("development_boost_k"), floor=_resv.get("ultimate_floor"))
     from digest.severity_tape import severity_regime
     severity_z = severity_regime()                 # Lead 3 (None until tape runs)
     from digest.litigation import pressure_signal

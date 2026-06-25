@@ -23,6 +23,13 @@ CRED_PATH = SKILLS / "credibility-weighting/scripts/credibility.py"
 RATE_PATH = SKILLS / "ratemaking-indication/scripts/ratemaking_indication.py"
 GLM_PATH = SKILLS / "glm-pricing/scripts/glm_pricing.py"
 SEV_PATH = SKILLS / "severity-trend-decomposition/scripts/severity_trend.py"
+SGB_PATH = SKILLS / "statutory-gaap-bridge/scripts/statutory_gaap_bridge.py"
+REINS_PATH = SKILLS / "reinsurance-accounting/scripts/reinsurance_accounting.py"
+CAPADQ_PATH = SKILLS / "insurer-capital-adequacy/scripts/capital_adequacy.py"
+VAL_PATH = SKILLS / "insurer-valuation/scripts/insurer_valuation.py"
+INVP_PATH = SKILLS / "insurance-investment-portfolio/scripts/investment_portfolio.py"
+COC_PATH = SKILLS / "cost-of-capital/scripts/cost_of_capital.py"
+LIQ_PATH = SKILLS / "insurer-liquidity/scripts/insurer_liquidity.py"
 
 
 def _run(path: Path, *cli_args, stdin: str | None = None):
@@ -246,3 +253,117 @@ def test_severity_no_negative_zero_formatting():
 
 def test_severity_stdin_missing_series_exits_cleanly():
     assert _clean_exit(_run(SEV_PATH, "--stdin", stdin="{}"))
+
+
+# ── statutory-gaap-bridge ─────────────────────────────────────────────────────
+
+def test_sgb_bridge_demo_reconciles():
+    """GAAP→STAT waterfall lands on the reported surplus (residual 0)."""
+    d = json.loads(_run(SGB_PATH, "--demo", "--format", "json").stdout)
+    assert d["implied_surplus"] == 21200.0 and d["unexplained_residual"] == 0.0
+
+
+def test_sgb_change_demo_reconciles():
+    """Change-in-surplus drivers sum to the reported move and endpoint."""
+    d = json.loads(_run(SGB_PATH, "--change", "--demo", "--format", "json").stdout)
+    assert d["end_surplus"] == 21200.0 and d["total_change"] == 1200.0
+
+
+def test_sgb_no_inputs_exits_cleanly():
+    assert _clean_exit(_run(SGB_PATH))
+
+
+# ── reinsurance-accounting ────────────────────────────────────────────────────
+
+def test_reins_cession_demo():
+    d = json.loads(_run(REINS_PATH, "--demo", "--format", "json").stdout)
+    assert d["net_written"] == 4000.0
+    assert round(d["ceded_loss_ratio"], 4) == round(700 / 960, 4)
+    assert d["reinsurance_value"] == "favorable to cedant"
+
+
+def test_reins_risk_transfer_demo():
+    d = json.loads(_run(REINS_PATH, "--mode", "risk_transfer", "--demo",
+                        "--format", "json").stdout)
+    assert d["ten_ten_pass"] is True and round(d["erd"], 4) == 0.1875
+    assert d["risk_transfer"] is True
+
+
+def test_reins_bad_probabilities_exits_cleanly():
+    assert _clean_exit(_run(REINS_PATH, "--mode", "risk_transfer", "--premium", "100",
+                            "--scenarios", "0.5:0,0.2:100"))
+
+
+# ── insurer-capital-adequacy ──────────────────────────────────────────────────
+
+def test_capadq_demo():
+    d = json.loads(_run(CAPADQ_PATH, "--demo", "--format", "json").stdout)
+    assert round(d["rbc"]["rbc_ratio_pct_of_acl"], 3) == 4.121
+    assert round(d["rbc"]["acl"], 1) == 1455.9
+    assert round(d["leverage"]["net_premium_to_surplus"], 3) == 0.667
+    assert round(d["bcar"]["bcar"], 4) == 0.3077
+
+
+def test_capadq_no_inputs_exits_cleanly():
+    assert _clean_exit(_run(CAPADQ_PATH))
+
+
+# ── insurer-valuation ─────────────────────────────────────────────────────────
+
+def test_valuation_methods_reconcile():
+    """For constant ROE, justified P/B, residual income and DDM agree at 2.0×."""
+    d = json.loads(_run(VAL_PATH, "--demo", "--format", "json").stdout)
+    assert round(d["justified_pb"], 4) == 2.0
+    assert round(d["residual_income"]["implied_pb"], 4) == 2.0
+    assert round(d["ddm"]["implied_pb"], 4) == 2.0
+    assert round(d["market_pb"], 2) == 1.8
+
+
+def test_valuation_r_le_g_exits_cleanly():
+    assert _clean_exit(_run(VAL_PATH, "--book-value", "100", "--roe", "0.1",
+                            "-r", "0.04", "-g", "0.05"))
+
+
+# ── insurance-investment-portfolio ────────────────────────────────────────────
+
+def test_investment_portfolio_demo():
+    d = json.loads(_run(INVP_PATH, "--demo", "--format", "json").stdout)
+    assert d["float"]["float"] == 30500.0
+    assert round(d["float"]["cost_of_float"], 4) == -0.0262
+    assert round(d["yields"]["book_yield"], 4) == 0.04
+    assert d["alm"]["aoci_hit"] == -2250.0
+    assert d["alm"]["economic_surplus_change"] == -1335.0
+
+
+def test_investment_portfolio_no_inputs_exits_cleanly():
+    assert _clean_exit(_run(INVP_PATH))
+
+
+# ── cost-of-capital ───────────────────────────────────────────────────────────
+
+def test_cost_of_capital_demo():
+    d = json.loads(_run(COC_PATH, "--demo", "--format", "json").stdout)
+    assert round(d["cost_of_equity"], 4) == 0.09
+    assert round(d["wacc"], 5) == 0.08495
+    assert round(d["double_leverage"], 4) == 1.12
+    assert round(d["economic_profit_spread"], 4) == 0.05
+    assert round(d["raroc"], 4) == 0.1659
+
+
+def test_cost_of_capital_no_ke_inputs_exits_cleanly():
+    assert _clean_exit(_run(COC_PATH, "--debt", "100"))
+
+
+# ── insurer-liquidity ─────────────────────────────────────────────────────────
+
+def test_liquidity_demo():
+    d = json.loads(_run(LIQ_PATH, "--demo", "--format", "json").stdout)
+    assert d["dividend_capacity"]["ordinary_dividend_capacity"] == 700.0
+    assert d["holdco"]["net_holdco_cashflow"] == -370.0
+    assert round(d["holdco"]["interest_coverage"], 2) == 3.9
+    assert round(d["holdco"]["cash_runway_years"], 2) == 4.05
+    assert round(d["cat_liquidity"]["coverage"], 1) == 3.8
+
+
+def test_liquidity_no_inputs_exits_cleanly():
+    assert _clean_exit(_run(LIQ_PATH))

@@ -76,10 +76,32 @@ _CONCEPTS: dict[str, tuple[str, str]] = {
     # triangle (incurred/paid) — also reshaped into loss_triangles for reserving
     "ShortdurationInsuranceContractsIncurredClaimsAndAllocatedClaimAdjustmentExpenseNet": ("triangle", "incurred"),
     "ShortdurationInsuranceContractsCumulativePaidClaimsAndAllocatedClaimAdjustmentExpenseNet": ("triangle", "paid"),
+    # (14) GAAP equity + share counts → book value / per-share / P-B for the
+    # valuation + CFO skills. StockholdersEquity is parent-only; the …Noncontrolling
+    # variant is total incl. NCI. Share concepts are COUNTS (see _COUNT_CONCEPTS).
+    "StockholdersEquity": ("equity", "common_equity"),
+    "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest": ("equity", "equity_incl_nci"),
+    "CommonStockSharesOutstanding": ("equity", "shares_outstanding"),
+    "EntityCommonStockSharesOutstanding": ("equity", "cover_shares"),
+    "WeightedAverageNumberOfDilutedSharesOutstanding": ("equity", "diluted_wavg_shares"),
+    # (15) capital structure — debt + interest expense for cost-of-capital / WACC /
+    # leverage and the liquidity skill's coverage ratios.
+    "LongTermDebtNoncurrent": ("capital_structure", "long_term_debt"),
+    "LongTermDebt": ("capital_structure", "long_term_debt_total"),
+    "InterestExpense": ("capital_structure", "interest_expense"),
+    # (16) liquidity — HoldCo cash + common dividends paid for the liquidity skill's
+    # runway / sources-and-uses / dividend-capacity reads.
+    "CashAndCashEquivalentsAtCarryingValue": ("liquidity", "cash_and_equivalents"),
+    "PaymentsOfDividendsCommonStock": ("liquidity", "dividends_paid"),
 }
 
 # Concepts reported as counts, not USD → never scale to millions.
-_COUNT_CONCEPTS = {"ShortdurationInsuranceContractsNumberOfReportedClaims"}
+_COUNT_CONCEPTS = {
+    "ShortdurationInsuranceContractsNumberOfReportedClaims",
+    "CommonStockSharesOutstanding",
+    "EntityCommonStockSharesOutstanding",
+    "WeightedAverageNumberOfDilutedSharesOutstanding",
+}
 
 # Dimensional axis localname → fact column carrying its member.
 _AXES: dict[str, str] = {
@@ -138,6 +160,21 @@ def _fact_key(f: dict) -> str:
     return hashlib.sha256(s.encode()).hexdigest()[:24]
 
 
+def _document_period_end(root) -> str | None:
+    """The filing's fiscal period-end (dei:DocumentPeriodEndDate) — the authoritative
+    'as-of' for an annual 10-K. Preferred over max(period_ends) because some filings
+    carry a post-close *instant* fact (audit / subsequent-event / Q1-declared date)
+    dated weeks AFTER year-end, which would otherwise push the snapshot label past
+    Dec 31 (seen on CB → 2025-02-27, CINF → 2025-03-31 prior diagonals) and mislabel
+    the period-over-period reserve-deterioration comparison."""
+    for el in root:
+        if _localname(el.tag) == "DocumentPeriodEndDate":
+            text = (el.text or "").strip()
+            if text:
+                return text
+    return None
+
+
 def extract_facts(instance_xml: str, *, insurer: str) -> list[dict]:
     """Component-level facts for the registry concepts, one row per dimensional
     context. Monetary values → USD millions; claim counts kept raw."""
@@ -184,7 +221,7 @@ def extract_facts(instance_xml: str, *, insurer: str) -> list[dict]:
             period_ends.append(period_end)
         facts.append(row)
 
-    as_of = max(period_ends) if period_ends else None
+    as_of = _document_period_end(root) or (max(period_ends) if period_ends else None)
     for f in facts:
         f["as_of"] = as_of
         f["fact_key"] = _fact_key(f)

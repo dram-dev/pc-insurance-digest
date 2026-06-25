@@ -1,0 +1,8 @@
+[mcp_servers.agent-server]
+command = "uv"
+args = [
+    "run",
+    "--extra",
+    "mcp",
+    "digest-mcp",
+]

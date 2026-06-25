@@ -332,8 +332,9 @@ CREATE TABLE IF NOT EXISTS silver.reserving_signals (
     ultimate          DOUBLE,
     latest            DOUBLE,
     ibnr              DOUBLE,
-    prior_ibnr        DOUBLE,
-    deterioration_pct DOUBLE,                    -- (ibnr - prior_ibnr) / prior_ibnr
+    prior_ibnr        DOUBLE,                    -- prior snapshot IBNR (reference only)
+    cy_development    DOUBLE,                    -- one-year dev on prior AYs ($M, signed)
+    deterioration_pct DOUBLE,                    -- cy_development / ultimate (signed rate)
     direction         STRING,                    -- 'adverse' | 'favorable' | 'flat'
     CONSTRAINT silver_reserving_pk PRIMARY KEY (insurer, lob, metric, as_of)
 )
@@ -706,7 +707,7 @@ WITH latest AS (
 )
 SELECT r.insurer, r.lob, r.metric, r.as_of,
        r.ultimate, r.latest, r.ibnr, r.prior_ibnr,
-       r.deterioration_pct, r.direction
+       r.cy_development, r.deterioration_pct, r.direction
 FROM silver.reserving_signals r
 JOIN latest l ON r.insurer = l.insurer AND r.lob = l.lob
              AND r.metric = l.metric AND r.as_of = l.as_of
@@ -829,3 +830,9 @@ FROM burden WHERE rn = 1;
 
 -- Lead 9: add state to a pre-existing triage_verdicts (no-op if already present)
 ALTER TABLE silver.triage_verdicts ADD COLUMN state STRING;
+
+-- Reserving methodology fix (2026-06-14): add cy_development to a pre-existing
+-- reserving_signals. deterioration_pct was repurposed from cross-snapshot IBNR-delta
+-- to within-filing one-year development / ultimate (digest.reserving.reserve_signal);
+-- cy_development carries the signed $M development the insurer aggregate sums.
+ALTER TABLE silver.reserving_signals ADD COLUMN cy_development DOUBLE;

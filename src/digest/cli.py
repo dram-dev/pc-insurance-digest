@@ -668,32 +668,41 @@ def ingest_statutory() -> None:
 
 @main.command(name="ingest-xbrl")
 @click.argument("tickers", nargs=-1)
-def ingest_xbrl(tickers: tuple[str, ...]) -> None:
+@click.option("--diagonals", "-d", type=int, default=1, show_default=True,
+              help="Annual snapshots per insurer (latest + prior years). "
+                   "≥2 lands a second diagonal so reserve_deterioration_boost fires.")
+def ingest_xbrl(tickers: tuple[str, ...], diagonals: int) -> None:
     """Ingest component-level insurer XBRL facts (datasets 1-13) → insurer_xbrl_facts.
 
     One 10-K instance fetch per insurer yields every reviewed dataset (premiums,
     claim counts, IBNR, reserve development, reinsurance, investments, DAC, …)
     broken out by segment/product/accident-year/geography. Universe =
     config/xbrl_pc_insurers.yaml (top-10 SEC-filing US P&C). Needs EDGAR_USER_AGENT.
+
+    --diagonals 2 also pulls each insurer's prior-year 10-K, so the reserving chain
+    has two annual snapshots and reserve_deterioration_boost stops being a no-op.
     """
     from digest import edgar_xbrl_ingest as ing
 
     db.init_db()
     console.rule("[bold cyan]XBRL component-fact ingest")
-    results = ing.run_ingest(list(tickers) or None)
+    results = ing.run_ingest(list(tickers) or None, diagonals=diagonals)
 
     table = Table(title="Component facts per insurer")
     table.add_column("Ticker", no_wrap=True)
+    table.add_column("As-of", style="dim", no_wrap=True)
     table.add_column("Filed", style="dim", no_wrap=True)
     table.add_column("Facts", justify="right")
     table.add_column("Triangle cells", justify="right")
     table.add_column("Datasets", justify="right")
     for r in results:
         if "error" in r:
-            table.add_row(r["ticker"], "[red]ERR[/red]", "—", "—", str(r["error"])[:48])
+            table.add_row(r["ticker"], "[red]ERR[/red]", "—", "—", "—",
+                          str(r["error"])[:48])
         else:
-            table.add_row(r["ticker"], str(r["filed"]), f"{r['facts']:,}",
-                          f"{r['triangle_cells']:,}", str(len(r["datasets"])))
+            table.add_row(r["ticker"], str(r.get("as_of") or "—"), str(r["filed"]),
+                          f"{r['facts']:,}", f"{r['triangle_cells']:,}",
+                          str(len(r["datasets"])))
     console.print(table)
 
     cov = db.xbrl_facts_coverage()

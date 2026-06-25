@@ -388,6 +388,7 @@ class DatabricksSink:
             "latest":            sig.get("latest"),
             "ibnr":              sig.get("ibnr"),
             "prior_ibnr":        sig.get("prior_ibnr"),
+            "cy_development":     sig.get("cy_development"),
             "deterioration_pct": sig.get("deterioration_pct"),
             "direction":         sig.get("direction"),
         }

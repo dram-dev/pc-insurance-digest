@@ -221,8 +221,9 @@ MIGRATIONS = [
         ultimate         REAL,
         latest           REAL,
         ibnr             REAL,
-        prior_ibnr       REAL,
-        deterioration_pct REAL,                   -- (ibnr - prior_ibnr)/prior_ibnr
+        prior_ibnr       REAL,                    -- prior snapshot IBNR (reference only)
+        cy_development   REAL,                    -- one-year dev on prior AYs ($M, signed)
+        deterioration_pct REAL,                   -- cy_development / ultimate (signed rate)
         direction        TEXT,                    -- 'adverse' | 'favorable' | 'flat'
         PRIMARY KEY (insurer, lob, metric, as_of)
     )""",
@@ -457,6 +458,11 @@ MIGRATIONS = [
         passed        INTEGER NOT NULL DEFAULT 0,
         weights_json  TEXT NOT NULL
     )""",
+    # Reserving: store the within-filing one-year development ($M, signed) so the
+    # exposure-weighted insurer aggregate in reserving_severity_map is exact. The
+    # deterioration_pct column was repurposed from cross-snapshot IBNR-delta to
+    # cy_development / ultimate (see digest.reserving.reserve_signal).
+    "ALTER TABLE reserving_signals ADD COLUMN cy_development REAL",
 ]
 
 
@@ -2656,16 +2662,17 @@ def prior_reserving_ibnr(insurer: str, lob: str, metric: str, before: str) -> fl
 
 def upsert_reserving_signal(sig: dict) -> None:
     """Persist a chain-ladder estimate; mirror to silver.reserving_signals."""
+    params = {"cy_development": None, "prior_ibnr": None, **sig}
     with get_conn() as conn:
         conn.execute(
             """INSERT OR REPLACE INTO reserving_signals
                  (insurer, lob, metric, as_of, ultimate, latest, ibnr, prior_ibnr,
-                  deterioration_pct, direction)
+                  cy_development, deterioration_pct, direction)
                VALUES (:insurer, :lob, :metric, :as_of, :ultimate, :latest, :ibnr,
-                       :prior_ibnr, :deterioration_pct, :direction)""",
-            sig,
+                       :prior_ibnr, :cy_development, :deterioration_pct, :direction)""",
+            params,
         )
-    sink.write_reserving(sig)
+    sink.write_reserving(params)
 
 
 def latest_reserving_signals(limit: int = 50) -> list[sqlite3.Row]:
@@ -2687,17 +2694,46 @@ def latest_reserving_signals(limit: int = 50) -> list[sqlite3.Row]:
         ).fetchall()
 
 
-def reserving_severity_map() -> dict[str, float]:
-    """Combined reserve severity per insurer = chain-ladder adverse deterioration
-    (Lead 6) ∪ disclosure-tone language severity (Lead 5). Fuel for
-    reserve_deterioration_boost in signals.score_item. Empty until reserving /
-    disclosure data exists, so the scoring formula stays behavior-preserving."""
-    out: dict[str, float] = {}
+def reserving_severity_map(k: float | None = None,
+                           floor: float | None = None) -> dict[str, float]:
+    """Per-insurer reserve-deterioration severity (boost-scale) = exposure-weighted
+    one-year incurred development (Lead 6) ∪ disclosure-tone language severity
+    (Lead 5). Fuel for reserve_deterioration_boost in signals.score_item. Empty
+    until reserving / disclosure data exists, so scoring stays behavior-preserving.
+
+    Lead 6: sum the signed dollar one-year development across an insurer's LOBs, then
+    normalize ONCE by Σ chain-ladder ultimate at the insurer level — exposure-weighted,
+    so a tiny line can't dominate and favorable lines net against adverse ones. Only
+    the latest snapshot, metric='incurred' (paid lags re-estimation), and LOBs above
+    the materiality `floor` ($M). The signed insurer rate is scaled by `k` into a
+    boost-scale severity; only the positive (adverse) part feeds the boost.
+
+    `k` / `floor` are user-tunable via the `reserving` section of Scoring Weights.md
+    (signals.run_signals threads them in); both default to the canonical
+    digest.reserving constants when omitted."""
+    from digest.reserving import DEVELOPMENT_BOOST_K, RESERVE_ULTIMATE_FLOOR
+    k = DEVELOPMENT_BOOST_K if k is None else k
+    floor = RESERVE_ULTIMATE_FLOOR if floor is None else floor
+
+    dev_num: dict[str, float] = {}   # Σ signed cy_development ($M)
+    dev_den: dict[str, float] = {}   # Σ chain-ladder ultimate ($M, exposure base)
     for r in latest_reserving_signals(limit=500):
-        if r["direction"] == "adverse" and r["deterioration_pct"]:
-            out[r["insurer"]] = max(out.get(r["insurer"], 0.0), r["deterioration_pct"])
-    # Lead 5: blend in language-derived severity (capped below the triangle's, so
-    # adverse tone leads — but never overpowers — a confirmed chain-ladder number).
+        if r["metric"] != "incurred":
+            continue
+        ult, cy = r["ultimate"], r["cy_development"]
+        if ult is None or cy is None or ult < floor:
+            continue
+        dev_num[r["insurer"]] = dev_num.get(r["insurer"], 0.0) + cy
+        dev_den[r["insurer"]] = dev_den.get(r["insurer"], 0.0) + ult
+
+    out: dict[str, float] = {}
+    for insurer, den in dev_den.items():
+        rate = dev_num[insurer] / den if den > 0 else 0.0   # signed; favorable nets
+        if rate > 0:
+            out[insurer] = k * rate                          # → boost-scale severity
+
+    # Lead 5: blend in language-derived severity (boost-scale), max() so adverse tone
+    # leads the chain-ladder number when present but a confirmed number isn't pulled down.
     from digest.disclosure import language_severity  # local: avoid import cycle
     for d in latest_disclosure_sentiment(limit=500):
         sev = language_severity(d["reserve_tone"], d["adverse_language_score"] or 0.0)
