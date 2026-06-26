@@ -85,6 +85,12 @@ class Settings(BaseSettings):
     # Obsidian — vault is shared with macro digest; we land in a sibling folder
     obsidian_vault_path: str = Field(default="", alias="OBSIDIAN_VAULT_PATH")
     obsidian_digest_dir: str = Field(default="81 P&C Digest", alias="OBSIDIAN_DIGEST_DIR")
+    # Capture inbox: where forwarded Telegram clips / Web Clipper .md files land.
+    # Resolved against OBSIDIAN_VAULT_PATH when relative; the `clipped` ingestor
+    # walks it each run and auto-keeps anything found.
+    obsidian_clip_dir: str = Field(
+        default="82 P&C Clipped", alias="OBSIDIAN_CLIP_DIR"
+    )
     # Phase B EKG header — when true, render_daily_note prepends the "Market EKG"
     # vital-signs panel (Viz Lab winners) atop each daily note. Default off so the
     # daily note is unchanged until validated; flip to true in .env to enable.
@@ -125,6 +131,45 @@ class Settings(BaseSettings):
     # this directory (`digest ingest-naic`). Map columns in config/naic_insdata.yaml.
     naic_insdata_dir: str = Field(default="./data/naic_insdata", alias="NAIC_INSDATA_DIR")
 
+    # Full-text article extraction — RSS/Substack feeds often ship only a teaser.
+    # When a captured/feed body is shorter than fulltext_min_chars we fetch the
+    # source URL and pull the main article text (trafilatura). Optional dep; the
+    # whole thing degrades to the original excerpt if unavailable. Set
+    # FULLTEXT_ENABLED=false to keep raw excerpts.
+    fulltext_enabled: bool = Field(default=True, alias="FULLTEXT_ENABLED")
+    fulltext_min_chars: int = Field(default=600, alias="FULLTEXT_MIN_CHARS")
+    fulltext_max_chars: int = Field(default=8000, alias="FULLTEXT_MAX_CHARS")
+    fulltext_timeout_sec: int = Field(default=12, alias="FULLTEXT_TIMEOUT_SEC")
+
+    # Capture: X/Twitter is login-walled, so a forwarded status URL is resolved
+    # to its text via the free, no-auth fxtwitter mirror API.
+    x_api_base: str = Field(default="https://api.fxtwitter.com", alias="X_API_BASE")
+
+    # Telegram push notifications — terse mobile alerts for high-conviction
+    # signals, plus the interactive ask-bot (digest ask-bot) and capture inbox.
+    # No-op (sends nothing) unless BOTH token + chat id are set. Get them from
+    # @BotFather (token) and getUpdates / @userinfobot (chat id).
+    telegram_bot_token: str = Field(default="", alias="TELEGRAM_BOT_TOKEN")
+    telegram_chat_id: str = Field(default="", alias="TELEGRAM_CHAT_ID")
+    notify_enabled: bool = Field(default=True, alias="NOTIFY_ENABLED")
+    # Minimum leaderboard score a new item must reach to earn a push. PC's score
+    # is an UNBOUNDED product of ~11 multipliers (not macro's 0–1 triage_score):
+    # the high-conviction tier sits at ≈1.6, so that's the default gate. Tune
+    # alongside signal_tiers in _meta/Scoring Weights.md once live scores settle.
+    notify_min_score: float = Field(default=1.6, alias="NOTIFY_MIN_SCORE")
+    # Only push items scored within this many hours — keeps pushes to genuine
+    # net-new signals instead of draining the whole historical backlog.
+    notify_lookback_hours: int = Field(default=24, alias="NOTIFY_LOOKBACK_HOURS")
+    # Cap pushes per pipeline run so one busy day can't spam the phone.
+    notify_max_per_run: int = Field(default=5, alias="NOTIFY_MAX_PER_RUN")
+    # Quiet hours (local time): pushes only fire when end <= hour < start. So
+    # 8/22 = "from 8am, stop after 10pm". Suppressed pushes aren't lost — the
+    # next run inside the window re-evaluates them (within the lookback).
+    notify_quiet_start_hour: int = Field(default=22, alias="NOTIFY_QUIET_START_HOUR")
+    notify_quiet_end_hour: int = Field(default=8, alias="NOTIFY_QUIET_END_HOUR")
+    # Optional once-per-run "Brief ready" ping with an obsidian:// deep link.
+    notify_brief_ping: bool = Field(default=False, alias="NOTIFY_BRIEF_PING")
+
     # Databricks medallion sink (Wave 3 Phase 1 scaffold). All writes no-op when
     # databricks_enabled=False; workspace provisioning is deferred to Wave 4.
     # See packages/digest-core/sql/databricks/{bronze,silver,gold}.sql for DDL.
@@ -158,6 +203,19 @@ class Settings(BaseSettings):
             raise ValueError(
                 f"URL must point to localhost for safety, got hostname: {hostname!r}"
             )
+        return v
+
+    @field_validator("telegram_bot_token", mode="before")
+    @classmethod
+    def _strip_bot_prefix(cls, v: str) -> str:
+        """Tolerate a token pasted with the URL's 'bot' prefix (.../bot<TOKEN>).
+
+        Real tokens always start with the bot's numeric id, so a leading 'bot'
+        is the doubled-prefix mistake that yields a 404 from the Telegram API.
+        """
+        v = str(v).strip()
+        if re.match(r"(?i)^bot\d", v):
+            v = v[3:]
         return v
 
 

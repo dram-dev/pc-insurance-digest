@@ -146,6 +146,14 @@ MIGRATIONS = [
         PRIMARY KEY (item_id, rated_at)
     )""",
     "CREATE INDEX IF NOT EXISTS idx_manual_ratings_item ON manual_ratings(item_id)",
+    # Telegram push dedup: one row per alert ever sent, so the am/pm runs never
+    # re-fire the same high-signal push. alert_key = 'signal:<item_id>'.
+    """CREATE TABLE IF NOT EXISTS notify_log (
+        alert_key   TEXT PRIMARY KEY,
+        kind        TEXT NOT NULL,
+        item_id     INTEGER,
+        sent_at     TEXT NOT NULL DEFAULT (datetime('now'))
+    )""",
     # Semantic layer (Databricks Option 3): one embedding vector per item
     # (title + summary), cached here + mirrored to pc_bronze.item_embeddings.
     # Powers `digest related`, semantic dedup, and `digest ask`.
@@ -1952,6 +1960,61 @@ def top_signal_scores(
     params.append(limit)
     with get_conn() as conn:
         return conn.execute(sql, params).fetchall()
+
+
+def unnotified_high_signals(
+    min_score: float, limit: int, lookback_hours: int = 0
+) -> list[sqlite3.Row]:
+    """Net-new kept+summarized items whose latest score >= min_score, not yet pushed.
+
+    The Telegram-push analog of `top_signal_scores`: it joins each item's most
+    recent `signal_scores` row (the unbounded leaderboard score, NOT triage_score)
+    and left-joins `notify_log` so the am and pm runs never re-fire the same
+    signal. `lookback_hours` > 0 restricts to items scored recently — without it
+    the query would dribble out the entire backlog on first run. Highest first.
+    """
+    recency = ""
+    params: list = [min_score]
+    if lookback_hours > 0:
+        recency = (
+            "AND COALESCE(i.summarized_at, i.triaged_at, i.ingested_at) "
+            ">= datetime('now', ?)"
+        )
+        params.append(f"-{lookback_hours} hours")
+    params.append(limit)
+    sql = f"""
+        WITH latest AS (
+            SELECT item_id, MAX(computed_at) AS computed_at
+            FROM signal_scores
+            GROUP BY item_id
+        )
+        SELECT i.id, i.source, i.url, i.title, i.topic,
+               i.summary, i.why_it_matters, i.triage_score,
+               i.published_at, i.sentiment_label, i.sentiment_score,
+               i.metadata_json, s.score, s.tier
+        FROM signal_scores s
+        JOIN latest l ON s.item_id = l.item_id AND s.computed_at = l.computed_at
+        JOIN items   i ON i.id = s.item_id
+        LEFT JOIN notify_log n ON n.alert_key = 'signal:' || i.id
+        WHERE i.triage_decision = 'keep'
+          AND i.summary IS NOT NULL
+          AND s.score >= ?
+          AND n.alert_key IS NULL
+          {recency}
+        ORDER BY s.score DESC, i.ingested_at DESC
+        LIMIT ?
+    """
+    with get_conn() as conn:
+        return conn.execute(sql, params).fetchall()
+
+
+def record_notification(alert_key: str, kind: str, item_id: int | None = None) -> None:
+    """Mark an alert as sent so it never re-fires. Idempotent (INSERT OR IGNORE)."""
+    with get_conn() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO notify_log (alert_key, kind, item_id) VALUES (?, ?, ?)",
+            (alert_key, kind, item_id),
+        )
 
 
 def latest_scores_since(days: int = 90) -> list[float]:

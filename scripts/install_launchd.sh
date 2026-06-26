@@ -20,7 +20,7 @@ echo "Target:  $LAUNCH_AGENTS"
 mkdir -p "$LAUNCH_AGENTS"
 mkdir -p "$PROJECT_PATH/logs"
 
-for label in am pm weekly learn; do
+for label in am pm weekly learn askbot; do
     src="$PROJECT_PATH/launchd/com.dr.pcdigest.${label}.plist"
     dst="$LAUNCH_AGENTS/com.dr.pcdigest.${label}.plist"
 

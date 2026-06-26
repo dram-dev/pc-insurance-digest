@@ -259,6 +259,51 @@ The remaining design seams (score-factor composition, triage engine, daily-note
 hooks; regime deferred) are planned in
 [packages/digest-core/SEAMS_PLAN.md](packages/digest-core/SEAMS_PLAN.md).
 
+## Telegram (push alerts · ask-bot · capture) — optional
+
+A phone surface on top of the file-only digest. No-op unless both
+`TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` are set (the bot answers **only** your
+configured chat id).
+
+**Push alerts.** Net-new high-conviction signals fire a terse push at the end of
+a pipeline run. Filters: latest leaderboard score ≥ `NOTIFY_MIN_SCORE` (default
+**1.6** — PC's score is an unbounded product of ~11 multipliers, so this is the
+high-conviction tier, *not* macro's 0–1 `triage_score`), scored within
+`NOTIFY_LOOKBACK_HOURS` (default 24, net-new not backlog), capped at
+`NOTIFY_MAX_PER_RUN`, and deduped per item via `notify_log` so a signal never
+re-fires. Pushes respect quiet hours — only `NOTIFY_QUIET_END_HOUR` ≤ local hour
+< `NOTIFY_QUIET_START_HOUR` (default 8am–10pm). Each push shows the conviction
+tier, score, source, sentiment, and the prevailing regime.
+
+**Ask the archive (RAG from your phone).** `digest ask-bot` runs a long-polling
+listener (no public endpoint) that answers questions sent to your bot via the
+existing `digest ask` RAG — Ollama embeddings (`nomic-embed-text`) + the
+configured summarizer backend, with sources. The daily pipeline embeds
+newly-summarized items so the bot stays current.
+
+**Forward-to-capture.** Forward an **X/Twitter post**, a link, or paste text to
+the bot and it files the content into the clipped flow (`OBSIDIAN_CLIP_DIR`) for
+the next pipeline run — auto-kept, summarized, surfaced in the daily note, with
+an immediate inline takeaway. X posts resolve via the no-auth fxtwitter API
+(X is login-walled); other links use the full-text extractor; bare text is filed
+as-is. Plain text is treated as a question, forwards/links as captures —
+override with `/ask` or `/capture`.
+
+```bash
+# 1. @BotFather → /newbot → copy token; message the bot once; read chat id from
+#    https://api.telegram.org/bot<TOKEN>/getUpdates  (or @userinfobot)
+# 2. set TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID in .env, then:
+uv run digest notify --test                              # verify push setup
+uv run digest ask "Florida reinsurance pricing outlook?" # CLI RAG
+uv run digest ask-bot                                    # foreground listener
+uv run digest capture "https://x.com/jack/status/20"     # file a clip
+```
+
+Run the listener as a daemon via the bundled `com.dr.pcdigest.askbot` launchd
+job (KeepAlive; installed by `scripts/install_launchd.sh`). Set
+`NOTIFY_BRIEF_PING=true` for an extra once-per-run "Brief ready" ping with an
+`obsidian://` deep link to the day's Brief note.
+
 ## Schedule
 
 Staggered with macro digest to avoid MLX contention:
