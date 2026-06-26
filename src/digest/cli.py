@@ -278,6 +278,69 @@ def ask(question: str, k: int) -> None:
 
 
 @main.command()
+@click.option("--test", "test_only", is_flag=True, help="Send a test push and exit")
+def notify(test_only: bool) -> None:
+    """Send pending high-conviction Telegram pushes (or --test to verify setup)."""
+    from digest.sinks.notify import notifier, notify_top_signals
+
+    db.init_db()
+    console.rule("[bold cyan]notify")
+    if not notifier.enabled:
+        console.print(
+            "  [yellow]disabled or unconfigured[/yellow] — set TELEGRAM_BOT_TOKEN + "
+            "TELEGRAM_CHAT_ID (and NOTIFY_ENABLED=true)"
+        )
+        return
+    if test_only:
+        ok = notifier.send_test()
+        console.print("  [green]✓[/green] test sent" if ok else "  [red]✗[/red] test failed")
+        return
+    nr = notify_top_signals()
+    console.print(f"  [green]✓[/green] sent={nr['sent']} candidates={nr['candidates']}")
+
+
+@main.command(name="ask-bot")
+def ask_bot() -> None:
+    """Run the interactive Telegram listener: answer questions from your phone."""
+    from digest.sinks.notify import notifier
+    from digest.telegram_bot import run_listener
+
+    db.init_db()
+    console.rule("[bold cyan]ask-bot")
+    if not notifier.enabled:
+        console.print(
+            "  [yellow]disabled or unconfigured[/yellow] — set TELEGRAM_BOT_TOKEN + "
+            "TELEGRAM_CHAT_ID (and NOTIFY_ENABLED=true)"
+        )
+        return
+    console.print("  [green]✓[/green] listening — send your bot a question (Ctrl-C to stop)")
+    try:
+        run_listener()
+    except KeyboardInterrupt:
+        console.print("\n  stopped")
+
+
+@main.command()
+@click.argument("content", nargs=-1, required=True)
+def capture(content: tuple[str, ...]) -> None:
+    """Capture an X post, link, or text into the clipped flow (next digest run)."""
+    from digest import capture as capture_mod
+
+    db.init_db()
+    console.rule("[bold cyan]capture")
+    try:
+        res = capture_mod.capture(" ".join(content))
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"  [red]✗[/red] {escape(str(exc))}")
+        return
+    console.print(
+        f"  [green]✓[/green] {res['kind']} captured ({res['chars']} chars): "
+        f"{escape(res['title'])}"
+    )
+    console.print(f"  [dim]→ {res['path']}[/dim]")
+
+
+@main.command()
 @click.option("--horizons", default="7,30", help="Comma-separated horizon days")
 @click.option("--limit", default=500, help="Max matured items per horizon")
 def outcomes(horizons: str, limit: int) -> None:
@@ -1260,6 +1323,26 @@ def pipeline(run_type: str, skip_publish: bool) -> None:
             console.print(f"  [green]✓[/green] {px['rows']:,} price rows "
                           f"({len(px['skipped'])} tickers skipped)")
         _optional("5b", "price store", _prices)
+
+        # Embed newly-summarized items so the Telegram ask-bot's RAG has fresh
+        # vectors. Cheap + local (Ollama); a backend hiccup never blocks the run.
+        def _embed() -> None:
+            from digest import semantic
+            e = semantic.run_embed()
+            console.print(f"  [green]✓[/green] embedded {e['embedded']}/{e['needed']} items")
+        _optional("5c", "embed", _embed)
+
+        # Telegram push: net-new high-conviction signals + optional Brief ping.
+        # No-op unless TELEGRAM_* configured; quiet hours suppress sending.
+        def _notify() -> None:
+            from datetime import datetime, timezone
+            from digest.sinks.notify import notify_brief_ready, notify_top_signals
+            nr = notify_top_signals()
+            notify_brief_ready(datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+            console.print(
+                f"  [green]✓[/green] notify: sent={nr['sent']} candidates={nr['candidates']}"
+            )
+        _optional("5d", "notify", _notify)
 
     # ── required: publish (the run's actual output) ─────────────────────────
     if skip_publish:
