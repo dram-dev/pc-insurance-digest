@@ -140,3 +140,47 @@ def test_forward_author_extraction():
     assert tb._forward_author({"forward_origin": {"sender_user": {"first_name": "Ada"}}}) == "Ada"
     assert tb._forward_author({"forward_sender_name": "Hidden User"}) == "Hidden User"
     assert tb._forward_author({}) is None
+
+
+def test_join_within_never_splits_a_tag():
+    """Slicing assembled HTML would cut mid-tag; Telegram rejects the message."""
+    parts = [f'<a href="https://example.com/{i}">link {i}</a>' for i in range(50)]
+    out = tb._join_within(parts, limit=200)
+    assert out.count("<a ") == out.count("</a>")
+    assert not out.endswith("<a")
+    assert len(out) <= 200
+
+
+def test_format_reply_stays_under_limit_and_is_well_formed():
+    result = {
+        "answer": "A" * 9000,   # far past the cap on its own
+        "sources": [
+            {"n": i, "title": f"T{i}", "source": "rss",
+             "url": f"https://example.com/{i}"}
+            for i in range(8)
+        ],
+    }
+    out = tb._format_reply(result)
+    assert len(out) <= tb._MAX_MSG
+    assert out.count("<a ") == out.count("</a>")
+    assert out.count("<i>") == out.count("</i>")
+
+
+def test_format_reply_drops_non_web_source_links():
+    """A non-http href is a 400 from Telegram, so render it without a link."""
+    result = {"answer": "ans", "sources": [
+        {"n": 1, "title": "Clip", "source": "clipped", "url": "telegram:capture"},
+    ]}
+    out = tb._format_reply(result)
+    assert "telegram:capture" not in out
+    assert "<a " not in out
+    assert "[1] Clip" in out
+
+
+def test_authorization_uses_sender_not_chat(monkeypatch):
+    """In a group everyone shares the chat id — gate on the sender instead."""
+    monkeypatch.setattr(tb.settings, "telegram_chat_id", "123")
+    owner_in_group = {"message": {"chat": {"id": -1009}, "from": {"id": 123}}}
+    other_in_group = {"message": {"chat": {"id": -1009}, "from": {"id": 456}}}
+    assert tb._is_authorized(owner_in_group) is True
+    assert tb._is_authorized(other_in_group) is False

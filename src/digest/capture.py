@@ -117,9 +117,15 @@ def capture(
     ts = datetime.now(timezone.utc)
     path = clip_dir / f"{ts:%Y%m%d-%H%M%S}-{_slug(title)}.md"
 
-    frontmatter = {
-        "title": title,
-        "source": url or f"{source_label}:capture",
+    # Only a real URL goes in `source`: the clipped ingestor reads that key as
+    # both the item's unique id and its link, so a constant sentinel would make
+    # every URL-less capture collide on one source_id (all but the first are
+    # then dropped by INSERT OR IGNORE) and render a dead non-http link.
+    # Omitting it lets text captures fall through to the body-hash id.
+    frontmatter: dict = {"title": title}
+    if url:
+        frontmatter["source"] = url
+    frontmatter |= {
         "author": author or source_label,
         "created": ts.replace(microsecond=0).isoformat(),
         "tags": [source_label, "clipping"],

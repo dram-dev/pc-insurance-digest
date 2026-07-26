@@ -31,6 +31,7 @@ HITS_PER_QUERY = 10
 
 class HNIngestor(IngestorBase):
     name = "hn"
+    enrich_fulltext = True  # feeds carry excerpts, not full articles
 
     def fetch(self) -> list[IngestedItem]:
         return fetch_hn(

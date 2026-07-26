@@ -38,7 +38,22 @@ def test_capture_text_only(clip_dir):
     fm, body = _read_clip(res["path"])
     assert body == "A bare note about reserve releases"
     assert "telegram" in fm["tags"]
-    assert fm["source"] == "telegram:capture"
+    # No `source` key without a real URL: the clipped ingestor reads it as the
+    # unique id, so a constant sentinel made every text capture collide.
+    assert "source" not in fm
+
+
+def test_capture_text_only_ids_are_distinct(clip_dir):
+    """Two link-free captures must not collide on one clipped source_id."""
+    from digest.ingest.clipped import _stable_source_id, _split_frontmatter
+
+    ids = []
+    for text in ("watch FL rate filings", "check PGR reserve development"):
+        res = capture.capture(text)
+        raw = res["path"].read_text(encoding="utf-8")
+        fm, body = _split_frontmatter(raw)
+        ids.append(_stable_source_id(fm, body, res["path"]))
+    assert ids[0] != ids[1]
 
 
 def test_capture_resolves_tweet(clip_dir, monkeypatch):

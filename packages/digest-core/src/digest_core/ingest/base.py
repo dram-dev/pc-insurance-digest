@@ -57,6 +57,16 @@ class IngestorBase(ABC):
     name: str = "base"
     store: ClassVar[ItemStore | None] = None
 
+    #: Status of the most recent `run()` — "ok" or "error". `run()` swallows
+    #: fetch/persist failures so one bad source can't kill a pipeline, so a
+    #: subclass doing post-run work (e.g. marking source files consumed) must
+    #: check this before assuming anything was actually written.
+    last_status: str = "ok"
+
+    #: Opt in to domain-level full-text enrichment (see `enrich_items`). Set it
+    #: on sources whose feeds carry excerpts rather than whole articles.
+    enrich_fulltext: bool = False
+
     def __init_subclass__(cls, register: bool = True, **kwargs: object) -> None:
         """Auto-register concrete ingestors so the catalog grows by itself.
 
@@ -75,6 +85,24 @@ class IngestorBase(ABC):
     def fetch(self) -> list[IngestedItem]:
         """Pull fresh items from this source. Do not write to the store."""
 
+    def enrich_items(self, items: list[IngestedItem]) -> list[IngestedItem]:
+        """Post-process fetched items before they are persisted. Default no-op.
+
+        A domain binds real behaviour here (full-text extraction) so every
+        ingestor picks it up, current and future, instead of each one having to
+        remember to call it.
+        """
+        return items
+
+    def enrich_url(self, item: IngestedItem) -> str | None:
+        """URL to pull full text from, or None to skip this item.
+
+        Defaults to the item's own link. Override where that link isn't the
+        article — an HN self-post's url is its discussion thread, and extracting
+        that would file the comment page as the item's body.
+        """
+        return item.url
+
     def run(self, run_type: str = "manual") -> tuple[int, int]:
         """Fetch, persist, log. Returns (fetched, new)."""
         store = self.store
@@ -91,7 +119,7 @@ class IngestorBase(ABC):
         error_msg: str | None = None
 
         try:
-            items = self.fetch()
+            items = self.enrich_items(self.fetch())
             fetched = len(items)
             new = store.upsert_items(items)
             logger.info("[%s] fetched=%d new=%d", self.name, fetched, new)
@@ -100,6 +128,7 @@ class IngestorBase(ABC):
             error_msg = f"{type(exc).__name__}: {exc}"
             logger.exception("[%s] failed: %s", self.name, error_msg)
         finally:
+            self.last_status = status
             duration_ms = int((time.perf_counter() - start) * 1000)
             store.log_run(
                 run_type=run_type,

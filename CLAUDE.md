@@ -39,7 +39,7 @@ own `com.dr.pcdigest.*` jobs.
 | Reddit (r/Insurance, r/Actuary, r/CFP, weather/EQ) + Substack + HN | ✅ |
 | 35% per-topic cap on `ai_insurtech` (configurable in `summarize.py` → `TOPIC_CAP_PCT`) | ✅ |
 | Obsidian publish to `81 P&C Digest/{Daily,Topics,Weekly,_meta}` | ✅ |
-| launchd jobs loaded: `am` 04:00, `pm` 16:00 daily, `weekly` Sat 06:00 (+ `learn` Sat 07:00 — the alpha-engine learning loop) | ✅ |
+| launchd jobs loaded: `am` 04:00, `pm` 16:00 daily, `weekly` Sat 06:00 (+ `learn` Sat 07:00 — the alpha-engine learning loop; + `askbot`, a KeepAlive Telegram listener restarted only on crash) | ✅ |
 
 Each is committed on `master` and pushed to
 [github.com/dram-dev/pc-insurance-digest](https://github.com/dram-dev/pc-insurance-digest).
@@ -455,8 +455,12 @@ Both projects POST to the single shared `mlx_lm.server` on localhost:8080
 (managed by macro digest's `com.dr.mlx.server` launchd job, KeepAlive).
 Stagger is 3 h on daily, full overnight gap before the weekly.
 
-Future bulletproof deconfliction (deferred): lockfile at `/tmp/mlx.lock`
-checked in `summarize.py`.
+Deconfliction **shipped**: a cross-process flock at `/tmp/digest-mlx.lock`
+(`MLX_LOCK_PATH` to override) via `mlx_serialize()` in
+`digest_core/summarize/backends.py`. Every MLX generate call takes it —
+`call_mlx_local`, the summarize pre-flight probe, and macro's direct
+sentiment/debate calls. It logs a warning if the lock can't be taken rather
+than silently running unserialized.
 
 ### Insurer ticker universe (Wave 1 + BRK)
 
@@ -559,6 +563,11 @@ Folder layout:
   by topic; Wave 2 will add synthesis)
 - `_meta/Run Log.md` — append-only operations log
 
+Captures land **outside** that tree, in `OBSIDIAN_CLIP_DIR` (default
+`82 P&C Clipped/`, a top-level vault sibling): the ask-bot and the Obsidian
+Web Clipper both write frontmatter `.md` files there, and the `clipped`
+ingestor consumes them on the next run.
+
 **Reserve heat-grid width guard:** the EKG "Reserve adequacy" grid
 (`viz_lab.render_reserve_heatgrid`) shows one column per LOB. The XBRL
 component-facts ingest lands 80+ raw, un-canonicalized LOB segment-members,
@@ -588,7 +597,8 @@ standard ~10 LOBs) is still the pending deeper fix** — see [[validate-computed
 ```
 src/digest/
 ├── cli.py        # Click commands: ingest, triage, summarize, regime, signals,
-│                 # pipeline, publish, weekly, stats, recent, health, init-db, web
+│                 # pipeline, publish, weekly, stats, recent, health, init-db, web,
+│                 # notify, ask-bot, capture, ask, forecast, learn, backfill, dashboard
 ├── config.py     # pydantic-settings; reads .env
 ├── db.py         # SQLite schema + queries; shares schema with macro for portability
 ├── triage.py     # P&C system prompt, 17-topic enum, Python auto-keep hook for EDGAR 8-K
@@ -598,6 +608,10 @@ src/digest/
 ├── regime.py     # Wave 2 two-axis regime detector (market_cycle × cat_load)
 ├── signals.py    # Wave 2 leaderboard formula + per-item score persistence
 ├── brief.py      # Mobile-first Obsidian Brief note (Brief/<date> Brief.md); written in publish()
+├── telegram_bot.py # Ask-bot long-poll listener (com.dr.pcdigest.askbot daemon): routes a
+│                 # message to RAG-ask or capture; sender-id auth; backs off on poll errors
+├── capture.py    # Forwarded X post / link / text → a frontmatter .md in OBSIDIAN_CLIP_DIR,
+│                 # picked up by the `clipped` ingestor on the next run
 ├── prices.py     # Alpha engine — daily price store (14 insurers + IAK/SPY); reuses outcomes.fetch_daily_closes
 ├── features.py   # Alpha engine — leakage-safe (ticker, as-of) feature panel: signal aggregates + warehouse facts + price controls
 ├── alpha.py      # Alpha engine — HistGB/LightGBM returns model; forward excess-return labels; purged walk-forward IC/long-short backtest
@@ -622,7 +636,11 @@ src/digest/
     ├── collision_data.py     # Wave 3 — CCC + Mitchell quarterly reports; TODO validate CSS selectors on Mac mini
     ├── state_doi.py          # Wave 3 — direct state DOI press scrapers; all states enabled:false; TODO validate selectors + enable CA first
     ├── industry_research.py  # Wave 3 — LexisNexis Risk + JD Power direct scraper; config/industry_research_sources.yaml; all disabled pending selector validation
-    └── serff.py              # Wave 3 Phase 2 — state SERFF rate filings ≥5%; portal dispatch (serff_standard / cdi_prior_approval / floir_irfa); all states enabled:false pending selector + POST validation
+    ├── serff.py              # Wave 3 Phase 2 — state SERFF rate filings ≥5%; portal dispatch (serff_standard / cdi_prior_approval / floir_irfa); all states enabled:false pending selector + POST validation
+    ├── clipped.py            # Obsidian Web Clipper / ask-bot captures — walks OBSIDIAN_CLIP_DIR,
+    │                         # auto-keep (score=1.0), stamps files consumed only on a clean run
+    └── fulltext.py           # Domain shell over digest_core.ingest.fulltext; opted in per
+                              # ingestor via `enrich_fulltext = True` (rss/substack/hn)
 
 src/digest/webapp/     # Web observatory — `uv run digest web` → http://127.0.0.1:8787
 ├── api.py             # pure query layer over a read-only conn (testable sans HTTP)
@@ -634,9 +652,12 @@ src/digest/webapp/     # Web observatory — `uv run digest web` → http://127.
 
 src/digest/sinks/      # Wave 3 Phase 1 — secondary write destinations
 ├── __init__.py        # exports module-level `sink` singleton
-└── databricks.py      # DatabricksSink (no-op when DATABRICKS_ENABLED=false)
-                       # 7 write methods: ingested/fred/regime/telemetry/triage/score/summary
-                       # lazy import + lazy connection + best-effort writes
+├── databricks.py      # DatabricksSink (no-op when DATABRICKS_ENABLED=false)
+│                      # 7 write methods: ingested/fred/regime/telemetry/triage/score/summary
+│                      # lazy import + lazy connection + best-effort writes
+└── notify.py          # Telegram push — domain formatting + quiet hours + notify_log dedup.
+                       # Transport (TelegramNotifier, esc/href/join_within) is shared:
+                       # digest_core.sinks.telegram. No-op unless TELEGRAM_* set.
 
 packages/digest-core/sql/databricks/   # Wave 3 Phase 1 — medallion DDL
 ├── bronze.sql         # 4 tables — raw firehose incl. drops + full FRED + telemetry
