@@ -9,12 +9,14 @@ Regulatory Sonar, etc.), see [CLAUDE.md](CLAUDE.md).
 
 [![CI](https://github.com/dram-dev/pc-insurance-digest/actions/workflows/ci.yml/badge.svg)](https://github.com/dram-dev/pc-insurance-digest/actions/workflows/ci.yml)
 
-## Status (Waves 1–4 shipped · all sources live · digest-core foundation extracted · local Analyst MCP agent · scoring-math wave 2026-06)
+## Status (Waves 1–4 shipped · all sources live · digest-core foundation extracted · local Analyst MCP agent · local web observatory · scoring-math wave 2026-06)
 
-**Pipeline:** `ingest → triage (Ollama Qwen2.5:14b) → summarize (MLX Qwen3.5-27B
-local) → score (signals leaderboard) → publish (Obsidian)`. Every stage's LLM is
-config-swappable through a backend registry — `digest models` prints the
-backend/model/endpoint per stage and pings each for reachability.
+**Pipeline:** `ingest → triage (Ollama qwen3.6:35b-a3b, OLLAMA_THINK=false) →
+summarize (MLX Qwen3.6-27B local) → score (signals leaderboard) → publish
+(Obsidian)`. Every stage's LLM is config-swappable through a backend registry —
+`digest models` prints the backend/model/endpoint per stage and pings each for
+reachability. (Models are `.env`-only; `.env.example` still ships the earlier
+Qwen2.5:14b / Qwen3.5-27B defaults as a documented baseline.)
 
 **Ingestors (live):**
 - **EDGAR** — 15-insurer universe (TRV, ALL, PGR, CB, HIG, AIG, MET, PRU, RNR,
@@ -115,6 +117,14 @@ existing scoring factor and is behaviour-preserving until its data flows.
 - Regulatory Sonar **lite** — `burden_direction` / `burden_intensity` on
   `regulatory_rate` items, with leaderboard boost and a daily-note callout on
   high-intensity items
+
+**Web observatory:** `digest web` serves a local, **read-only** D3 app over the
+warehouse at `http://127.0.0.1:8787` — no build step, zero new deps (vendored D3
+v7). Five views: **Pulse** (news-timing hero), **Signals** (score anatomy),
+**Market** (prices × filings), **Loss Lab** (reserving triangles + freq/sev),
+**Operations**. All times UTC; backfilled rows flagged; the SQLite conn is opened
+`mode=ro` so browsing can't mutate the source of truth. Tests:
+`tests/test_webapp.py`.
 
 **Publish:** Daily + weekly notes + per-topic archives in
 `{vault}/81 P&C Digest/{Daily,Topics,Weekly}/`, plus a `_meta/` folder for
@@ -313,13 +323,19 @@ Staggered with macro digest to avoid MLX contention:
 | am pipeline | daily 04:00 (3h after macro am) |
 | pm pipeline | daily 16:00 (3h after macro pm) |
 | weekly | Sat 06:00 (after macro Fri-night batch wraps) |
+| learn-loop | Sat 07:00 (outcomes → learn → forecast, after the weekly note) |
+| ask-bot | KeepAlive daemon — Telegram listener, restarted only on crash |
+
+Plists in `launchd/`; `scripts/install_launchd.sh` installs all five.
 
 ## Prerequisites
 
 - Python 3.12+
 - `uv` (`brew install uv`)
-- Ollama running locally with `qwen2.5:14b` pulled
-- MLX server (managed by macro digest's `com.dr.mlx.server` launchd job)
+- Ollama running locally with `qwen3.6:35b-a3b` pulled (triage; `OLLAMA_THINK=false`
+  suppresses its default reasoning)
+- MLX server (managed by macro digest's `com.dr.mlx.server` launchd job) serving
+  `Qwen3.6-27B` — shared with macro digest, one resident model for both
 - EDGAR user agent string (your email, per SEC policy)
 - Optional: the `render` extra + Playwright Chromium (`uv sync --extra render &&
   uv run playwright install chromium`) for JS/WAF-blocked sources;
@@ -339,7 +355,7 @@ uv sync
 # LexisNexis, JD Power) need the headless browser — opt in once:
 uv sync --extra render && uv run playwright install chromium
 cp .env.example .env       # fill in EDGAR_USER_AGENT, OBSIDIAN_VAULT_PATH,
-                           # REDDIT_* and any optional keys
+                           # and any optional keys (Reddit needs none — public .rss)
 uv run digest init-db
 uv run digest ingest all
 uv run digest sources     # live catalog: every source + 7-day ingest pulse
@@ -347,13 +363,25 @@ uv run digest models      # backend/model/endpoint per stage + reachability
 uv run digest brief       # regime + top signals + alert watchlist (offline)
 uv run digest stats
 uv run digest pipeline --run-type manual
+uv run digest web         # local read-only observatory → http://127.0.0.1:8787
 ```
 
-CLI commands: `ingest`, `sources`, `models`, `brief`, `rate`, `calibration`,
-`credibility`, `embed`, `related`, `ask`, `outcomes`, `learn`, `forecast`,
-`reserving`, `disclosure`, `cat-nowcast`, `severity-tape`, `litigation`,
-`burden`, `triage`, `summarize`, `regime`, `signals`, `pipeline`, `publish`,
-`weekly`, `stats`, `recent`, `health`, `viz`, `dashboard`, `init-db`.
+**CLI commands** (`digest --help` for the full list):
+
+- *Pipeline:* `ingest`, `triage`, `summarize`, `regime`, `signals`, `pipeline`,
+  `publish`, `weekly`
+- *Catalog / health:* `sources`, `models`, `stats`, `recent`, `health`, `init-db`
+- *Surfaces:* `web` (local read-only observatory), `dashboard`, `viz`, `brief`
+- *Scoring feedback / learning:* `rate`, `calibration`, `outcomes`, `learn`,
+  `learn-loop`, `credibility`
+- *Semantic layer:* `embed`, `related`, `ask`
+- *Fundamentals / reserving:* `ingest-xbrl`, `ingest-statutory`, `ingest-naic`,
+  `canonicalize`, `underwriting`, `pure-premium`, `reserving`,
+  `triangles-compare`, `disclosure`
+- *EKG leads:* `cat-nowcast`, `severity-tape`, `litigation`, `burden`
+- *Alpha engine:* `forecast` (`prices` / `backtest` / `train` / `predict`)
+- *Backfill:* `backfill` (historical EDGAR → matured outcome labels)
+- *Telegram:* `notify`, `ask-bot`, `capture`
 
 **Scoring feedback loop.** `digest rate <id> <1-5>` records what you thought an
 item was worth; `digest calibration` shows system-vs-you deltas; `digest
@@ -439,12 +467,17 @@ pc-insurance-digest/
 │   ├── reinsurance_sources.yaml       # Artemis ROL index (EKG Lead 1)
 │   ├── industry_research_sources.yaml # LexisNexis Risk, JD Power (render)
 │   ├── investor_supplements.yaml      # per-insurer 10-K triangle URLs (PGR live)
+│   ├── legiscan.yaml                  # state insurance-bill tracking (burden barometer)
+│   ├── xbrl_pc_insurers.yaml          # XBRL concept-registry universe
+│   ├── naic_insdata.yaml              # NAIC InsData Schedule P export mapping
+│   ├── statutory_summary.yaml         # III top-writer statutory feed
 │   └── naic_schedp_sources.yaml       # reserve-triangle data source (scaffold)
-├── launchd/                           # am / pm / weekly plists
+├── launchd/                           # am / pm / weekly / learn-loop / ask-bot plists
 ├── packages/digest-core/              # shared framework core (PC + macro plug in)
 │   ├── EXTRACTION_PLAN.md             # what-moves-where map
 │   ├── SEAMS_PLAN.md                  # Phase 2: design seams + macro port
-│   ├── sql/databricks/{bronze,silver,gold}.sql
+│   ├── sql/databricks/                # {bronze,silver,gold}.sql + xdomain.sql + alerts.sql
+│   │                                  # + apply_pc_digest.sql (deployment variant)
 │   └── src/digest_core/               # types · db · ingest · summarize · obsidian · cli · sinks
 ├── tests/                             # hermetic pytest suite
 ├── scripts/install_launchd.sh
@@ -462,12 +495,28 @@ pc-insurance-digest/
     ├── loglinear.py                   # learned score exponents, gated + opt-in
     ├── obsidian.py                    # daily / weekly / topic-archive writer (primitives in digest_core)
     ├── weekly.py                      # weekly synthesis (themes / must-reads)
+    ├── brief.py                       # mobile-first Brief note
+    ├── dashboard.py                   # Signal Desk + Home cockpit notes
+    ├── outcomes.py, learn.py          # scoring feedback loop (rate → outcomes → learn)
+    ├── semantic.py                    # embeddings / related / RAG ask
+    ├── prices.py, features.py, alpha.py, alpha_mlx.py       # alpha engine (return forecasts)
+    ├── backfill.py                    # historical EDGAR → matured outcome labels
+    ├── reserving.py, disclosure.py, freq_sev.py, fundamentals.py  # reserving / fundamentals quant
+    ├── edgar_xbrl_ingest.py, edgar_triangle_extract.py     # XBRL facts + triangle extractors
+    ├── cat_nowcast.py, severity_tape.py, litigation.py, capital_flows.py  # EKG leads
+    ├── telegram_bot.py, capture.py    # Telegram ask-bot + forward-to-capture
+    ├── mcp_server.py                  # read-only Analyst MCP server (digest-mcp)
     ├── health.py
     ├── security.py
-    ├── viz.py
-    ├── sinks/                         # shim → digest_core.sinks.databricks
-    │   ├── __init__.py
-    │   └── databricks.py              # medallion sink, no-op by default
+    ├── viz.py, viz_lab.py
+    ├── webapp/                        # `digest web` — local read-only D3 observatory
+    │   ├── api.py                     # pure query layer over a read-only conn
+    │   ├── server.py                  # stdlib ThreadingHTTPServer, mode=ro SQLite
+    │   └── static/                    # no-build SPA (vendored D3 v7, 5 views)
+    ├── sinks/
+    │   ├── __init__.py                # module-level `sink` singleton
+    │   ├── databricks.py              # medallion sink, no-op by default
+    │   └── notify.py                  # Telegram push — formatting + quiet hours + dedup
     └── ingest/                        # rss/substack/hn/reddit/edgar delegate to digest_core
         ├── base.py                    # binds digest_core IngestorBase → db (store)
         ├── render.py                  # Playwright headless fetch (JS/WAF sources)
@@ -477,7 +526,8 @@ pc-insurance-digest/
         ├── courtlistener.py, legiscan.py
         ├── state_doi.py, serff.py     # SERFF: TX/NY/LA portal · CA xlsx · FL API
         ├── industry_research.py, collision_data.py
-        ├── investor_supp.py, naic_schedp.py
+        ├── investor_supp.py, naic_schedp.py, naic_insdata.py, statutory_summary.py
+        └── clipped.py, fulltext.py    # Web Clipper / ask-bot captures; full-text enrich
 ```
 
 ## Roadmap
