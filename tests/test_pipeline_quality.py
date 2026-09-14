@@ -57,6 +57,7 @@ def stub_stages(monkeypatch, tmp_path):
 def test_pipeline_all_ok_exits_zero(stub_stages):
     res = CliRunner().invoke(cli.main, ["pipeline", "--run-type", "manual"])
     assert res.exit_code == 0, res.output
+    assert "pipeline lock acquired" not in res.output  # uncontended → no wait notice
     assert "run quality" in res.output
     assert "all stages ok" in res.output
 

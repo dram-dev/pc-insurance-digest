@@ -24,7 +24,7 @@ def private_lock(tmp_path, monkeypatch):
 def test_uncontended_acquire_waits_zero_and_is_reacquirable():
     for _ in range(3):
         with runlock.pipeline_serialize("pc") as waited:
-            assert waited < 1.0
+            assert waited == 0.0  # exactly zero, so `if waited:` never reports a wait
 
 
 def test_busy_lock_times_out_naming_the_holder():

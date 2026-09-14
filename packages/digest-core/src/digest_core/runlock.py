@@ -75,12 +75,14 @@ def pipeline_serialize(
         return
 
     started = time.monotonic()
+    contended = False
     try:
         while True:
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
             except BlockingIOError:
+                contended = True
                 waited = time.monotonic() - started
                 if waited >= timeout_sec:
                     raise PipelineLockTimeout(
@@ -92,7 +94,9 @@ def pipeline_serialize(
                     on_wait = None  # announce once, then wait quietly
                 time.sleep(_POLL_SEC)
 
-        waited = time.monotonic() - started
+        # Exactly 0.0 when the lock was free: callers use `if waited:` to decide
+        # whether to report a wait, and a raw monotonic delta is never zero.
+        waited = time.monotonic() - started if contended else 0.0
         stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         os.ftruncate(fd, 0)
         os.pwrite(fd, f"{holder} pid={os.getpid()} since={stamp}\n".encode(), 0)
