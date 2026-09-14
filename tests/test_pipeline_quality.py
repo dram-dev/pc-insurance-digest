@@ -9,7 +9,8 @@ from __future__ import annotations
 import pytest
 from click.testing import CliRunner
 
-from digest import cli, obsidian, prices, regime, signals, summarize, triage
+from digest import cli, obsidian, prices, regime, semantic, signals, summarize, triage
+from digest.sinks import notify
 
 
 class _FakeRegime:
@@ -38,6 +39,12 @@ def stub_stages(monkeypatch):
     monkeypatch.setattr(regime, "compute_regime", lambda *a, **k: _FakeRegime())
     monkeypatch.setattr(signals, "run_signals", lambda *a, **k: {"scored": 1})
     monkeypatch.setattr(prices, "run_prices", lambda *a, **k: {"rows": 0, "skipped": []})
+    # embed + notify read the configured DB (and notify can reach Telegram); on a
+    # machine with a real data/state.db they "pass" by accident, in CI they fail.
+    monkeypatch.setattr(semantic, "run_embed", lambda *a, **k: {"embedded": 0, "needed": 0})
+    monkeypatch.setattr(notify, "notify_top_signals",
+                        lambda *a, **k: {"candidates": 0, "sent": 0, "suppressed": False})
+    monkeypatch.setattr(notify, "notify_brief_ready", lambda *a, **k: False)
     monkeypatch.setattr(obsidian, "publish",
                         lambda *a, **k: {"daily_items": 1, "topic_archives": 1, "daily_path": "x"})
     return monkeypatch

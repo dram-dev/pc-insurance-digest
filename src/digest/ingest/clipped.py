@@ -48,6 +48,9 @@ _FRONTMATTER_RE = re.compile(
     re.DOTALL,
 )
 
+# Matches an existing stamp line so re-stamping replaces rather than duplicates.
+_STAMP_RE = re.compile(r"\s*digest_processed_at\s*:")
+
 # Field names we'll look for, in priority order, when extracting the X post URL.
 _URL_KEYS = ("source", "url", "permalink", "link")
 _TITLE_KEYS = ("title", "name")
@@ -158,11 +161,21 @@ def _stamp_processed(path: Path, when: datetime) -> None:
     key already exists it's overwritten with the new timestamp.
     """
     text = path.read_text(encoding="utf-8")
-    frontmatter, body = _split_frontmatter(text)
     iso = when.replace(microsecond=0).isoformat()
-    frontmatter["digest_processed_at"] = iso
-    new_yaml = yaml.safe_dump(frontmatter, sort_keys=False, allow_unicode=True).strip()
-    new_text = f"---\n{new_yaml}\n---\n{body.lstrip(chr(10))}"
+    stamp = f"digest_processed_at: '{iso}'"
+
+    m = _FRONTMATTER_RE.match(text)
+    if not m:
+        path.write_text(f"---\n{stamp}\n---\n{text.lstrip(chr(10))}", encoding="utf-8")
+        return
+
+    # Edit the raw YAML text rather than re-dumping a parse of it. A clip whose
+    # frontmatter doesn't parse (an unquoted colon in a title is enough) yields
+    # an empty dict, and re-dumping that would erase every key the file had.
+    body = text[m.end():]
+    lines = [ln for ln in m.group(1).split("\n") if not _STAMP_RE.match(ln)]
+    lines.append(stamp)
+    new_text = "---\n" + "\n".join(lines) + f"\n---\n{body.lstrip(chr(10))}"
     path.write_text(new_text, encoding="utf-8")
 
 
@@ -204,6 +217,17 @@ class ClippedIngestor(IngestorBase):
     def run(self, run_type: str = "manual") -> tuple[int, int]:
         # Delegate fetch + upsert + run-log entry to the base class.
         fetched, new = super().run(run_type=run_type)
+
+        if self.last_status != "ok":
+            # The base class swallows persist failures (e.g. "database is
+            # locked" while the ask-bot daemon writes), so stamping here would
+            # mark clips consumed that were never stored — and stamped files
+            # are skipped forever, losing them silently.
+            logger.error(
+                "clipped: ingest failed — leaving %d file(s) unstamped for retry",
+                len(self._files_to_stamp),
+            )
+            return fetched, new
 
         # Mark all clipped items pending triage as keep/score=1 — these
         # bypass triage by user intent. Idempotent (only flips the NULLs).

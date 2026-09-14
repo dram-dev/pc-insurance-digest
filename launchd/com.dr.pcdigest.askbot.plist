@@ -24,9 +24,14 @@
         <string>/Users/dramsey</string>
     </dict>
 
-    <!-- Long-poll listener: always up, restarted on crash. -->
+    <!-- Long-poll listener: restarted on crash, but NOT after a clean exit.
+         `digest ask-bot` exits 0 when Telegram isn't configured, and a plain
+         KeepAlive would respawn that every ThrottleInterval seconds forever. -->
     <key>KeepAlive</key>
-    <true/>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
 
     <key>RunAtLoad</key>
     <true/>

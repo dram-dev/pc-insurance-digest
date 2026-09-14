@@ -9,7 +9,6 @@ other chat (someone who stumbled onto the bot) are logged and ignored.
 """
 from __future__ import annotations
 
-import html
 import logging
 import time
 
@@ -17,11 +16,15 @@ from digest_core.summarize.backends import BackendError
 
 from digest import capture, semantic
 from digest.config import settings
-from digest.sinks.notify import notifier
+from digest_core.sinks import telegram as _tg
+
+from digest.sinks.notify import _esc, _href, notifier
 
 logger = logging.getLogger(__name__)
 
-_MAX_MSG = 4000  # Telegram hard limit is 4096; leave headroom
+_MAX_MSG = 4000     # Telegram hard limit is 4096; leave headroom
+_MAX_ANSWER = 2500  # bound the synthesis so sources always have room
+_MAX_BACKOFF = 300  # seconds; ceiling for the poll-error backoff
 _HELP = (
     "🔎 <b>Ask the P&C digest archive</b>\n"
     "Send a question and I'll answer from the kept items, with sources:\n"
@@ -33,8 +36,9 @@ _HELP = (
 )
 
 
-def _esc(s: str | None) -> str:
-    return html.escape(s or "", quote=False)
+def _join_within(parts: list[str], limit: int = _MAX_MSG) -> str:
+    """Tag-safe assembly — see digest_core.sinks.telegram.join_within."""
+    return _tg.join_within(parts, limit)
 
 
 def _format_reply(result: dict) -> str:
@@ -47,20 +51,24 @@ def _format_reply(result: dict) -> str:
             return f"⚠️ {_esc(error)}"
         return "No matching items in the archive for that one."
 
-    parts = [_esc(answer) if answer else "<i>(synthesis unavailable — top matches below)</i>"]
+    # Truncate the raw answer before escaping — escaping first and slicing after
+    # can cut an &amp; in half, which Telegram rejects outright.
+    parts = [
+        _esc(answer[:_MAX_ANSWER]) if answer
+        else "<i>(synthesis unavailable — top matches below)</i>"
+    ]
     if not answer and error:
         parts.append(f"<i>{_esc(error)}</i>")
     parts.append("\n<b>Sources</b>")
     for s in sources:
         n = s.get("n")
         title = _esc(s.get("title"))
-        url = s.get("url")
+        href = _href(s.get("url"))
         line = f"[{n}] {title} <i>({_esc(s.get('source'))})</i>"
-        if url:
-            line += f' — <a href="{_esc(url)}">link</a>'
+        if href:
+            line += f' — <a href="{href}">link</a>'
         parts.append(line)
-    msg = "\n".join(parts)
-    return msg[:_MAX_MSG]
+    return _join_within(parts)
 
 
 _FORWARD_KEYS = (
@@ -148,12 +156,12 @@ def _do_capture(text: str, message: dict) -> bool:
     kind = {"tweet": "X post", "article": "full article", "text": "text"}.get(
         res["kind"], res["kind"]
     )
-    reply = f"📥 Captured {kind} ({res['chars']} chars):\n<b>{_esc(res['title'])}</b>"
+    parts = [f"📥 Captured {kind} ({res['chars']} chars):\n<b>{_esc(res['title'])}</b>"]
     takeaway = _capture_takeaway(res)
     if takeaway:
-        reply += f"\n\n{takeaway}"
-    reply += "\n\n<i>Filed for the next digest run.</i>"
-    notifier.send(reply[:_MAX_MSG])
+        parts.append(f"\n{takeaway}")
+    parts.append("\n<i>Filed for the next digest run.</i>")
+    notifier.send(_join_within(parts))
     return True
 
 
@@ -181,9 +189,18 @@ def _handle_message(message: dict) -> bool:
 
 
 def _is_authorized(update: dict) -> bool:
-    """Only the configured chat id may talk to the bot."""
-    chat_id = (update.get("message") or {}).get("chat", {}).get("id")
-    return chat_id is not None and str(chat_id) == str(settings.telegram_chat_id)
+    """Only the configured account may talk to the bot.
+
+    Matches the SENDER, not the conversation. In a group every member shares one
+    chat id, so gating on that would let anyone in the group read the archive
+    through the RAG and write into the capture inbox. Falls back to the chat id
+    for updates with no sender (channel posts), where they are the same thing.
+    """
+    msg = update.get("message") or {}
+    sender_id = (msg.get("from") or {}).get("id")
+    if sender_id is None:
+        sender_id = (msg.get("chat") or {}).get("id")
+    return sender_id is not None and str(sender_id) == str(settings.telegram_chat_id)
 
 
 def _drain_backlog() -> int | None:
@@ -204,13 +221,22 @@ def run_listener(poll_timeout: int = 30) -> None:
         )
     logger.info("ask-bot: listening (chat_id=%s)", settings.telegram_chat_id)
     offset = _drain_backlog()
+    backoff = 1
     while True:
         updates = notifier.get_updates(offset=offset, timeout=poll_timeout)
+        if updates is None:
+            # A failed poll returns immediately, so back off — otherwise a
+            # revoked token or a second listener (409) spins at ~1 req/s
+            # forever under KeepAlive, with a log line per second.
+            time.sleep(backoff)
+            backoff = min(backoff * 2, _MAX_BACKOFF)
+            continue
+        backoff = 1
         for u in updates:
             offset = u["update_id"] + 1
             if not _is_authorized(u):
-                logger.warning("ask-bot: ignoring update from unauthorized chat")
+                logger.warning("ask-bot: ignoring update from unauthorized sender")
                 continue
             _handle_message(u.get("message") or {})
         if not updates:
-            time.sleep(1)  # gentle floor when long-poll returns empty/errs
+            time.sleep(1)  # gentle floor when the long poll returns empty

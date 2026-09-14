@@ -17,11 +17,14 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import json
+import logging
 import os
 import subprocess
 from dataclasses import dataclass
 
 import requests
+
+logger = logging.getLogger(__name__)
 
 _MLX_LOCK_PATH = os.environ.get("MLX_LOCK_PATH", "/tmp/digest-mlx.lock")
 
@@ -41,7 +44,15 @@ def mlx_serialize():
     try:
         fd = os.open(_MLX_LOCK_PATH, os.O_CREAT | os.O_RDWR, 0o666)
         fcntl.flock(fd, fcntl.LOCK_EX)
-    except OSError:
+    except OSError as exc:
+        # Degrading to "no lock" is deliberate — it must never block a summary —
+        # but say so, or a permissions problem on the lock file looks exactly
+        # like the lock working right up until the shared server OOMs.
+        logger.warning(
+            "mlx: could not take %s (%s) — proceeding UNSERIALIZED; "
+            "concurrent digests can Metal-OOM the shared server",
+            _MLX_LOCK_PATH, exc,
+        )
         if fd is not None:
             os.close(fd)
             fd = None

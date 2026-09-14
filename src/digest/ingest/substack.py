@@ -18,6 +18,7 @@ SUBSTACK_CONFIG = Path(__file__).resolve().parents[3] / "config" / "substack_fee
 
 class SubstackIngestor(IngestorBase):
     name = "substack"
+    enrich_fulltext = True  # feeds carry excerpts, not full articles
 
     def __init__(self) -> None:
         self.feeds = yaml.safe_load(SUBSTACK_CONFIG.read_text())["feeds"]

@@ -74,3 +74,44 @@ def test_resolve_clip_dir_requires_config(monkeypatch):
     monkeypatch.setattr(clipped.settings, "obsidian_clip_dir", "")
     with pytest.raises(RuntimeError):
         clipped._resolve_clip_dir()
+
+
+def test_stamp_preserves_unparseable_frontmatter(tmp_path):
+    """A clip whose YAML doesn't parse must keep every key it had.
+
+    Re-dumping a failed parse (which yields {}) used to erase title/source/
+    author/tags from the user's vault file in place.
+    """
+    clip = tmp_path / "bad.md"
+    clip.write_text(
+        "---\n"
+        "title: Florida DOI: homeowners rates rise 12%\n"   # unquoted colon
+        "source: https://example.com/a\n"
+        "author: Jane Doe\n"
+        "tags: [clipping]\n"
+        "---\n"
+        "Body stays put.\n",
+        encoding="utf-8",
+    )
+    from datetime import datetime, timezone
+
+    clipped._stamp_processed(clip, datetime.now(timezone.utc))
+    out = clip.read_text(encoding="utf-8")
+
+    assert "title: Florida DOI: homeowners rates rise 12%" in out
+    assert "source: https://example.com/a" in out
+    assert "author: Jane Doe" in out
+    assert "tags: [clipping]" in out
+    assert "digest_processed_at" in out
+    assert "Body stays put." in out
+
+
+def test_stamp_is_idempotent(tmp_path):
+    """Re-stamping replaces the timestamp instead of appending another."""
+    from datetime import datetime, timezone
+
+    clip = tmp_path / "ok.md"
+    clip.write_text(_CLIP, encoding="utf-8")
+    clipped._stamp_processed(clip, datetime.now(timezone.utc))
+    clipped._stamp_processed(clip, datetime.now(timezone.utc))
+    assert clip.read_text(encoding="utf-8").count("digest_processed_at") == 1

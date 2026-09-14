@@ -26,7 +26,12 @@ import requests
 
 from digest import db
 from digest.config import settings
-from digest_core.summarize.backends import BACKENDS, BackendConfig, BackendError
+from digest_core.summarize.backends import (
+    BACKENDS,
+    BackendConfig,
+    BackendError,
+    mlx_serialize,
+)
 from digest_core.summarize.runner import extract_json
 
 logger = logging.getLogger(__name__)
@@ -469,12 +474,16 @@ def run_summarize(
     if backend == "mlx_local":
         probe_url = settings.mlx_server_url.rstrip("/") + "/v1/chat/completions"
         try:
-            probe = requests.post(probe_url, json={
-                "model": settings.mlx_model,
-                "messages": [{"role": "user", "content": "hi"}],
-                "max_tokens": 1,
-                "chat_template_kwargs": {"enable_thinking": False},
-            }, timeout=20)
+            # This is a real generate call, so it takes the same cross-process
+            # lock as call_mlx_local — unlocked it can be batched against the
+            # sibling digest's in-flight request and Metal-OOM the shared server.
+            with mlx_serialize():
+                probe = requests.post(probe_url, json={
+                    "model": settings.mlx_model,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "max_tokens": 1,
+                    "chat_template_kwargs": {"enable_thinking": False},
+                }, timeout=20)
             probe.raise_for_status()
         except requests.ConnectionError:
             logger.error(

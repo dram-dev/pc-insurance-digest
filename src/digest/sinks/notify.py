@@ -15,7 +15,6 @@ and read your chat id from getUpdates (or @userinfobot) for TELEGRAM_CHAT_ID.
 """
 from __future__ import annotations
 
-import html
 import json
 import logging
 import sqlite3
@@ -23,92 +22,23 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 
-import requests
+from digest_core.sinks.telegram import (
+    TelegramNotifier,
+    esc as _esc,
+    href as _href,
+)
 
 from digest import db
 from digest.config import settings
 
 logger = logging.getLogger(__name__)
 
-_TIMEOUT = 10
-
-
-class TelegramNotifier:
-    """Telegram Bot API client. Disabled (no-op) unless token + chat id set.
-
-    Send-only by default; `get_updates` enables the interactive ask-bot listener.
-    """
-
-    def __init__(self, token: str, chat_id: str, enabled: bool) -> None:
-        self.token = token
-        self.chat_id = chat_id
-        self.enabled = enabled and bool(token) and bool(chat_id)
-
-    def _url(self, method: str) -> str:
-        return f"https://api.telegram.org/bot{self.token}/{method}"
-
-    def send(self, text: str) -> bool:
-        """POST one HTML message. True on success; False on no-op or any failure."""
-        if not self.enabled:
-            logger.debug("notify: disabled or unconfigured; skipping send")
-            return False
-        try:
-            resp = requests.post(
-                self._url("sendMessage"),
-                json={
-                    "chat_id": self.chat_id,
-                    "text": text,
-                    "parse_mode": "HTML",
-                    "disable_web_page_preview": True,
-                },
-                timeout=_TIMEOUT,
-            )
-            resp.raise_for_status()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("notify: send failed: %s", exc)
-            return False
-        return True
-
-    def send_test(self) -> bool:
-        return self.send(
-            "✅ <b>pc-insurance-digest</b> test alert\n"
-            "Telegram notifications are wired up correctly."
-        )
-
-    def send_chat_action(self, action: str = "typing") -> None:
-        """Best-effort 'typing…' indicator while a reply is being prepared."""
-        if not self.enabled:
-            return
-        try:
-            requests.post(
-                self._url("sendChatAction"),
-                json={"chat_id": self.chat_id, "action": action},
-                timeout=_TIMEOUT,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("notify: chat action failed: %s", exc)
-
-    def get_updates(self, offset: int | None = None, timeout: int = 30) -> list[dict]:
-        """Long-poll for incoming updates. Returns [] when disabled or on error."""
-        if not self.enabled:
-            return []
-        params: dict = {"timeout": timeout}
-        if offset is not None:
-            params["offset"] = offset
-        try:
-            resp = requests.get(
-                self._url("getUpdates"), params=params, timeout=timeout + 10
-            )
-            resp.raise_for_status()
-            return resp.json().get("result", [])
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("notify: get_updates failed: %s", exc)
-            return []
-
-
-def _esc(s: str | None) -> str:
-    """Escape the three chars Telegram HTML mode cares about (< > &)."""
-    return html.escape(s or "", quote=False)
+def send_test() -> bool:
+    """One-off 'the wiring works' ping, named for this digest."""
+    return notifier.send(
+        "✅ <b>pc-insurance-digest</b> test alert\n"
+        "Telegram notifications are wired up correctly."
+    )
 
 
 def _row_get(row: sqlite3.Row, key: str, default=None):
@@ -159,7 +89,9 @@ def _format_signal(row: sqlite3.Row, regime: str | None = None) -> str:
 
     topic = _esc(_row_get(row, "topic")) or "—"
     title = _esc(_row_get(row, "title")) or "(no title)"
-    why = _esc(_row_get(row, "why_it_matters"))
+    # Truncate BEFORE escaping: slicing escaped text can cut an &amp; in half,
+    # which Telegram rejects outright. P&C copy is full of them.
+    why = _esc((_row_get(row, "why_it_matters") or "")[:300])
     score = float(row["score"])
     badge = signals.tier_badge_for_row(row)
     # Header: tier badge + leaderboard score (PC's unbounded product, not 0–1).
@@ -170,7 +102,7 @@ def _format_signal(row: sqlite3.Row, regime: str | None = None) -> str:
         head += f"  ({score:.2f})"
     lines = [head, title]
     if why:
-        lines.append(why[:300])
+        lines.append(why)
 
     # Meta line: source · date · sentiment · regime
     meta = [_esc(_source_name(_row_get(row, "source"), _row_get(row, "metadata_json")))]
@@ -184,8 +116,9 @@ def _format_signal(row: sqlite3.Row, regime: str | None = None) -> str:
         meta.append(f"🌀 {_esc(regime)}")
     lines.append(f"<i>{' · '.join(meta)}</i>")
 
-    if _row_get(row, "url"):
-        lines.append(f'<a href="{_esc(row["url"])}">Read source</a>')
+    href = _href(_row_get(row, "url"))
+    if href:
+        lines.append(f'<a href="{href}">Read source</a>')
     return "\n".join(lines)
 
 
@@ -210,7 +143,9 @@ def _pushing_allowed(now: datetime | None = None) -> bool:
     h = (now or datetime.now()).hour
     start = settings.notify_quiet_start_hour
     end = settings.notify_quiet_end_hour
-    if end <= start:
+    if start == end:
+        return True  # zero-width window = quiet hours disabled (e.g. 0/0)
+    if end < start:
         return end <= h < start
     return h >= end or h < start  # config with a window that wraps midnight
 
@@ -222,8 +157,19 @@ def notify_top_signals() -> dict:
     a recency window keeps it to genuine net-new signals, and quiet hours
     suppress the whole step (sending + recording) outside the allowed window.
     """
-    out = {"candidates": 0, "sent": 0}
-    if not notifier.enabled or not _pushing_allowed():
+    out = {"candidates": 0, "sent": 0, "suppressed": False}
+    if not notifier.enabled:
+        return out
+    if not _pushing_allowed():
+        # Report this distinctly — "quiet hours" and "nothing scored high enough"
+        # both used to print sent=0, which hid that the 04:00 am run has never
+        # pushed anything (its whole window sits inside the default 22–08 quiet).
+        out["suppressed"] = True
+        logger.info(
+            "notify: suppressed by quiet hours (%02d:00–%02d:00 local)",
+            settings.notify_quiet_start_hour,
+            settings.notify_quiet_end_hour,
+        )
         return out
     rows = db.unnotified_high_signals(
         settings.notify_min_score,
@@ -252,7 +198,9 @@ def notify_brief_ready(date_iso: str) -> bool:
     """Optional once-per-run 'Brief ready' ping (off unless NOTIFY_BRIEF_PING)."""
     if not (notifier.enabled and settings.notify_brief_ping and _pushing_allowed()):
         return False
-    top = db.top_signal_scores(limit=5)
+    # Scope to the day being announced — unfiltered, this pulled the top 5 of
+    # all time, so the "Brief ready" ping was identical every day.
+    top = db.top_signal_scores(limit=5, since_iso=date_iso)
     lines = [f"📰 <b>P&C Brief ready</b> · {_esc(date_iso)}"]
     regime = _regime_tag()
     if regime:
@@ -260,7 +208,9 @@ def notify_brief_ready(date_iso: str) -> bool:
     lines += [f"• {_esc(_row_get(r, 'title'))}" for r in top]
     link = _brief_link(date_iso)
     if link:
-        lines.append(f'<a href="{_esc(link)}">Open Brief</a>')
+        # obsidian:// is not an accepted href scheme — Telegram 400s the whole
+        # message on it — so the deep link ships as plain tappable text.
+        lines.append(_esc(link))
     return notifier.send("\n".join(lines))
 
 

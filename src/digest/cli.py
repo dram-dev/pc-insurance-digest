@@ -281,7 +281,7 @@ def ask(question: str, k: int) -> None:
 @click.option("--test", "test_only", is_flag=True, help="Send a test push and exit")
 def notify(test_only: bool) -> None:
     """Send pending high-conviction Telegram pushes (or --test to verify setup)."""
-    from digest.sinks.notify import notifier, notify_top_signals
+    from digest.sinks.notify import notifier, notify_top_signals, send_test
 
     db.init_db()
     console.rule("[bold cyan]notify")
@@ -292,7 +292,7 @@ def notify(test_only: bool) -> None:
         )
         return
     if test_only:
-        ok = notifier.send_test()
+        ok = send_test()
         console.print("  [green]✓[/green] test sent" if ok else "  [red]✗[/red] test failed")
         return
     nr = notify_top_signals()
@@ -1332,17 +1332,9 @@ def pipeline(run_type: str, skip_publish: bool) -> None:
             console.print(f"  [green]✓[/green] embedded {e['embedded']}/{e['needed']} items")
         _optional("5c", "embed", _embed)
 
-        # Telegram push: net-new high-conviction signals + optional Brief ping.
-        # No-op unless TELEGRAM_* configured; quiet hours suppress sending.
-        def _notify() -> None:
-            from datetime import datetime, timezone
-            from digest.sinks.notify import notify_brief_ready, notify_top_signals
-            nr = notify_top_signals()
-            notify_brief_ready(datetime.now(timezone.utc).strftime("%Y-%m-%d"))
-            console.print(
-                f"  [green]✓[/green] notify: sent={nr['sent']} candidates={nr['candidates']}"
-            )
-        _optional("5d", "notify", _notify)
+    # Alerts ride on summarized items, so they only need the core to have run —
+    # snapshot that before publish can flip the flag.
+    core_ok = not required_failure
 
     # ── required: publish (the run's actual output) ─────────────────────────
     if skip_publish:
@@ -1362,6 +1354,20 @@ def pipeline(run_type: str, skip_publish: bool) -> None:
             console.print(f"  [red]✗[/red] publish failed: {escape(str(exc))}")
             failures.append(f"publish (required): {exc}")
             required_failure = True
+
+    # Telegram push: net-new high-conviction signals + optional Brief ping.
+    # No-op unless TELEGRAM_* configured; quiet hours suppress sending. Runs
+    # AFTER publish so the Brief deep link points at a note that already exists,
+    # but outside the publish guard so alerts still fire when publish is skipped.
+    if core_ok:
+        def _notify() -> None:
+            from datetime import datetime, timezone
+            from digest.sinks.notify import notify_brief_ready, notify_top_signals
+            nr = notify_top_signals()
+            notify_brief_ready(datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+            state = "quiet hours" if nr["suppressed"] else f"candidates={nr['candidates']}"
+            console.print(f"  [green]✓[/green] notify: sent={nr['sent']} {state}")
+        _optional("7", "notify", _notify)
 
     # ── run-quality summary + exit code ─────────────────────────────────────
     console.rule("[bold]run quality")
