@@ -1,7 +1,7 @@
 name: CI
 
 # Test + lint gate for the digest pipeline. Without this, dependency drift or a
-# broken import only surfaces when launchd runs the pipeline at 04:00. The test
+# broken import only surfaces when launchd runs the pipeline overnight. The test
 # job is the hard gate; lint is advisory until the existing findings are cleaned up.
 
 on:

@@ -17,8 +17,8 @@ from digest import db
 from digest.config import settings
 
 LAUNCHD_LABELS = [
-    "com.dr.pcdigest.am",
-    "com.dr.pcdigest.pm",
+    "com.dr.pcdigest.daily",
+    "com.dr.pcdigest.notify",
     "com.dr.pcdigest.weekly",
     # com.dr.mlx.server lives with macro-ai-digest (shared MLX backend);
     # reported as a dependency so a missing server surfaces in P&C health too.

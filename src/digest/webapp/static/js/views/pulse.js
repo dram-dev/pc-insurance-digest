@@ -337,7 +337,7 @@ function drawCadence(grid, cad, days) {
   const chart = card(grid, {
     title: "Ingest cadence",
     span: 6,
-    note: "When items arrive in the warehouse: UTC weekday × hour. The 04:00/16:00 bands are the scheduled am/pm launchd runs.",
+    note: "When items arrive in the warehouse: UTC weekday × hour. The early-morning band is the once-daily launchd run (01:05 local, after macro); older history also shows the retired am/pm pair.",
   });
   if (!cad.rows.length) return empty(chart, "no items in window");
   const total = d3.sum(cad.rows, (r) => r.n);

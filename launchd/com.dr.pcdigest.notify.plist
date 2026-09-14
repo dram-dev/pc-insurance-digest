@@ -3,16 +3,14 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.dr.pcdigest.pm</string>
+    <string>com.dr.pcdigest.notify</string>
 
     <key>ProgramArguments</key>
     <array>
         <string>__UV_PATH__</string>
         <string>run</string>
         <string>digest</string>
-        <string>pipeline</string>
-        <string>--run-type</string>
-        <string>pm</string>
+        <string>notify</string>
     </array>
 
     <key>WorkingDirectory</key>
@@ -24,19 +22,22 @@
         <string>/Users/dramsey/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/usr/sbin:/sbin:/bin</string>
     </dict>
 
+    <!-- Delivers the daily run's Telegram alerts once quiet hours end
+         (NOTIFY_QUIET_END_HOUR, default 08). The 01:00 run lands inside quiet
+         hours, so without this nothing would ever push. No LLM calls. -->
     <key>StartCalendarInterval</key>
     <dict>
         <key>Hour</key>
-        <integer>16</integer>
+        <integer>8</integer>
         <key>Minute</key>
         <integer>0</integer>
     </dict>
 
     <key>StandardOutPath</key>
-    <string>__PROJECT_PATH__/logs/pm.out.log</string>
+    <string>__PROJECT_PATH__/logs/notify.out.log</string>
 
     <key>StandardErrorPath</key>
-    <string>__PROJECT_PATH__/logs/pm.err.log</string>
+    <string>__PROJECT_PATH__/logs/notify.err.log</string>
 
     <key>RunAtLoad</key>
     <false/>

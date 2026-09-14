@@ -162,8 +162,9 @@ def notify_top_signals() -> dict:
         return out
     if not _pushing_allowed():
         # Report this distinctly — "quiet hours" and "nothing scored high enough"
-        # both used to print sent=0, which hid that the 04:00 am run has never
-        # pushed anything (its whole window sits inside the default 22–08 quiet).
+        # both used to print sent=0, which hid that the overnight run never
+        # pushes (it sits inside the default 22–08 quiet) — the 08:00 `notify`
+        # launchd job delivers instead.
         out["suppressed"] = True
         logger.info(
             "notify: suppressed by quiet hours (%02d:00–%02d:00 local)",

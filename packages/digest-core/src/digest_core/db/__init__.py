@@ -6,7 +6,9 @@ projects build on top of.
 """
 from digest_core.db.schema import BASE_SCHEMA
 from digest_core.db.helpers import (
+    SCHEDULED_RUN_TYPES,
     get_conn,
+    hours_since_previous_run,
     init_db_with_migrations,
     item_stats,
     log_run,
@@ -18,7 +20,9 @@ from digest_core.db.helpers import (
 
 __all__ = [
     "BASE_SCHEMA",
+    "SCHEDULED_RUN_TYPES",
     "get_conn",
+    "hours_since_previous_run",
     "init_db_with_migrations",
     "item_stats",
     "log_run",

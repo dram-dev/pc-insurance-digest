@@ -323,8 +323,18 @@ def triage_item(item: dict[str, Any]) -> dict[str, Any]:
     return _normalize_verdict(verdict)
 
 
-def run_triage(limit: int = 200) -> dict[str, int]:
-    """Triage all pending items (up to `limit`)."""
+def run_triage(
+    limit: int | None = None, lookback_hours: int | None = None
+) -> dict[str, int]:
+    """Triage pending items ingested since the previous scheduled run.
+
+    `limit` defaults to TRIAGE_MAX_PER_RUN; `lookback_hours` defaults to
+    `db.triage_lookback_hours()` — the pipeline resolves it before ingesting.
+    """
+    if limit is None:
+        limit = settings.triage_max_per_run
+    if lookback_hours is None:
+        lookback_hours = db.triage_lookback_hours()
     # Python auto-keep hooks — mandatory cases that cannot silently fail.
     auto_kept = db.auto_keep_insurer_filings(
         tickers=INSURER_TICKERS_WAVE1,
@@ -351,12 +361,14 @@ def run_triage(limit: int = 200) -> dict[str, int]:
             logger.info("triage: auto-kept %d %s", n, label)
             auto_kept += n
 
-    items = db.items_needing_triage(limit=limit)
+    items = db.items_needing_triage(limit=limit, lookback_hours=lookback_hours)
     if not items:
         logger.info("triage: nothing pending")
         return {"pending": 0, "kept": auto_kept, "dropped": 0, "errors": 0}
 
-    seen_titles = db.recent_kept_titles(hours=24)
+    # Dedup against everything kept since the previous run, not a fixed 24h —
+    # with one run a day, yesterday's kept titles sit right at the 24h edge.
+    seen_titles = db.recent_kept_titles(hours=lookback_hours)
 
     counts = {"pending": len(items), "kept": auto_kept, "dropped": 0, "errors": 0}
     for row in items:
