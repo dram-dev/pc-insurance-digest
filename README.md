@@ -282,7 +282,8 @@ high-conviction tier, *not* macro's 0–1 `triage_score`), scored within
 `NOTIFY_LOOKBACK_HOURS` (default 24, net-new not backlog), capped at
 `NOTIFY_MAX_PER_RUN`, and deduped per item via `notify_log` so a signal never
 re-fires. Pushes respect quiet hours — only `NOTIFY_QUIET_END_HOUR` ≤ local hour
-< `NOTIFY_QUIET_START_HOUR` (default 8am–10pm). Each push shows the conviction
+< `NOTIFY_QUIET_START_HOUR` (default 8am–10pm); the 01:00 run stays silent and
+the 08:00 `notify` job delivers. Each push shows the conviction
 tier, score, source, sentiment, and the prevailing regime.
 
 **Ask the archive (RAG from your phone).** `digest ask-bot` runs a long-polling
@@ -316,17 +317,27 @@ job (KeepAlive; installed by `scripts/install_launchd.sh`). Set
 
 ## Schedule
 
-Staggered with macro digest to avoid MLX contention:
+One run a day, sequenced with macro digest so the two never share the local
+Ollama/MLX servers at the same time:
 
 | Job | When |
 |---|---|
-| am pipeline | daily 04:00 (3h after macro am) |
-| pm pipeline | daily 16:00 (3h after macro pm) |
+| daily pipeline | 01:05 — waits for macro's 01:00 run to finish, then runs |
+| notify | 08:00 — sends the overnight run's Telegram pushes once quiet hours end |
 | weekly | Sat 06:00 (after macro Fri-night batch wraps) |
 | learn-loop | Sat 07:00 (outcomes → learn → forecast, after the weekly note) |
 | ask-bot | KeepAlive daemon — Telegram listener, restarted only on crash |
 
-Plists in `launchd/`; `scripts/install_launchd.sh` installs all five.
+Every `digest pipeline` (either project, scheduled or manual) holds a shared
+lock for the whole run (`/tmp/digest-pipeline.lock`, via
+`digest_core.runlock.pipeline_serialize`). A second run logs who it's waiting on
+and starts when the first finishes; after `PIPELINE_LOCK_TIMEOUT_SEC` (default
+4h) it gives up and exits non-zero rather than overlap. Each run triages
+everything ingested since the previous scheduled run (never less than
+`TRIAGE_LOOKBACK_HOURS`).
+
+Plists in `launchd/`; `scripts/install_launchd.sh` installs all five and
+retires the old `am`/`pm` jobs.
 
 ## Prerequisites
 

@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.dr.pcdigest.am</string>
+    <string>com.dr.pcdigest.daily</string>
 
     <key>ProgramArguments</key>
     <array>
@@ -12,7 +12,7 @@
         <string>digest</string>
         <string>pipeline</string>
         <string>--run-type</string>
-        <string>am</string>
+        <string>daily</string>
     </array>
 
     <key>WorkingDirectory</key>
@@ -24,19 +24,22 @@
         <string>/Users/dramsey/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/usr/sbin:/sbin:/bin</string>
     </dict>
 
+    <!-- The one run a day. Queued behind macro-ai-digest's 01:00 run: the
+         pipeline blocks on the shared cross-digest lock (/tmp/digest-pipeline.lock)
+         until macro finishes, so the two never share Ollama/MLX at once. -->
     <key>StartCalendarInterval</key>
     <dict>
         <key>Hour</key>
-        <integer>4</integer>
+        <integer>1</integer>
         <key>Minute</key>
-        <integer>0</integer>
+        <integer>5</integer>
     </dict>
 
     <key>StandardOutPath</key>
-    <string>__PROJECT_PATH__/logs/am.out.log</string>
+    <string>__PROJECT_PATH__/logs/daily.out.log</string>
 
     <key>StandardErrorPath</key>
-    <string>__PROJECT_PATH__/logs/am.err.log</string>
+    <string>__PROJECT_PATH__/logs/daily.err.log</string>
 
     <key>RunAtLoad</key>
     <false/>

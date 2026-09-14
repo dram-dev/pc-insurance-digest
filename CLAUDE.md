@@ -39,7 +39,7 @@ own `com.dr.pcdigest.*` jobs.
 | Reddit (r/Insurance, r/Actuary, r/CFP, weather/EQ) + Substack + HN | ✅ |
 | 35% per-topic cap on `ai_insurtech` (configurable in `summarize.py` → `TOPIC_CAP_PCT`) | ✅ |
 | Obsidian publish to `81 P&C Digest/{Daily,Topics,Weekly,_meta}` | ✅ |
-| launchd jobs loaded: `am` 04:00, `pm` 16:00 daily, `weekly` Sat 06:00 (+ `learn` Sat 07:00 — the alpha-engine learning loop; + `askbot`, a KeepAlive Telegram listener restarted only on crash) | ✅ |
+| launchd jobs loaded: `daily` 01:05 (queued behind macro's 01:00 run), `notify` 08:00, `weekly` Sat 06:00 (+ `learn` Sat 07:00 — the alpha-engine learning loop; + `askbot`, a KeepAlive Telegram listener restarted only on crash) | ✅ |
 
 Each is committed on `master` and pushed to
 [github.com/dram-dev/pc-insurance-digest](https://github.com/dram-dev/pc-insurance-digest).
@@ -443,19 +443,39 @@ tail probability** over ~10y of OpenFEMA history (p < 0.05 →
 active_season, p < 0.005 → post_major_event; stored as a parallel
 `declaration_tail_p` metric row; legacy z thresholds remain the fallback).
 
-### MLX scheduling (no contention with macro digest)
+### Scheduling (one sequential overnight run; no contention with macro digest)
 
 | Job | Macro time | PC Digest time |
 |---|---|---|
-| `am` daily | 01:00 | **04:00** |
-| `pm` daily | 13:00 | **16:00** |
+| `daily` pipeline | 01:00 (runs first) | **01:05 → queued; starts when macro finishes** |
+| `notify` (Telegram, no LLM) | 08:00 | **08:00** |
 | `weekly` | Fri 19:00 | **Sat 06:00** |
+
+**One run a day, strictly sequential** (2026-09-14; replaced the am 01:00/04:00
++ pm 13:00/16:00 pairs). Both `digest pipeline` commands hold a cross-digest
+flock for the WHOLE run — `pipeline_serialize()` in
+`digest_core/runlock.py`, `/tmp/digest-pipeline.lock` (`PIPELINE_LOCK_PATH`
+to override). PC fires at 01:05, finds macro holding it, logs who it's waiting
+on and blocks until macro releases — so ingest/triage (Ollama) and
+summarize/enrichment (MLX) never overlap between the digests, whatever started
+the run (launchd, manual, catch-up after sleep). A waiter gives up after
+`PIPELINE_LOCK_TIMEOUT_SEC` (default 4h) and exits non-zero rather than run
+alongside a wedged holder. The daily run lands inside Telegram quiet hours
+(22–08), so an 08:00 `digest notify` job delivers its pushes.
+
+**"Since the prior run" window:** the triage window (and the kept-title dedup)
+reaches back past the previous scheduled run — `db.triage_lookback_hours()` →
+`core_db.hours_since_previous_run()`, anchored on the newest `daily`/`am`/`pm`
+run_log row (+2h slack), floored at `TRIAGE_LOOKBACK_HOURS`. The pipeline
+resolves it BEFORE ingest (its own rows would otherwise be the anchor). Caps are
+sized for one run a day: `TRIAGE_MAX_PER_RUN=400`, `SUMMARIZER_MAX_PER_RUN=100`,
+`SUMMARIZER_MAX_PER_SOURCE=24` (PC ingests ~200 new items/day).
 
 Both projects POST to the single shared `mlx_lm.server` on localhost:8080
 (managed by macro digest's `com.dr.mlx.server` launchd job, KeepAlive).
-Stagger is 3 h on daily, full overnight gap before the weekly.
 
-Deconfliction **shipped**: a cross-process flock at `/tmp/digest-mlx.lock`
+Per-request deconfliction (still in place under the run lock — it's what keeps
+the always-on ask-bots from colliding with a run): a cross-process flock at `/tmp/digest-mlx.lock`
 (`MLX_LOCK_PATH` to override) via `mlx_serialize()` in
 `digest_core/summarize/backends.py`. Every MLX generate call takes it —
 `call_mlx_local`, the summarize pre-flight probe, and macro's direct

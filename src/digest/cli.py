@@ -42,7 +42,7 @@ def main() -> None:
 
 @main.command()
 @click.argument("source", type=click.Choice(list(INGESTORS.keys()) + ["all"]))
-@click.option("--run-type", default="manual", help="Tag for run_log (am/pm/manual)")
+@click.option("--run-type", default="manual", help="Tag for run_log (daily/manual)")
 def ingest(source: str, run_type: str) -> None:
     """Ingest from one source or all."""
     db.init_db()
@@ -1216,8 +1216,9 @@ def recent(source: str | None, limit: int) -> None:
 
 
 @main.command()
-@click.option("--limit", default=200, help="Max items to triage in this run")
-def triage(limit: int) -> None:
+@click.option("--limit", type=int, default=None,
+              help="Max items to triage in this run (default: TRIAGE_MAX_PER_RUN)")
+def triage(limit: int | None) -> None:
     """Run MLX triage over pending items."""
     from digest.triage import run_triage
 
@@ -1246,7 +1247,7 @@ def summarize(limit: int | None) -> None:
 
 
 @main.command()
-@click.option("--run-type", default="manual", help="Tag for run_log (am/pm/manual)")
+@click.option("--run-type", default="manual", help="Tag for run_log (daily/manual)")
 @click.option("--skip-publish", is_flag=True, help="Don't write to Obsidian (debug)")
 def pipeline(run_type: str, skip_publish: bool) -> None:
     """Full pipeline: ingest → triage → summarize → regime → signals → publish.
@@ -1256,7 +1257,30 @@ def pipeline(run_type: str, skip_publish: bool) -> None:
     launchd/cron can't mistake a broken run for a good one. Enrichment stages
     (regime, signals, price store) stay best-effort — a failure is recorded and
     reported but never blocks the digest.
+
+    The whole run holds the cross-digest pipeline lock, so it never overlaps a
+    macro-ai-digest run on the shared Ollama/MLX servers — it waits its turn.
     """
+    from digest_core.runlock import PipelineLockTimeout, pipeline_serialize
+
+    def _waiting(holder: str) -> None:
+        console.print(
+            "[yellow]⏳ waiting for the other digest run to finish[/yellow] "
+            f"[dim]({escape(holder or 'holder unknown')})[/dim]"
+        )
+
+    try:
+        with pipeline_serialize("pc-insurance-digest", on_wait=_waiting) as waited:
+            if waited:
+                console.print(f"  [dim]pipeline lock acquired after {waited / 60:.1f} min[/dim]")
+            _run_pipeline(run_type, skip_publish)
+    except PipelineLockTimeout as exc:
+        console.print(f"[red]✗[/red] {escape(str(exc))}")
+        raise SystemExit(1) from exc
+
+
+def _run_pipeline(run_type: str, skip_publish: bool) -> None:
+    """The pipeline body — `pipeline` runs it under the cross-digest lock."""
     from digest.triage import run_triage
     from digest.summarize import run_summarize
     from digest.obsidian import publish as obs_publish
@@ -1279,11 +1303,16 @@ def pipeline(run_type: str, skip_publish: bool) -> None:
 
     # ── required: ingest → triage → summarize (a failure halts the run) ──────
     try:
+        # Resolve the triage window BEFORE ingest logs this run's rows, so it
+        # anchors on the previous run and covers everything new since then.
+        triage_hours = db.triage_lookback_hours()
+
         console.rule("[bold cyan]stage 1: ingest")
         run_ingest(INGESTORS, list(INGESTORS), run_type, console, per_source_rule=False)
 
         console.rule("[bold cyan]stage 2: triage")
-        t = run_triage()
+        console.print(f"  [dim]window: last {triage_hours}h (since the previous run)[/dim]")
+        t = run_triage(lookback_hours=triage_hours)
         console.print(
             f"  [green]✓[/green] kept={t['kept']} dropped={t['dropped']} errors={t['errors']}"
         )

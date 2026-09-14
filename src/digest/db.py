@@ -146,8 +146,8 @@ MIGRATIONS = [
         PRIMARY KEY (item_id, rated_at)
     )""",
     "CREATE INDEX IF NOT EXISTS idx_manual_ratings_item ON manual_ratings(item_id)",
-    # Telegram push dedup: one row per alert ever sent, so the am/pm runs never
-    # re-fire the same high-signal push. alert_key = 'signal:<item_id>'.
+    # Telegram push dedup: one row per alert ever sent, so the daily run and the
+    # 08:00 notify job never re-fire the same high-signal push. alert_key = 'signal:<item_id>'.
     """CREATE TABLE IF NOT EXISTS notify_log (
         alert_key   TEXT PRIMARY KEY,
         kind        TEXT NOT NULL,
@@ -605,9 +605,22 @@ utcnow_iso = core_db.utcnow_iso
 # ── Phase 2 helpers ────────────────────────────────────────────────────
 
 
-def items_needing_triage(limit: int = 200) -> list[sqlite3.Row]:
-    """Items ingested within the lookback window with no triage decision yet."""
-    lookback = f"-{settings.triage_lookback_hours} hours"
+def triage_lookback_hours() -> int:
+    """Triage window in hours: back past the previous scheduled run, never less
+    than TRIAGE_LOOKBACK_HOURS. Resolve it before a run ingests (see
+    `core_db.hours_since_previous_run`)."""
+    with get_conn() as conn:
+        return core_db.hours_since_previous_run(conn, settings.triage_lookback_hours)
+
+
+def items_needing_triage(
+    limit: int = 200, lookback_hours: int | None = None
+) -> list[sqlite3.Row]:
+    """Items ingested within the lookback window with no triage decision yet.
+
+    `lookback_hours` defaults to the fixed TRIAGE_LOOKBACK_HOURS floor.
+    """
+    lookback = f"-{lookback_hours or settings.triage_lookback_hours} hours"
     sql = """
         SELECT id, source, source_id, url, title, author, content,
                published_at, metadata_json

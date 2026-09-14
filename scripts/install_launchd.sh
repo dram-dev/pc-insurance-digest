@@ -20,7 +20,19 @@ echo "Target:  $LAUNCH_AGENTS"
 mkdir -p "$LAUNCH_AGENTS"
 mkdir -p "$PROJECT_PATH/logs"
 
-for label in am pm weekly learn askbot; do
+# Retired jobs: the am/pm pair became one `daily` run (sequenced behind
+# macro-ai-digest via the cross-digest pipeline lock). Unload + remove them so an
+# upgrade doesn't leave the old schedule firing alongside the new one.
+for label in am pm; do
+    old="$LAUNCH_AGENTS/com.dr.pcdigest.${label}.plist"
+    launchctl bootout "gui/$(id -u)/com.dr.pcdigest.${label}" 2>/dev/null || true
+    if [[ -f "$old" ]]; then
+        rm -f "$old"
+        echo "✓ Retired $label job"
+    fi
+done
+
+for label in daily notify weekly learn askbot; do
     src="$PROJECT_PATH/launchd/com.dr.pcdigest.${label}.plist"
     dst="$LAUNCH_AGENTS/com.dr.pcdigest.${label}.plist"
 

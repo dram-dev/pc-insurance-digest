@@ -1,7 +1,8 @@
 """Domain-agnostic DB connection + write helpers.
 
 Owns: `get_conn`, `init_db_with_migrations`, `utcnow_iso`, `upsert_items`,
-`log_run`, `item_stats`, `recent_items`, `recent_kept_titles`.
+`log_run`, `item_stats`, `recent_items`, `recent_kept_titles`,
+`hours_since_previous_run`.
 
 Domain `db.py` modules import these and layer their own migrations on top.
 The `init_db_with_migrations` helper applies BASE_SCHEMA, then runs the
@@ -11,6 +12,7 @@ the apply stays idempotent.
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import asdict
@@ -139,3 +141,38 @@ def recent_kept_titles(conn: sqlite3.Connection, hours: int = 24) -> list[str]:
         (f"-{hours} hours",),
     ).fetchall()
     return [r["title"] for r in rows if r["title"]]
+
+
+# run_type tags written by scheduled pipeline runs: the current once-a-day
+# `daily`, plus the retired `am`/`pm` so the first daily run anchors on them.
+SCHEDULED_RUN_TYPES: tuple[str, ...] = ("daily", "am", "pm")
+
+
+def hours_since_previous_run(
+    conn: sqlite3.Connection,
+    floor_hours: int,
+    *,
+    slack_hours: int = 2,
+    run_types: Iterable[str] = SCHEDULED_RUN_TYPES,
+) -> int:
+    """Lookback (whole hours) reaching back past the previous scheduled run,
+    never less than `floor_hours`.
+
+    Anchors on the newest run_log row from a scheduled run, so call it BEFORE the
+    current run ingests — its own rows would otherwise be the newest. That row is
+    written when the previous run's last ingestor finished; `slack_hours` covers
+    the rest of that ingest stage plus this run's own ingest before the window is
+    used. With no scheduled run on record, returns the floor.
+    """
+    types = tuple(run_types)
+    row = conn.execute(
+        f"""
+        SELECT (julianday('now') - julianday(MAX(run_at))) * 24
+        FROM run_log WHERE run_type IN ({",".join("?" * len(types))})
+        """,
+        types,
+    ).fetchone()
+    age = row[0] if row else None
+    if age is None:
+        return floor_hours
+    return max(floor_hours, math.ceil(age) + slack_hours)

@@ -55,8 +55,9 @@ class Settings(BaseSettings):
     # Summarizer (long-form notes + regime judgment)
     summarizer_backend: str = Field(default="mlx_local", alias="SUMMARIZER_BACKEND")
     summarizer_model: str = Field(default="mlx-community/Qwen3.5-27B-4bit", alias="SUMMARIZER_MODEL")
-    summarizer_max_per_run: int = Field(default=50, alias="SUMMARIZER_MAX_PER_RUN")
-    summarizer_max_per_source: int = Field(default=12, alias="SUMMARIZER_MAX_PER_SOURCE")
+    # Sized for ONE run a day (the pipeline used to run am + pm at 50/12 each).
+    summarizer_max_per_run: int = Field(default=100, alias="SUMMARIZER_MAX_PER_RUN")
+    summarizer_max_per_source: int = Field(default=24, alias="SUMMARIZER_MAX_PER_SOURCE")
     summarizer_timeout_sec: int = Field(default=120, alias="SUMMARIZER_TIMEOUT_SEC")
 
     # Optional API keys for the cloud summarizer backends
@@ -75,7 +76,11 @@ class Settings(BaseSettings):
     # thinking-default models (qwen3.x). Set OLLAMA_THINK=false with qwen3.6.
     ollama_think: bool | None = Field(default=None, alias="OLLAMA_THINK")
     triage_min_score: float = Field(default=0.5, alias="TRIAGE_MIN_SCORE")
+    # Floor for the triage window; the pipeline widens it to reach back past the
+    # previous scheduled run, so a late or skipped day never strands items.
     triage_lookback_hours: int = Field(default=24, alias="TRIAGE_LOOKBACK_HOURS")
+    # One daily run sees ~200 new items (a day's worth), so 2x headroom.
+    triage_max_per_run: int = Field(default=400, alias="TRIAGE_MAX_PER_RUN")
 
     # Semantic layer (Option 3) — embeddings via the shared Ollama server
     # (pull the model first: `ollama pull nomic-embed-text`). Powers `digest

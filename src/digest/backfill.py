@@ -61,7 +61,7 @@ BACKFILL_FORMS = {"8-K", "10-Q", "10-K"}
 # offset keeps the synthetic timestamp unambiguous next to live ones.
 INGESTED_AT_OFFSET_HOURS = 16.0
 
-# As-of scoring lag: live items are scored by the next am/pm signals run, so
+# As-of scoring lag: live items are scored by a scheduled signals run, so
 # emulate "first scored about a day after ingestion". Recency at the default
 # 7d half-life ≈ 0.9 — a fresh item, exactly like live first-scoring.
 SCORING_LAG_HOURS = 24.0
