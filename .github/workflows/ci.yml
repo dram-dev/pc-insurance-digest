@@ -17,6 +17,12 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # .python-version pins the Mac to 3.14 (so uv can't rebuild its venv onto
+  # python3.12 after a patch upgrade). CI keeps testing 3.12, the oldest Python
+  # pyproject allows, as it did before the pin; UV_PYTHON wins over the file.
+  UV_PYTHON: "3.12"
+
 jobs:
   test:
     name: tests (py3.12)
