@@ -44,7 +44,11 @@ from digest import db
 
 logger = logging.getLogger(__name__)
 
-FOLLOWON_THRESHOLD = 0.80     # cosine for "semantically near"
+# Cosine for "semantically near". Was 0.80 while Ollama 0.21.2's Go engine produced
+# nomic-embed-text vectors that disagreed with the model's reference (median cosine
+# 0.83 to it) and inflated similarity. On correct vectors (Ollama 0.40.11, all
+# re-embedded 2026-10-28) the old share of pairs (0.94% of 50.6M) sits at 0.744.
+FOLLOWON_THRESHOLD = 0.745
 STOCK_FDR_Q = 0.10            # Benjamini–Hochberg false-discovery rate for stock_move
 MANUAL_GOOD = 4.0             # rating ≥ this corroborates
 # A lone "another similar item appeared" is weak corroboration in a busy feed —
